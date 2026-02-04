@@ -9,20 +9,20 @@
     "target": "ESNext",
     "module": "commonjs",
     "outDir": "./dist",
+    "rootDir": "./src",
     "moduleResolution": "node",
     "noImplicitAny": true,
     "baseUrl": ".",
     "forceConsistentCasingInFileNames": true,
     "strictPropertyInitialization": true,
-    "composite": true,
+    "composite": false,
     "declaration": true,
     "sourceMap": true
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.d.ts",
-    "src/**/*.json",
-    "node_modules/responser"
+    "src/**/*.json"
   ],
   "exclude": [
     "dist/"
