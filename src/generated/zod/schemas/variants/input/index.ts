@@ -4,6 +4,7 @@
  */
 
 export { UserInputSchema } from './User.input';
+export { ActiveUserInputSchema } from './ActiveUser.input';
 export { ProductInputSchema } from './Product.input';
 export { ProductVariantInputSchema } from './ProductVariant.input';
 export { ProductImageInputSchema } from './ProductImage.input';

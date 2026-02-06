@@ -1,0 +1,12 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { ActiveUserOrderByWithRelationInputObjectSchema as ActiveUserOrderByWithRelationInputObjectSchema } from './objects/ActiveUserOrderByWithRelationInput.schema';
+import { ActiveUserWhereInputObjectSchema as ActiveUserWhereInputObjectSchema } from './objects/ActiveUserWhereInput.schema';
+import { ActiveUserWhereUniqueInputObjectSchema as ActiveUserWhereUniqueInputObjectSchema } from './objects/ActiveUserWhereUniqueInput.schema';
+import { ActiveUserCountAggregateInputObjectSchema as ActiveUserCountAggregateInputObjectSchema } from './objects/ActiveUserCountAggregateInput.schema';
+import { ActiveUserMinAggregateInputObjectSchema as ActiveUserMinAggregateInputObjectSchema } from './objects/ActiveUserMinAggregateInput.schema';
+import { ActiveUserMaxAggregateInputObjectSchema as ActiveUserMaxAggregateInputObjectSchema } from './objects/ActiveUserMaxAggregateInput.schema';
+
+export const ActiveUserAggregateSchema: z.ZodType<Prisma.ActiveUserAggregateArgs> = z.object({ orderBy: z.union([ActiveUserOrderByWithRelationInputObjectSchema, ActiveUserOrderByWithRelationInputObjectSchema.array()]).optional(), where: ActiveUserWhereInputObjectSchema.optional(), cursor: ActiveUserWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), ActiveUserCountAggregateInputObjectSchema ]).optional(), _min: ActiveUserMinAggregateInputObjectSchema.optional(), _max: ActiveUserMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.ActiveUserAggregateArgs>;
+
+export const ActiveUserAggregateZodSchema = z.object({ orderBy: z.union([ActiveUserOrderByWithRelationInputObjectSchema, ActiveUserOrderByWithRelationInputObjectSchema.array()]).optional(), where: ActiveUserWhereInputObjectSchema.optional(), cursor: ActiveUserWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), ActiveUserCountAggregateInputObjectSchema ]).optional(), _min: ActiveUserMinAggregateInputObjectSchema.optional(), _max: ActiveUserMaxAggregateInputObjectSchema.optional() }).strict();

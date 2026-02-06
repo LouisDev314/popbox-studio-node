@@ -4,6 +4,7 @@
  */
 
 export { UserModelSchema } from './User.pure';
+export { ActiveUserModelSchema } from './ActiveUser.pure';
 export { ProductModelSchema } from './Product.pure';
 export { ProductVariantModelSchema } from './ProductVariant.pure';
 export { ProductImageModelSchema } from './ProductImage.pure';

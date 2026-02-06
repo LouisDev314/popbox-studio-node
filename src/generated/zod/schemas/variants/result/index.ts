@@ -4,6 +4,7 @@
  */
 
 export { UserResultSchema } from './User.result';
+export { ActiveUserResultSchema } from './ActiveUser.result';
 export { ProductResultSchema } from './Product.result';
 export { ProductVariantResultSchema } from './ProductVariant.result';
 export { ProductImageResultSchema } from './ProductImage.result';

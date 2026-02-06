@@ -4,6 +4,7 @@
  */
 
 export { UserSchema } from './User.schema';
+export { ActiveUserSchema } from './ActiveUser.schema';
 export { ProductSchema } from './Product.schema';
 export { ProductVariantSchema } from './ProductVariant.schema';
 export { ProductImageSchema } from './ProductImage.schema';

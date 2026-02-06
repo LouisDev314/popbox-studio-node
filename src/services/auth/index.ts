@@ -70,7 +70,7 @@ export const deleteOwnAccount = async (userId: string) => {
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     // 1) soft-delete user profile row
-    await tx.user.updateMany({
+    await tx.user.update({
       where: { supabaseUserId: userId, deletedAt: null },
       data: { deletedAt: now },
     });
