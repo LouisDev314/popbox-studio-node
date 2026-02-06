@@ -88,7 +88,7 @@ export const deleteOwnAccount = async (userId: string) => {
 
   // 4) Soft-delete auth user (disables sign-in).
   const { error } = await supabase.auth.admin.deleteUser(userId, true);
-  if (error) throw new Error(`Delete account failed: ${error.message}`);
+  if (error) throw new Exception(HttpStatusCode.InternalServerError, `Delete account failed: ${error.message}`);
 
   return { deletedUserId: userId };
 };
