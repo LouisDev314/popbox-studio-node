@@ -1,0 +1,13 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { CollectionWhereInputObjectSchema as CollectionWhereInputObjectSchema } from './objects/CollectionWhereInput.schema';
+import { CollectionOrderByWithAggregationInputObjectSchema as CollectionOrderByWithAggregationInputObjectSchema } from './objects/CollectionOrderByWithAggregationInput.schema';
+import { CollectionScalarWhereWithAggregatesInputObjectSchema as CollectionScalarWhereWithAggregatesInputObjectSchema } from './objects/CollectionScalarWhereWithAggregatesInput.schema';
+import { CollectionScalarFieldEnumSchema } from './enums/CollectionScalarFieldEnum.schema';
+import { CollectionCountAggregateInputObjectSchema as CollectionCountAggregateInputObjectSchema } from './objects/CollectionCountAggregateInput.schema';
+import { CollectionMinAggregateInputObjectSchema as CollectionMinAggregateInputObjectSchema } from './objects/CollectionMinAggregateInput.schema';
+import { CollectionMaxAggregateInputObjectSchema as CollectionMaxAggregateInputObjectSchema } from './objects/CollectionMaxAggregateInput.schema';
+
+export const CollectionGroupBySchema: z.ZodType<Prisma.CollectionGroupByArgs> = z.object({ where: CollectionWhereInputObjectSchema.optional(), orderBy: z.union([CollectionOrderByWithAggregationInputObjectSchema, CollectionOrderByWithAggregationInputObjectSchema.array()]).optional(), having: CollectionScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(CollectionScalarFieldEnumSchema), _count: z.union([ z.literal(true), CollectionCountAggregateInputObjectSchema ]).optional(), _min: CollectionMinAggregateInputObjectSchema.optional(), _max: CollectionMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.CollectionGroupByArgs>;
+
+export const CollectionGroupByZodSchema = z.object({ where: CollectionWhereInputObjectSchema.optional(), orderBy: z.union([CollectionOrderByWithAggregationInputObjectSchema, CollectionOrderByWithAggregationInputObjectSchema.array()]).optional(), having: CollectionScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(CollectionScalarFieldEnumSchema), _count: z.union([ z.literal(true), CollectionCountAggregateInputObjectSchema ]).optional(), _min: CollectionMinAggregateInputObjectSchema.optional(), _max: CollectionMaxAggregateInputObjectSchema.optional() }).strict();

@@ -1,0 +1,10 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { OrderStatusHistoryOrderByWithRelationInputObjectSchema as OrderStatusHistoryOrderByWithRelationInputObjectSchema } from './objects/OrderStatusHistoryOrderByWithRelationInput.schema';
+import { OrderStatusHistoryWhereInputObjectSchema as OrderStatusHistoryWhereInputObjectSchema } from './objects/OrderStatusHistoryWhereInput.schema';
+import { OrderStatusHistoryWhereUniqueInputObjectSchema as OrderStatusHistoryWhereUniqueInputObjectSchema } from './objects/OrderStatusHistoryWhereUniqueInput.schema';
+import { OrderStatusHistoryCountAggregateInputObjectSchema as OrderStatusHistoryCountAggregateInputObjectSchema } from './objects/OrderStatusHistoryCountAggregateInput.schema';
+
+export const OrderStatusHistoryCountSchema: z.ZodType<Prisma.OrderStatusHistoryCountArgs> = z.object({ orderBy: z.union([OrderStatusHistoryOrderByWithRelationInputObjectSchema, OrderStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: OrderStatusHistoryWhereInputObjectSchema.optional(), cursor: OrderStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), select: z.union([ z.literal(true), OrderStatusHistoryCountAggregateInputObjectSchema ]).optional() }).strict() as unknown as z.ZodType<Prisma.OrderStatusHistoryCountArgs>;
+
+export const OrderStatusHistoryCountZodSchema = z.object({ orderBy: z.union([OrderStatusHistoryOrderByWithRelationInputObjectSchema, OrderStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: OrderStatusHistoryWhereInputObjectSchema.optional(), cursor: OrderStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), select: z.union([ z.literal(true), OrderStatusHistoryCountAggregateInputObjectSchema ]).optional() }).strict();

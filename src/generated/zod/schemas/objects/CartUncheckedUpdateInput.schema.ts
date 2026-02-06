@@ -1,0 +1,14 @@
+import * as z from 'zod';
+import type { Prisma } from '@prisma/client';
+import { StringFieldUpdateOperationsInputObjectSchema as StringFieldUpdateOperationsInputObjectSchema } from './StringFieldUpdateOperationsInput.schema';
+import { NullableDateTimeFieldUpdateOperationsInputObjectSchema as NullableDateTimeFieldUpdateOperationsInputObjectSchema } from './NullableDateTimeFieldUpdateOperationsInput.schema';
+import { CartItemUncheckedUpdateManyWithoutCartNestedInputObjectSchema as CartItemUncheckedUpdateManyWithoutCartNestedInputObjectSchema } from './CartItemUncheckedUpdateManyWithoutCartNestedInput.schema'
+
+const makeSchema = () => z.object({
+  id: z.union([z.string(), z.lazy(() => StringFieldUpdateOperationsInputObjectSchema)]).optional(),
+  userId: z.union([z.string(), z.lazy(() => StringFieldUpdateOperationsInputObjectSchema)]).optional(),
+  updatedAt: z.union([z.coerce.date(), z.lazy(() => NullableDateTimeFieldUpdateOperationsInputObjectSchema)]).optional().nullable(),
+  items: z.lazy(() => CartItemUncheckedUpdateManyWithoutCartNestedInputObjectSchema).optional()
+}).strict();
+export const CartUncheckedUpdateInputObjectSchema: z.ZodType<Prisma.CartUncheckedUpdateInput> = makeSchema() as unknown as z.ZodType<Prisma.CartUncheckedUpdateInput>;
+export const CartUncheckedUpdateInputObjectZodSchema = makeSchema();

@@ -3,7 +3,9 @@ import plugin from '@typescript-eslint/eslint-plugin';
 
 export default [
   {
-    ignores: ['dist/**'],
+    ignores: ['dist/**', 'src/generated/**'],
+  },
+  {
     files: ['src/**/*.ts'],
     languageOptions: {
       parser,

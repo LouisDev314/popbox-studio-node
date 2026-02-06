@@ -1,0 +1,14 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { ShipmentItemOrderByWithRelationInputObjectSchema as ShipmentItemOrderByWithRelationInputObjectSchema } from './objects/ShipmentItemOrderByWithRelationInput.schema';
+import { ShipmentItemWhereInputObjectSchema as ShipmentItemWhereInputObjectSchema } from './objects/ShipmentItemWhereInput.schema';
+import { ShipmentItemWhereUniqueInputObjectSchema as ShipmentItemWhereUniqueInputObjectSchema } from './objects/ShipmentItemWhereUniqueInput.schema';
+import { ShipmentItemCountAggregateInputObjectSchema as ShipmentItemCountAggregateInputObjectSchema } from './objects/ShipmentItemCountAggregateInput.schema';
+import { ShipmentItemMinAggregateInputObjectSchema as ShipmentItemMinAggregateInputObjectSchema } from './objects/ShipmentItemMinAggregateInput.schema';
+import { ShipmentItemMaxAggregateInputObjectSchema as ShipmentItemMaxAggregateInputObjectSchema } from './objects/ShipmentItemMaxAggregateInput.schema';
+import { ShipmentItemAvgAggregateInputObjectSchema as ShipmentItemAvgAggregateInputObjectSchema } from './objects/ShipmentItemAvgAggregateInput.schema';
+import { ShipmentItemSumAggregateInputObjectSchema as ShipmentItemSumAggregateInputObjectSchema } from './objects/ShipmentItemSumAggregateInput.schema';
+
+export const ShipmentItemAggregateSchema: z.ZodType<Prisma.ShipmentItemAggregateArgs> = z.object({ orderBy: z.union([ShipmentItemOrderByWithRelationInputObjectSchema, ShipmentItemOrderByWithRelationInputObjectSchema.array()]).optional(), where: ShipmentItemWhereInputObjectSchema.optional(), cursor: ShipmentItemWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), ShipmentItemCountAggregateInputObjectSchema ]).optional(), _min: ShipmentItemMinAggregateInputObjectSchema.optional(), _max: ShipmentItemMaxAggregateInputObjectSchema.optional(), _avg: ShipmentItemAvgAggregateInputObjectSchema.optional(), _sum: ShipmentItemSumAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.ShipmentItemAggregateArgs>;
+
+export const ShipmentItemAggregateZodSchema = z.object({ orderBy: z.union([ShipmentItemOrderByWithRelationInputObjectSchema, ShipmentItemOrderByWithRelationInputObjectSchema.array()]).optional(), where: ShipmentItemWhereInputObjectSchema.optional(), cursor: ShipmentItemWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), ShipmentItemCountAggregateInputObjectSchema ]).optional(), _min: ShipmentItemMinAggregateInputObjectSchema.optional(), _max: ShipmentItemMaxAggregateInputObjectSchema.optional(), _avg: ShipmentItemAvgAggregateInputObjectSchema.optional(), _sum: ShipmentItemSumAggregateInputObjectSchema.optional() }).strict();

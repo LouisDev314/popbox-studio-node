@@ -21,7 +21,8 @@ const app = express();
 let server: Server;
 
 /* -------------------------Setup Express middleware------------------------- */
-app.use(responseInterceptor);
+// app.use(responseInterceptor);
+responseInterceptor();
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.set('trust proxy', 1);

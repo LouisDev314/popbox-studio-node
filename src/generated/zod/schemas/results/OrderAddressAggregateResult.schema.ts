@@ -1,0 +1,45 @@
+import * as z from 'zod';
+export const OrderAddressAggregateResultSchema = z.object({  _count: z.object({
+    id: z.number(),
+    orderId: z.number(),
+    type: z.number(),
+    name: z.number(),
+    line1: z.number(),
+    line2: z.number(),
+    city: z.number(),
+    state: z.number(),
+    postalCode: z.number(),
+    country: z.number(),
+    phone: z.number(),
+    createdAt: z.number(),
+    updatedAt: z.number(),
+    order: z.number()
+  }).optional(),
+  _min: z.object({
+    id: z.string().nullable(),
+    orderId: z.string().nullable(),
+    name: z.string().nullable(),
+    line1: z.string().nullable(),
+    line2: z.string().nullable(),
+    city: z.string().nullable(),
+    state: z.string().nullable(),
+    postalCode: z.string().nullable(),
+    country: z.string().nullable(),
+    phone: z.string().nullable(),
+    createdAt: z.date().nullable(),
+    updatedAt: z.date().nullable()
+  }).nullable().optional(),
+  _max: z.object({
+    id: z.string().nullable(),
+    orderId: z.string().nullable(),
+    name: z.string().nullable(),
+    line1: z.string().nullable(),
+    line2: z.string().nullable(),
+    city: z.string().nullable(),
+    state: z.string().nullable(),
+    postalCode: z.string().nullable(),
+    country: z.string().nullable(),
+    phone: z.string().nullable(),
+    createdAt: z.date().nullable(),
+    updatedAt: z.date().nullable()
+  }).nullable().optional()});

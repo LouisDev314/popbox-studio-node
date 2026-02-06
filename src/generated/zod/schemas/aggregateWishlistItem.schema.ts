@@ -1,0 +1,12 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { WishlistItemOrderByWithRelationInputObjectSchema as WishlistItemOrderByWithRelationInputObjectSchema } from './objects/WishlistItemOrderByWithRelationInput.schema';
+import { WishlistItemWhereInputObjectSchema as WishlistItemWhereInputObjectSchema } from './objects/WishlistItemWhereInput.schema';
+import { WishlistItemWhereUniqueInputObjectSchema as WishlistItemWhereUniqueInputObjectSchema } from './objects/WishlistItemWhereUniqueInput.schema';
+import { WishlistItemCountAggregateInputObjectSchema as WishlistItemCountAggregateInputObjectSchema } from './objects/WishlistItemCountAggregateInput.schema';
+import { WishlistItemMinAggregateInputObjectSchema as WishlistItemMinAggregateInputObjectSchema } from './objects/WishlistItemMinAggregateInput.schema';
+import { WishlistItemMaxAggregateInputObjectSchema as WishlistItemMaxAggregateInputObjectSchema } from './objects/WishlistItemMaxAggregateInput.schema';
+
+export const WishlistItemAggregateSchema: z.ZodType<Prisma.WishlistItemAggregateArgs> = z.object({ orderBy: z.union([WishlistItemOrderByWithRelationInputObjectSchema, WishlistItemOrderByWithRelationInputObjectSchema.array()]).optional(), where: WishlistItemWhereInputObjectSchema.optional(), cursor: WishlistItemWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), WishlistItemCountAggregateInputObjectSchema ]).optional(), _min: WishlistItemMinAggregateInputObjectSchema.optional(), _max: WishlistItemMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.WishlistItemAggregateArgs>;
+
+export const WishlistItemAggregateZodSchema = z.object({ orderBy: z.union([WishlistItemOrderByWithRelationInputObjectSchema, WishlistItemOrderByWithRelationInputObjectSchema.array()]).optional(), where: WishlistItemWhereInputObjectSchema.optional(), cursor: WishlistItemWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), WishlistItemCountAggregateInputObjectSchema ]).optional(), _min: WishlistItemMinAggregateInputObjectSchema.optional(), _max: WishlistItemMaxAggregateInputObjectSchema.optional() }).strict();

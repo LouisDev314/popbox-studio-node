@@ -1,0 +1,15 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { WebhookEventWhereInputObjectSchema as WebhookEventWhereInputObjectSchema } from './objects/WebhookEventWhereInput.schema';
+import { WebhookEventOrderByWithAggregationInputObjectSchema as WebhookEventOrderByWithAggregationInputObjectSchema } from './objects/WebhookEventOrderByWithAggregationInput.schema';
+import { WebhookEventScalarWhereWithAggregatesInputObjectSchema as WebhookEventScalarWhereWithAggregatesInputObjectSchema } from './objects/WebhookEventScalarWhereWithAggregatesInput.schema';
+import { WebhookEventScalarFieldEnumSchema } from './enums/WebhookEventScalarFieldEnum.schema';
+import { WebhookEventCountAggregateInputObjectSchema as WebhookEventCountAggregateInputObjectSchema } from './objects/WebhookEventCountAggregateInput.schema';
+import { WebhookEventMinAggregateInputObjectSchema as WebhookEventMinAggregateInputObjectSchema } from './objects/WebhookEventMinAggregateInput.schema';
+import { WebhookEventMaxAggregateInputObjectSchema as WebhookEventMaxAggregateInputObjectSchema } from './objects/WebhookEventMaxAggregateInput.schema';
+import { WebhookEventAvgAggregateInputObjectSchema as WebhookEventAvgAggregateInputObjectSchema } from './objects/WebhookEventAvgAggregateInput.schema';
+import { WebhookEventSumAggregateInputObjectSchema as WebhookEventSumAggregateInputObjectSchema } from './objects/WebhookEventSumAggregateInput.schema';
+
+export const WebhookEventGroupBySchema: z.ZodType<Prisma.WebhookEventGroupByArgs> = z.object({ where: WebhookEventWhereInputObjectSchema.optional(), orderBy: z.union([WebhookEventOrderByWithAggregationInputObjectSchema, WebhookEventOrderByWithAggregationInputObjectSchema.array()]).optional(), having: WebhookEventScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(WebhookEventScalarFieldEnumSchema), _count: z.union([ z.literal(true), WebhookEventCountAggregateInputObjectSchema ]).optional(), _min: WebhookEventMinAggregateInputObjectSchema.optional(), _max: WebhookEventMaxAggregateInputObjectSchema.optional(), _avg: WebhookEventAvgAggregateInputObjectSchema.optional(), _sum: WebhookEventSumAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.WebhookEventGroupByArgs>;
+
+export const WebhookEventGroupByZodSchema = z.object({ where: WebhookEventWhereInputObjectSchema.optional(), orderBy: z.union([WebhookEventOrderByWithAggregationInputObjectSchema, WebhookEventOrderByWithAggregationInputObjectSchema.array()]).optional(), having: WebhookEventScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(WebhookEventScalarFieldEnumSchema), _count: z.union([ z.literal(true), WebhookEventCountAggregateInputObjectSchema ]).optional(), _min: WebhookEventMinAggregateInputObjectSchema.optional(), _max: WebhookEventMaxAggregateInputObjectSchema.optional(), _avg: WebhookEventAvgAggregateInputObjectSchema.optional(), _sum: WebhookEventSumAggregateInputObjectSchema.optional() }).strict();

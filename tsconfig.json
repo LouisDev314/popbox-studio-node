@@ -9,7 +9,7 @@
     "target": "ESNext",
     "module": "commonjs",
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": "src",
     "moduleResolution": "node",
     "noImplicitAny": true,
     "baseUrl": ".",

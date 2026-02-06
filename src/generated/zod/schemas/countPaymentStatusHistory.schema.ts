@@ -1,0 +1,10 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { PaymentStatusHistoryOrderByWithRelationInputObjectSchema as PaymentStatusHistoryOrderByWithRelationInputObjectSchema } from './objects/PaymentStatusHistoryOrderByWithRelationInput.schema';
+import { PaymentStatusHistoryWhereInputObjectSchema as PaymentStatusHistoryWhereInputObjectSchema } from './objects/PaymentStatusHistoryWhereInput.schema';
+import { PaymentStatusHistoryWhereUniqueInputObjectSchema as PaymentStatusHistoryWhereUniqueInputObjectSchema } from './objects/PaymentStatusHistoryWhereUniqueInput.schema';
+import { PaymentStatusHistoryCountAggregateInputObjectSchema as PaymentStatusHistoryCountAggregateInputObjectSchema } from './objects/PaymentStatusHistoryCountAggregateInput.schema';
+
+export const PaymentStatusHistoryCountSchema: z.ZodType<Prisma.PaymentStatusHistoryCountArgs> = z.object({ orderBy: z.union([PaymentStatusHistoryOrderByWithRelationInputObjectSchema, PaymentStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: PaymentStatusHistoryWhereInputObjectSchema.optional(), cursor: PaymentStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), select: z.union([ z.literal(true), PaymentStatusHistoryCountAggregateInputObjectSchema ]).optional() }).strict() as unknown as z.ZodType<Prisma.PaymentStatusHistoryCountArgs>;
+
+export const PaymentStatusHistoryCountZodSchema = z.object({ orderBy: z.union([PaymentStatusHistoryOrderByWithRelationInputObjectSchema, PaymentStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: PaymentStatusHistoryWhereInputObjectSchema.optional(), cursor: PaymentStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), select: z.union([ z.literal(true), PaymentStatusHistoryCountAggregateInputObjectSchema ]).optional() }).strict();

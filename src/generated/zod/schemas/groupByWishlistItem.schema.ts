@@ -1,0 +1,13 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { WishlistItemWhereInputObjectSchema as WishlistItemWhereInputObjectSchema } from './objects/WishlistItemWhereInput.schema';
+import { WishlistItemOrderByWithAggregationInputObjectSchema as WishlistItemOrderByWithAggregationInputObjectSchema } from './objects/WishlistItemOrderByWithAggregationInput.schema';
+import { WishlistItemScalarWhereWithAggregatesInputObjectSchema as WishlistItemScalarWhereWithAggregatesInputObjectSchema } from './objects/WishlistItemScalarWhereWithAggregatesInput.schema';
+import { WishlistItemScalarFieldEnumSchema } from './enums/WishlistItemScalarFieldEnum.schema';
+import { WishlistItemCountAggregateInputObjectSchema as WishlistItemCountAggregateInputObjectSchema } from './objects/WishlistItemCountAggregateInput.schema';
+import { WishlistItemMinAggregateInputObjectSchema as WishlistItemMinAggregateInputObjectSchema } from './objects/WishlistItemMinAggregateInput.schema';
+import { WishlistItemMaxAggregateInputObjectSchema as WishlistItemMaxAggregateInputObjectSchema } from './objects/WishlistItemMaxAggregateInput.schema';
+
+export const WishlistItemGroupBySchema: z.ZodType<Prisma.WishlistItemGroupByArgs> = z.object({ where: WishlistItemWhereInputObjectSchema.optional(), orderBy: z.union([WishlistItemOrderByWithAggregationInputObjectSchema, WishlistItemOrderByWithAggregationInputObjectSchema.array()]).optional(), having: WishlistItemScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(WishlistItemScalarFieldEnumSchema), _count: z.union([ z.literal(true), WishlistItemCountAggregateInputObjectSchema ]).optional(), _min: WishlistItemMinAggregateInputObjectSchema.optional(), _max: WishlistItemMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.WishlistItemGroupByArgs>;
+
+export const WishlistItemGroupByZodSchema = z.object({ where: WishlistItemWhereInputObjectSchema.optional(), orderBy: z.union([WishlistItemOrderByWithAggregationInputObjectSchema, WishlistItemOrderByWithAggregationInputObjectSchema.array()]).optional(), having: WishlistItemScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(WishlistItemScalarFieldEnumSchema), _count: z.union([ z.literal(true), WishlistItemCountAggregateInputObjectSchema ]).optional(), _min: WishlistItemMinAggregateInputObjectSchema.optional(), _max: WishlistItemMaxAggregateInputObjectSchema.optional() }).strict();

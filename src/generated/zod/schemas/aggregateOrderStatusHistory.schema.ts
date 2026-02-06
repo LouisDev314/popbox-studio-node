@@ -1,0 +1,12 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { OrderStatusHistoryOrderByWithRelationInputObjectSchema as OrderStatusHistoryOrderByWithRelationInputObjectSchema } from './objects/OrderStatusHistoryOrderByWithRelationInput.schema';
+import { OrderStatusHistoryWhereInputObjectSchema as OrderStatusHistoryWhereInputObjectSchema } from './objects/OrderStatusHistoryWhereInput.schema';
+import { OrderStatusHistoryWhereUniqueInputObjectSchema as OrderStatusHistoryWhereUniqueInputObjectSchema } from './objects/OrderStatusHistoryWhereUniqueInput.schema';
+import { OrderStatusHistoryCountAggregateInputObjectSchema as OrderStatusHistoryCountAggregateInputObjectSchema } from './objects/OrderStatusHistoryCountAggregateInput.schema';
+import { OrderStatusHistoryMinAggregateInputObjectSchema as OrderStatusHistoryMinAggregateInputObjectSchema } from './objects/OrderStatusHistoryMinAggregateInput.schema';
+import { OrderStatusHistoryMaxAggregateInputObjectSchema as OrderStatusHistoryMaxAggregateInputObjectSchema } from './objects/OrderStatusHistoryMaxAggregateInput.schema';
+
+export const OrderStatusHistoryAggregateSchema: z.ZodType<Prisma.OrderStatusHistoryAggregateArgs> = z.object({ orderBy: z.union([OrderStatusHistoryOrderByWithRelationInputObjectSchema, OrderStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: OrderStatusHistoryWhereInputObjectSchema.optional(), cursor: OrderStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), OrderStatusHistoryCountAggregateInputObjectSchema ]).optional(), _min: OrderStatusHistoryMinAggregateInputObjectSchema.optional(), _max: OrderStatusHistoryMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.OrderStatusHistoryAggregateArgs>;
+
+export const OrderStatusHistoryAggregateZodSchema = z.object({ orderBy: z.union([OrderStatusHistoryOrderByWithRelationInputObjectSchema, OrderStatusHistoryOrderByWithRelationInputObjectSchema.array()]).optional(), where: OrderStatusHistoryWhereInputObjectSchema.optional(), cursor: OrderStatusHistoryWhereUniqueInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), _count: z.union([ z.literal(true), OrderStatusHistoryCountAggregateInputObjectSchema ]).optional(), _min: OrderStatusHistoryMinAggregateInputObjectSchema.optional(), _max: OrderStatusHistoryMaxAggregateInputObjectSchema.optional() }).strict();

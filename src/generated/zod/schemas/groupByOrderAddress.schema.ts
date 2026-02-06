@@ -1,0 +1,13 @@
+import type { Prisma } from '@prisma/client';
+import * as z from 'zod';
+import { OrderAddressWhereInputObjectSchema as OrderAddressWhereInputObjectSchema } from './objects/OrderAddressWhereInput.schema';
+import { OrderAddressOrderByWithAggregationInputObjectSchema as OrderAddressOrderByWithAggregationInputObjectSchema } from './objects/OrderAddressOrderByWithAggregationInput.schema';
+import { OrderAddressScalarWhereWithAggregatesInputObjectSchema as OrderAddressScalarWhereWithAggregatesInputObjectSchema } from './objects/OrderAddressScalarWhereWithAggregatesInput.schema';
+import { OrderAddressScalarFieldEnumSchema } from './enums/OrderAddressScalarFieldEnum.schema';
+import { OrderAddressCountAggregateInputObjectSchema as OrderAddressCountAggregateInputObjectSchema } from './objects/OrderAddressCountAggregateInput.schema';
+import { OrderAddressMinAggregateInputObjectSchema as OrderAddressMinAggregateInputObjectSchema } from './objects/OrderAddressMinAggregateInput.schema';
+import { OrderAddressMaxAggregateInputObjectSchema as OrderAddressMaxAggregateInputObjectSchema } from './objects/OrderAddressMaxAggregateInput.schema';
+
+export const OrderAddressGroupBySchema: z.ZodType<Prisma.OrderAddressGroupByArgs> = z.object({ where: OrderAddressWhereInputObjectSchema.optional(), orderBy: z.union([OrderAddressOrderByWithAggregationInputObjectSchema, OrderAddressOrderByWithAggregationInputObjectSchema.array()]).optional(), having: OrderAddressScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(OrderAddressScalarFieldEnumSchema), _count: z.union([ z.literal(true), OrderAddressCountAggregateInputObjectSchema ]).optional(), _min: OrderAddressMinAggregateInputObjectSchema.optional(), _max: OrderAddressMaxAggregateInputObjectSchema.optional() }).strict() as unknown as z.ZodType<Prisma.OrderAddressGroupByArgs>;
+
+export const OrderAddressGroupByZodSchema = z.object({ where: OrderAddressWhereInputObjectSchema.optional(), orderBy: z.union([OrderAddressOrderByWithAggregationInputObjectSchema, OrderAddressOrderByWithAggregationInputObjectSchema.array()]).optional(), having: OrderAddressScalarWhereWithAggregatesInputObjectSchema.optional(), take: z.number().optional(), skip: z.number().optional(), by: z.array(OrderAddressScalarFieldEnumSchema), _count: z.union([ z.literal(true), OrderAddressCountAggregateInputObjectSchema ]).optional(), _min: OrderAddressMinAggregateInputObjectSchema.optional(), _max: OrderAddressMaxAggregateInputObjectSchema.optional() }).strict();

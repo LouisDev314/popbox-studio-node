@@ -4,7 +4,13 @@ generator client {
 }
 
 datasource db {
-  provider   = "postgresql"
+  provider = "postgresql"
+}
+
+generator zod {
+  provider = "prisma-zod-generator"
+  output   = "../src/generated/zod"
+  config   = "zod-generator.config.json"
 }
 
 // ============================================
@@ -32,12 +38,12 @@ enum OrderStatus {
 }
 
 enum PaymentStatus {
-  PENDING              // Covers requires_payment_method + requires_confirmation
-  REQUIRES_ACTION      // Customer action needed (3D Secure)
-  PROCESSING           // Stripe processing
-  SUCCEEDED            // Complete
-  FAILED               // Any failure (declined, error, etc.)
-  CANCELED             // Canceled
+  PENDING // Covers requires_payment_method + requires_confirmation
+  REQUIRES_ACTION // Customer action needed (3D Secure)
+  PROCESSING // Stripe processing
+  SUCCEEDED // Complete
+  FAILED // Any failure (declined, error, etc.)
+  CANCELED // Canceled
 
   @@map("payment_status")
 }
@@ -76,12 +82,12 @@ model User {
   deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   // Relations
-  carts                Cart[]
+  wishlist             Wishlist?
+  cart                 Cart?
   orders               Order[]
   orderStatusHistories OrderStatusHistory[]
 
   @@map("users")
-  @@index([deletedAt])
 }
 
 // ============================================
@@ -99,12 +105,13 @@ model Product {
   updatedAt   DateTime? @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   // Relations
-  category    Category            @relation(fields: [categoryId], references: [id])
-  variants    ProductVariant[]
-  images      ProductImage[]
-  collections ProductCollection[]
-  cartItems   CartItem[]
-  orderItems  OrderItem[]
+  category      Category            @relation(fields: [categoryId], references: [id])
+  variants      ProductVariant[]
+  images        ProductImage[]
+  collections   ProductCollection[]
+  wishlistItems WishlistItem[]
+  cartItems     CartItem[]
+  orderItems    OrderItem[]
 
   @@index([isActive])
   @@index([categoryId])
@@ -191,6 +198,36 @@ model ProductCollection {
 }
 
 // ============================================
+// WISHLIST
+// ============================================
+
+model Wishlist {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user  User           @relation(fields: [userId], references: [supabaseUserId], onDelete: Cascade)
+  items WishlistItem[]
+
+  @@map("wishlists")
+}
+
+model WishlistItem {
+  id         String   @id @default(uuid()) @db.Uuid
+  wishlistId String   @db.Uuid
+  productId  String   @db.Uuid
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  wishlist Wishlist @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([wishlistId, productId])
+  @@index([productId])
+  @@map("wishlist_items")
+}
+
+// ============================================
 // CART
 // ============================================
 
@@ -199,8 +236,7 @@ model Cart {
   userId    String    @unique @map("user_id") @db.Uuid
   updatedAt DateTime? @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  // Relations
-  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user  User       @relation(fields: [userId], references: [supabaseUserId], onDelete: Cascade)
   items CartItem[]
 
   @@map("carts")
@@ -232,9 +268,10 @@ model Order {
   userId         String      @map("user_id") @db.Uuid
   status         OrderStatus @default(PENDING)
   subtotalAmount BigInt      @map("subtotal_amount") @db.BigInt
-  taxAmount      BigInt      @default(0) @map("tax_amount") @db.BigInt
-  shippingAmount BigInt      @default(0) @map("shipping_amount") @db.BigInt
-  discountAmount BigInt      @default(0) @map("discount_amount") @db.BigInt
+  taxAmount      BigInt      @default(dbgenerated("0")) @map("tax_amount") @db.BigInt
+  shippingAmount BigInt      @default(dbgenerated("0")) @map("shipping_amount") @db.BigInt
+  discountAmount BigInt      @default(dbgenerated("0")) @map("discount_amount") @db.BigInt
+
   totalAmount    BigInt      @map("total_amount") @db.BigInt
   currency       String      @default("CAD") @db.VarChar(3)
   metadata       Json?       @db.JsonB
@@ -242,7 +279,7 @@ model Order {
   updatedAt      DateTime?   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   // Relations
-  user          User                 @relation(fields: [userId], references: [id])
+  user          User                 @relation(fields: [userId], references: [supabaseUserId])
   items         OrderItem[]
   addresses     OrderAddress[]
   payments      Payment[]
@@ -256,15 +293,15 @@ model Order {
 }
 
 model OrderItem {
-  id           String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId      String  @map("order_id") @db.Uuid
-  productId    String  @map("product_id") @db.Uuid
-  variantId    String  @map("variant_id") @db.Uuid
-  productName  String  @map("product_name") @db.VarChar(150)
-  variantName  String? @map("variant_name") @db.VarChar(100)
-  quantity     Int     @db.Integer
-  unitPrice    BigInt  @map("unit_price") @db.BigInt
-  currency     String  @default("CAD") @db.VarChar(3)
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId     String  @map("order_id") @db.Uuid
+  productId   String  @map("product_id") @db.Uuid
+  variantId   String  @map("variant_id") @db.Uuid
+  productName String  @map("product_name") @db.VarChar(150)
+  variantName String? @map("variant_name") @db.VarChar(100)
+  quantity    Int     @db.Integer
+  unitPrice   BigInt  @map("unit_price") @db.BigInt
+  currency    String  @default("CAD") @db.VarChar(3)
 
   // Relations
   order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -391,7 +428,7 @@ model OrderStatusHistory {
 
   // Relations
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  user  User? @relation(fields: [changedBy], references: [id])
+  user  User? @relation(fields: [changedBy], references: [supabaseUserId])
 
   @@index([orderId, createdAt])
   @@map("order_status_history")

@@ -18,6 +18,8 @@ const env = {
 
   // Supabase
   databaseUrl: process.env.DATABASE_URL || '',
+  supabaseUrl: process.env.SUPABASE_URL || '',
+  supabasePublicKey: process.env.SUPABASE_PUBLIC_KEY || '',
 
   // Stripe
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
