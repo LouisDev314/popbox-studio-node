@@ -21,12 +21,13 @@ const app = express();
 let server: Server;
 
 /* -------------------------Setup Express middleware------------------------- */
-// app.use(responseInterceptor);
 responseInterceptor();
+app.use(cors({
+  origin: ['http://localhost:3000', getEnvConfig().webOrigin],
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.set('trust proxy', 1);
-app.use(cors()); // TODO: set up cors options: app.use(cors(corsOptions));
 app.use(helmet()); // Enable security headers
 app.use(
   compression({

@@ -4,6 +4,7 @@ const env = {
   port: Number(process.env.PORT) || 3000,
   nodeEnv: process.env.NODE_ENV || 'production',
   logLevel: process.env.LOG_LEVEL || 'info',
+  webOrigin: process.env.WEB_ORIGIN || 'http://localhost:3000',
 
   // B2
   b2KeyId: process.env.B2_KEY_ID || '',

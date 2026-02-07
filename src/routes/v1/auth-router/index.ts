@@ -3,9 +3,15 @@ import rateLimiter from '../../../middleware/rate-limiter';
 import validateBody from '../../../middleware/request-body-validation';
 import { z } from 'zod';
 import { UserInputSchema } from '../../../generated/zod/schemas';
-import { deleteOwnAccount, loginWithEmailPassword, registerWithEmailPassword } from '../../../services/auth';
+import {
+  deleteOwnAccount,
+  loginWithEmailPassword,
+  registerWithEmailPassword,
+} from '../../../services/auth';
 import { AuthedRequest, requireAuth } from '../../../middleware/token-auth';
 import supabase from '../../../config/supabase';
+import Exception from '../../../utils/Exception';
+import { HttpStatusCode } from 'axios';
 
 const authRouter: Router = Router();
 
@@ -18,7 +24,7 @@ authRouter.post('/register',
   authLimiter,
   validateBody(
     UserInputSchema.pick({ email: true }).catchall(z.string()),
-    'User register error',
+    'User register request body error',
   ),
   async (req, res) => {
     const { email, password, redirectUrl } = req.body;
@@ -34,7 +40,7 @@ authRouter.post('/login',
   authLimiter,
   validateBody(
     UserInputSchema.pick({ email: true }).catchall(z.string()),
-    'User login error',
+    'User login request body error',
   ),
   async (req, res) => {
     const { email, password } = req.body;

@@ -44,7 +44,7 @@ export const loginWithEmailPassword = async (
     password,
   });
 
-  if (error) throw new Exception(HttpStatusCode.InternalServerError, 'Login failed');
+  if (error || !data.session) throw new Exception(HttpStatusCode.InternalServerError, 'Login failed');
 
   const { session, user } = data;
 
