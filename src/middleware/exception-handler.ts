@@ -1,6 +1,6 @@
 import type { ErrorRequestHandler } from 'express';
 import Exception from '../utils/Exception';
-import logger from '../config/logger';
+import logger from '../utils/logger';
 import HttpStatusCode from '../constant/http-status-code';
 
 const STATUS_TO_METHOD: Record<number, keyof Express.Response> = {

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import logger from '../config/logger';
+import logger from '../utils/logger';
 
 declare global {
   /* eslint-disable @typescript-eslint/no-namespace */

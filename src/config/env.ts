@@ -2,9 +2,9 @@ import 'dotenv/config';
 
 const env = {
   port: Number(process.env.PORT) || 3000,
-  nodeEnv: process.env.NODE_ENV || 'production',
+  nodeEnv: process.env.NODE_ENV || 'dev',
   logLevel: process.env.LOG_LEVEL || 'info',
-  corsOrigin: process.env.CORS_ORIGIN || '',
+  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
 
   // B2
   b2KeyId: process.env.B2_KEY_ID || '',

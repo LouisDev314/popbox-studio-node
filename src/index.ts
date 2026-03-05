@@ -6,15 +6,14 @@ import responseInterceptor from './middleware/response-interceptor';
 import getEnvConfig from './config/env';
 import helmet from 'helmet';
 import compression from 'compression';
-import rateLimiter from './middleware/rate-limiter';
 import rootRouter from './routes';
 import exceptionHandler from './middleware/exception-handler';
-import logger from './config/logger';
-import { redisInit, redisStop } from './services/redis';
-import { postgresInit, postgresStop } from './db/prisma';
+import logger from './utils/logger';
 import requestId from './middleware/requestId';
 import notFoundHandler from './middleware/not-found-handler';
 import { pinoHttp } from 'pino-http';
+import healthRouter from './routes/v1/health-router';
+import { globalLimiter } from './middleware/rate-limit';
 
 dotenv.config();
 
@@ -34,7 +33,7 @@ app.set('trust proxy', 1);
 app.use(pinoHttp());
 app.use(
   cors({
-    origin: corsOrigin ?? 'localhost:3000',
+    origin: corsOrigin,
     credentials: true,
   }),
 );
@@ -47,15 +46,16 @@ app.use(
 );
 
 // Rate limiting
-const limiter = rateLimiter(1, 100, 'Too many requests, please try again later.');
-app.use(limiter);
+app.use(globalLimiter);
 app.use('/api', rootRouter);
+app.use('/health', healthRouter);
 app.use(notFoundHandler);
 app.use(exceptionHandler);
 
 /* -------------------------Init------------------------- */
 const applicationBootstrap = async () => {
-  await Promise.all([postgresInit(), redisInit()]);
+  // Potential task/service to start
+  await Promise.all([]);
 };
 
 const start = async () => {
@@ -65,7 +65,7 @@ const start = async () => {
       logger.info(`Server started at port ${port}`);
     });
   } catch (err) {
-    logger.error('Fatal server start error', err);
+    logger.fatal(err, 'Fatal server start error');
     process.exit(1);
   }
 };
@@ -77,7 +77,8 @@ const stop = async () => {
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       }).then(() => {
-        return Promise.all([postgresStop(), redisStop()]);
+        // Potential task/service to stop
+        return Promise.all([]);
       }),
       new Promise((_, reject) => {
         setTimeout(() => {
@@ -88,7 +89,7 @@ const stop = async () => {
     logger.info('Server down successfully');
     process.exit(0);
   } catch (err) {
-    logger.error('Fatal server stop error', err);
+    logger.fatal(err, 'Fatal server stop error');
     process.exit(1);
   }
 };
