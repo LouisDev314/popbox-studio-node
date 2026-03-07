@@ -12,7 +12,7 @@ const env = {
   databaseUrl: process.env.DATABASE_URL || '',
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabasePublicKey: process.env.SUPABASE_PUBLIC_KEY || '',
-  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  supabaseSecretKey: process.env.SUPABASE_SECRET_KEY || '',
   supabaseStorageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'product-images',
 
   // Stripe
