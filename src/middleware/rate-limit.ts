@@ -1,4 +1,5 @@
 import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
+import HttpStatusCode from '../constant/http-status-code';
 
 type CreateLimiterOpts = {
   windowMs: number;
@@ -15,8 +16,14 @@ const createLimiter = (opts: CreateLimiterOpts): RateLimitRequestHandler => {
     standardHeaders: 'draft-7',
     legacyHeaders: false,
 
-    // avoid surprises behind proxies (Render)
-    message: { ok: false, error: opts.message ?? 'Too many requests, please try again later.' },
+    handler: (req, res) => {
+      res.status(HttpStatusCode.TOO_MANY_REQUESTS).json({
+        code: HttpStatusCode.TOO_MANY_REQUESTS,
+        success: false,
+        message: opts.message ?? 'Too many requests, please try again later.',
+        ...(req.id ? { requestId: req.id } : {}),
+      });
+    },
   });
 };
 

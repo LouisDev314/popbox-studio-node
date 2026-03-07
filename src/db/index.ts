@@ -1,9 +1,19 @@
 import { config } from 'dotenv';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import getEnvConfig from '../config/env';
+import * as schema from './schema';
 
 config({ path: '.env' });
 
-const client = postgres(getEnvConfig().databaseUrl);
-export const db = drizzle({ client });
+export const pg = postgres(getEnvConfig().databaseUrl, {
+  max: 10,
+  idle_timeout: 20,
+});
+
+export const db = drizzle(pg, {
+  schema,
+});
+
+export { sql, schema };

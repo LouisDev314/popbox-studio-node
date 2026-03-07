@@ -1,16 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import type { Logger } from 'pino';
 import logger from '../utils/logger';
-
-declare global {
-  /* eslint-disable @typescript-eslint/no-namespace */
-  namespace Express {
-    interface Request {
-      id: string;
-      log: typeof logger;
-    }
-  }
-}
 
 type Options = {
   headerName?: string; // incoming/outgoing header
@@ -30,8 +21,7 @@ const requestId = (options: Options = {}) => {
     res.setHeader(headerName, id);
 
     // attach request-scoped logger (pino-style child loggers supported)
-    /* eslint-disable @typescript-eslint/no-explicit-any */
-    req.log = (logger as any).child ? (logger as any).child({ requestId: id }) : logger;
+    req.log = (typeof logger.child === 'function' ? logger.child({ requestId: id }) : logger) as Logger;
 
     next();
   };

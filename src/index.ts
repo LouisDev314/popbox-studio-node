@@ -14,6 +14,7 @@ import notFoundHandler from './middleware/not-found-handler';
 import { pinoHttp } from 'pino-http';
 import healthRouter from './routes/v1/health-router';
 import { globalLimiter } from './middleware/rate-limit';
+import { startBackgroundJobs } from './jobs';
 
 dotenv.config();
 
@@ -21,10 +22,12 @@ dotenv.config();
 const { port, corsOrigin } = getEnvConfig();
 const app = express();
 let server: Server;
+let stopBackgroundJobs: (() => void) | null = null;
 
 /* -------------------------Setup Express middleware------------------------- */
 responseInterceptor();
 app.use(requestId());
+app.use('/v1/webhooks/stripe', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false }));
 // Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
@@ -46,7 +49,7 @@ app.use(
 
 // Rate limiting
 app.use(globalLimiter);
-app.use('/api', rootRouter);
+app.use(rootRouter);
 app.use('/health', healthRouter);
 app.use(notFoundHandler);
 app.use(exceptionHandler);
@@ -54,7 +57,7 @@ app.use(exceptionHandler);
 /* -------------------------Init------------------------- */
 const applicationBootstrap = async () => {
   // Potential task/service to start
-  await Promise.all([]);
+  stopBackgroundJobs = startBackgroundJobs();
 };
 
 const start = async () => {
@@ -77,6 +80,7 @@ const stop = async () => {
         server.close((err) => (err ? reject(err) : resolve()));
       }).then(() => {
         // Potential task/service to stop
+        stopBackgroundJobs?.();
         return Promise.all([]);
       }),
       new Promise((_, reject) => {
