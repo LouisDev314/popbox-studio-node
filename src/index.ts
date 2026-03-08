@@ -9,11 +9,14 @@ import compression from 'compression';
 import rootRouter from './routes';
 import exceptionHandler from './middleware/exception-handler';
 import logger from './utils/logger';
-import requestId from './middleware/requestId';
 import notFoundHandler from './middleware/not-found-handler';
 import { pinoHttp } from 'pino-http';
 import healthRouter from './routes/v1/health-router';
 import { globalLimiter } from './middleware/rate-limit';
+import httpLogger from './utils/http-logger';
+// TODO
+// import { startBackgroundJobs } from './jobs';
+// import { verifyDatabaseConnection } from './db';
 
 dotenv.config();
 
@@ -21,16 +24,16 @@ dotenv.config();
 const { port, corsOrigin } = getEnvConfig();
 const app = express();
 let server: Server;
+// TODO
+// const stopBackgroundJobs: (() => void) | null = null;
 
 /* -------------------------Setup Express middleware------------------------- */
-// app.use(responseInterceptor);
 responseInterceptor();
-app.use(requestId());
+app.use(httpLogger);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false }));
 // Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
 app.set('trust proxy', 1);
-app.use(pinoHttp());
 app.use(
   cors({
     origin: corsOrigin,
