@@ -18,6 +18,16 @@ const isHttpErrorStatus = (code: unknown): code is number =>
   typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 599;
 
 const isServerError = (code: number) => code >= 500;
+const isBodyParserSyntaxError = (
+  error: unknown,
+): error is SyntaxError & {
+  status?: number;
+  type?: string;
+} =>
+  error instanceof SyntaxError &&
+  typeof error === 'object' &&
+  (error as { status?: number }).status === HttpStatusCode.BAD_REQUEST &&
+  (error as { type?: string }).type === 'entity.parse.failed';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
@@ -49,6 +59,11 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
 
     // 4xx: safe to return the message & data (assuming you keep them clean)
     return (res[method] as any)(err.msg, err.data);
+  }
+
+  if (isBodyParserSyntaxError(err)) {
+    log.warn({ requestId, err }, 'Invalid JSON request body');
+    return res.send_badRequest('Invalid JSON request body');
   }
 
   // Unknown / programmer error / library error

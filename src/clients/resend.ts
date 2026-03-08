@@ -1,6 +1,8 @@
 import { Resend } from 'resend';
 import getEnvConfig from '../config/env';
 
-const resend = new Resend(getEnvConfig().resendApiKey);
+const { resendApiKey } = getEnvConfig();
+
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
 export default resend;

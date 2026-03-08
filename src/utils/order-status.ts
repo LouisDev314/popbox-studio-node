@@ -1,7 +1,20 @@
 import Exception from './Exception';
 import HttpStatusCode from '../constant/http-status-code';
 
-export const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
+export const ORDER_STATUSES = [
+  'pending_payment',
+  'paid',
+  'packed',
+  'shipped',
+  'cancelled',
+  'refunded',
+  'paid_needs_attention',
+  'expired',
+] as const;
+
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending_payment: ['paid', 'cancelled', 'expired', 'paid_needs_attention'],
   paid: ['packed', 'refunded', 'paid_needs_attention'],
   packed: ['shipped', 'refunded'],
@@ -12,7 +25,7 @@ export const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
   expired: [],
 };
 
-export const assertOrderStatusTransition = (currentStatus: string, nextStatus: string) => {
+export const assertOrderStatusTransition = (currentStatus: OrderStatus, nextStatus: OrderStatus) => {
   const allowed = ORDER_STATUS_TRANSITIONS[currentStatus] ?? [];
 
   if (!allowed.includes(nextStatus)) {

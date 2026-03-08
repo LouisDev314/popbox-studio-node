@@ -39,6 +39,23 @@ const buildImageUrl = (storageKey: string) => {
   return `${env.supabaseUrl}/storage/v1/object/public/${env.supabaseStorageBucket}/${cleanPath}`;
 };
 
+const isMissingStorageBucket = (error: { message?: string } | null) => {
+  const message = error?.message?.toLowerCase() ?? '';
+  return message.includes('bucket') && message.includes('not found');
+};
+
+const throwStorageFailure = (message: string, error: { message?: string } | null) => {
+  if (!error) return;
+
+  if (isMissingStorageBucket(error)) {
+    throw new Exception(HttpStatusCode.SERVICE_UNAVAILABLE, `Storage bucket "${env.supabaseStorageBucket}" is not provisioned`, {
+      data: error,
+    });
+  }
+
+  throw new Exception(HttpStatusCode.BAD_GATEWAY, message, { data: error });
+};
+
 const ensureUniqueSlug = async (
   table: typeof products | typeof collections | typeof tags,
   rawValue: string,
@@ -294,7 +311,7 @@ export const updateProduct = async (
 export const uploadProductImage = async (productId: string, file: Express.Multer.File, altText?: string | null) => {
   await assertProductExists(productId);
 
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
   if (!allowedTypes.includes(file.mimetype)) {
     throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Unsupported image file type');
   }
@@ -309,9 +326,7 @@ export const uploadProductImage = async (productId: string, file: Express.Multer
     upsert: false,
   });
 
-  if (error) {
-    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to upload image', { data: error });
-  }
+  throwStorageFailure('Unable to upload image', error);
 
   const [lastImage] = await db
     .select({
@@ -380,9 +395,7 @@ export const deleteProductImage = async (productId: string, imageId: string) => 
   }
 
   const { error } = await supabaseAdmin.storage.from(env.supabaseStorageBucket).remove([image.storageKey]);
-  if (error) {
-    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to remove image from storage', { data: error });
-  }
+  throwStorageFailure('Unable to remove image from storage', error);
 
   await db.delete(productImages).where(eq(productImages.id, imageId));
   return {

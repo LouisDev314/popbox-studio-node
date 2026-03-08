@@ -1,5 +1,5 @@
 import { randomInt } from 'crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import stripe from '../../clients/stripe';
 import getEnvConfig from '../../config/env';
@@ -12,7 +12,6 @@ import {
   orders,
   payments,
   productInventory,
-  products,
   tickets,
   kujiPrizes,
   stripeWebhookEvents,
@@ -94,7 +93,7 @@ const assertCanadianAddress = (address: AddressInput) => {
 };
 
 const buildOrderUrl = (publicId: string, token: string) => {
-  return `${env.frontendBaseUrl}/orders/${publicId}?token=${encodeURIComponent(token)}`;
+  return `${env.customerAppBaseUrl}/orders/${publicId}?token=${encodeURIComponent(token)}`;
 };
 
 const lockProductForCheckout = async (tx: DbClient, productId: string): Promise<LockedProductRow | undefined> => {
@@ -478,7 +477,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput) =
   const publicId = createPublicId('ord');
   const shippingCents = env.stripeShippingRateCents;
 
-  const { createdOrder, orderProducts, subtotalCents } = await db.transaction(async (tx) => {
+  const { createdOrder, orderProducts } = await db.transaction(async (tx) => {
     const currentCustomer = await createOrUpdateCustomer(tx, input);
     await insertAddresses(tx, currentCustomer.id, input);
 
@@ -685,9 +684,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput) =
 };
 
 export const getCheckoutSuccess = async (sessionId: string) => {
-  const session = await stripe.checkout.sessions.retrieve(sessionId, {
-    expand: ['line_items'],
-  });
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
 
   if (!session || !session.id) {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Checkout session not found');
@@ -697,15 +694,20 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     throw new Exception(HttpStatusCode.CONFLICT, 'Checkout session has not been paid yet');
   }
 
-  const finalization = await finalizeCheckoutSession(session);
-  const detail = await getOrderDetailById(finalization.orderId);
-  const orderUrl = buildOrderUrl(detail.publicId, finalization.guestAccessToken);
+  const { orderId, guestAccessToken } = ensurePaymentSessionMetadata(session);
+  const detail = await getOrderDetailById(orderId);
+
+  if (!['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(detail.status)) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Order payment is still awaiting webhook finalization');
+  }
+
+  const orderUrl = buildOrderUrl(detail.publicId, guestAccessToken);
 
   return {
     publicId: detail.publicId,
-    guestAccessToken: finalization.guestAccessToken,
+    guestAccessToken,
     orderUrl,
-    needsAttention: finalization.needsAttention,
+    needsAttention: detail.status === 'paid_needs_attention',
     order: detail,
   };
 };
@@ -715,7 +717,12 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
     throw new Exception(HttpStatusCode.BAD_REQUEST, 'Stripe signature header is required');
   }
 
-  const event = stripe.webhooks.constructEvent(rawBody, signature, env.stripeWebhookSecret);
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(rawBody, signature, env.stripeWebhookSecret);
+  } catch {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'Invalid Stripe signature');
+  }
 
   const existing = await db
     .select()

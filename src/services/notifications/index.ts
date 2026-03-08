@@ -4,7 +4,7 @@ import logger from '../../utils/logger';
 
 const env = getEnvConfig();
 
-const canSendEmail = () => Boolean(env.resendApiKey && env.resendFromEmail);
+const canSendEmail = () => Boolean(resend && env.resendApiKey && env.resendFromEmail);
 
 const sendEmail = async (subject: string, html: string, to: string) => {
   if (!canSendEmail()) {
@@ -12,7 +12,7 @@ const sendEmail = async (subject: string, html: string, to: string) => {
     return;
   }
 
-  await resend.emails.send({
+  await resend!.emails.send({
     from: env.resendFromEmail,
     to,
     subject,

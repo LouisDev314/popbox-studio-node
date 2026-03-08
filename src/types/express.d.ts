@@ -3,12 +3,18 @@ import type { Logger } from 'pino';
 import 'express';
 
 type ResponseContent = unknown;
+type ValidatedRequestState = {
+  body?: unknown;
+  query?: unknown;
+  params?: unknown;
+};
 
 declare global {
   namespace Express {
     interface Request {
       id: string;
       log: Logger;
+      validated: ValidatedRequestState;
       authUser?: {
         id: string;
         email: string;

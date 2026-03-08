@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { Server } from 'http';
 import responseInterceptor from './middleware/response-interceptor';
 import getEnvConfig from './config/env';
@@ -15,8 +14,7 @@ import { pinoHttp } from 'pino-http';
 import healthRouter from './routes/v1/health-router';
 import { globalLimiter } from './middleware/rate-limit';
 import { startBackgroundJobs } from './jobs';
-
-dotenv.config();
+import { verifyDatabaseConnection } from './db';
 
 /* -------------------------Setup variables------------------------- */
 const { port, corsOrigin } = getEnvConfig();
@@ -26,10 +24,8 @@ let stopBackgroundJobs: (() => void) | null = null;
 
 /* -------------------------Setup Express middleware------------------------- */
 responseInterceptor();
+app.disable('x-powered-by');
 app.use(requestId());
-app.use('/v1/webhooks/stripe', express.raw({ type: 'application/json' }));
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
 // Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
 app.set('trust proxy', 1);
 app.use(pinoHttp());
@@ -49,6 +45,9 @@ app.use(
 
 // Rate limiting
 app.use(globalLimiter);
+app.use('/v1/webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(rootRouter);
 app.use('/health', healthRouter);
 app.use(notFoundHandler);
@@ -56,7 +55,7 @@ app.use(exceptionHandler);
 
 /* -------------------------Init------------------------- */
 const applicationBootstrap = async () => {
-  // Potential task/service to start
+  await verifyDatabaseConnection();
   stopBackgroundJobs = startBackgroundJobs();
 };
 
@@ -75,6 +74,12 @@ const start = async () => {
 /* -------------------------Graceful Shutdown------------------------- */
 const stop = async () => {
   try {
+    if (!server?.listening) {
+      stopBackgroundJobs?.();
+      logger.info('Server down successfully');
+      process.exit(0);
+    }
+
     await Promise.race([
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));

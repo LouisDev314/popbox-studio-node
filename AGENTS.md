@@ -2,28 +2,24 @@
 
 ## Project purpose
 
-This project is a production-ready single-vendor B2C e-commerce platform for a real store that sells:
+This repository is the backend-only codebase for a production-minded single-vendor B2C anime merchandise store. It is intended to replace Shopify for a real store, so decisions must prioritize correctness, maintainability, operational simplicity, and interview-explainable tradeoffs.
 
-- Ichiban Kuji
-- anime figures
-- plushies
-- cards
-- standard merchandise
+---
 
-It is intended to replace Shopify for a real store, so implementation decisions must prioritize correctness, maintainability, and operational simplicity.
+## Repo direction
+
+- Backend only in this repo.
+- Storefront and admin clients are external consumers and may live in separate repos.
+- Do not scaffold, regenerate, or polish frontend/UI code here unless a backend contract or document cannot be kept accurate without it.
+- Prefer API contracts, OpenAPI, Postman collections, and backend verification over any UI work.
 
 ---
 
 ## Core tech stack
 
-### Frontend
-- Next.js
-- TypeScript
-- Tailwind CSS
-
 ### Backend
-- Express.js API
-- Prefer TypeScript if the existing backend already uses it
+- Express.js
+- TypeScript
 - Modular but simple structure
 
 ### Database / auth / storage
@@ -36,12 +32,17 @@ It is intended to replace Shopify for a real store, so implementation decisions 
 - Stripe Tax
 - Resend
 
+### API tooling
+- OpenAPI
+- Postman collections for request verification
+
 ---
 
 ## Non-goals
 
 Do **not** add any of the following unless explicitly requested:
 
+- frontend app work in this repo
 - GraphQL
 - Redis
 - microservices
@@ -62,15 +63,15 @@ Do **not** add any of the following unless explicitly requested:
 ## Project-wide implementation rules
 
 1. Inspect the existing repo structure before making changes.
-2. Reuse the current folder structure, naming, middleware style, interceptor/response wrapper style, and error handling conventions.
+2. Reuse the current route, middleware, response wrapper, and error handling style.
 3. Do not invent a new architecture if the repo already has a reasonable one.
-4. Keep code clean, production-ready, and interview-explainable.
-5. Prefer simple, practical solutions over abstract or generic frameworks.
-6. Do not rewrite stable code without clear need.
-7. Do not broaden scope beyond the current milestone.
-8. Complete the current milestone cleanly before starting the next one.
-9. If a decision is needed, prefer the simpler production-ready option.
-10. Preserve the user’s existing response body shape and error response format.
+4. Keep code production-ready and explainable.
+5. Prefer simple, practical solutions over abstraction-heavy ones.
+6. Do not rewrite stable code without a clear need.
+7. Do not broaden scope beyond the current backend milestone.
+8. Preserve the existing response body shape and error response format.
+9. Prefer env-driven integration boundaries over repo-local assumptions.
+10. Use Supabase MCP and Postman MCP for real verification when available.
 
 ---
 
@@ -87,9 +88,9 @@ Do **not** add any of the following unless explicitly requested:
 - Canada-only shipping for MVP.
 - Shipping only, no local pickup.
 
-### Cart and wishlist
-- Cart is frontend-only (localStorage) for MVP.
-- Wishlist is frontend-only (localStorage) for MVP.
+### Client-owned cart and wishlist
+- Cart is client-owned for MVP.
+- Wishlist is client-owned for MVP.
 - Do not build DB-backed carts in MVP.
 
 ---
@@ -110,9 +111,9 @@ Do not add other product types unless explicitly requested.
 - Use PostgreSQL full-text search with `search_vector`
 - Use trigram fuzzy search on product name
 - Weighted relevance priority:
-    1. product name
-    2. tags
-    3. description
+  1. product name
+  2. tags
+  3. description
 
 ---
 
@@ -122,9 +123,9 @@ Do not add other product types unless explicitly requested.
 2. Product quantity selected at checkout equals number of draws.
 3. No bundle pricing in MVP.
 4. On successful payment:
-    - allocate tickets immediately
-    - assign prizes immediately
-    - decrement prize pool immediately
+   - allocate tickets immediately
+   - assign prizes immediately
+   - decrement prize pool immediately
 5. Reveal later only updates `revealed_at`.
 6. Unrevealed tickets must not expose prize details yet.
 7. Reveal endpoints should be idempotent.
@@ -140,8 +141,8 @@ Do not add other product types unless explicitly requested.
 5. Pending order cleanup runs every 10 minutes.
 6. Stripe webhook is the source of truth for payment success.
 7. If payment succeeds after reservation expiry or inventory cannot be finalized safely:
-    - mark order as `paid_needs_attention`
-    - do not silently corrupt inventory state
+   - mark order as `paid_needs_attention`
+   - do not silently corrupt inventory state
 
 ---
 
@@ -149,8 +150,8 @@ Do not add other product types unless explicitly requested.
 
 ### Admin
 - Verify Supabase JWT in backend
-- Check admin role in DB
-- Never trust frontend role flags
+- Check admin role in `public.users`
+- Never trust client-side role flags
 
 ### Guest order access
 - Use secure guest order links
@@ -158,8 +159,8 @@ Do not add other product types unless explicitly requested.
 - Do not store plaintext guest access token
 
 ### Backend internal privileges
-- Backend may use Supabase secret key internally for privileged server operations
-- Do not use secret key itself as the admin caller credential
+- Backend may use the Supabase service role key internally for privileged server operations
+- Do not use the service role key itself as the admin caller credential
 
 ---
 
@@ -211,7 +212,7 @@ Core MVP tables expected:
 - shipments
 - stripe_webhook_events
 
-Do not add unnecessary extra tables unless required by the current milestone.
+Do not add unnecessary extra tables unless required by a proven backend gap.
 
 ---
 
@@ -242,10 +243,8 @@ Do not add extra email logging tables in MVP unless explicitly requested.
 
 Use Supabase Storage for product images.
 Store durable storage paths in `product_images.storage_key`.
-
-Prefer secure/signed upload flow if it fits the existing project style.
-
 Validate upload size and file type.
+If the target bucket is missing, document it as a blocker instead of assuming uploads are ready.
 
 ---
 
@@ -256,8 +255,9 @@ Implement practical production basics only:
 - structured logging
 - Stripe webhook verification
 - idempotent webhook processing
-- rate limiting using existing project pattern
+- rate limiting using the existing pattern
 - migration-based schema changes
+- fail-fast startup when required integrations are misconfigured
 
 Do not add a heavy observability platform unless already present.
 
@@ -265,10 +265,10 @@ Do not add a heavy observability platform unless already present.
 
 ## Delivery expectation per thread
 
-For each implementation thread:
 1. Read this file first.
 2. Read `PLAN.md`.
-3. Execute only the requested milestone.
-4. Do not begin future milestones unless explicitly instructed.
+3. Stay inside the requested backend milestone.
+4. Do not begin future product milestones unless explicitly instructed.
 5. Keep changes consistent with the existing project style.
-6. Leave concise notes on what remains for the next milestone if useful.
+6. Verify behavior with local commands plus MCP-backed checks when possible.
+7. Leave concise notes on remaining blockers if useful.

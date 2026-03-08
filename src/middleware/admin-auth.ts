@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { RequestHandler } from 'express';
+import type { JWTPayload } from 'jose';
 import getEnvConfig from '../config/env';
 import { db } from '../db';
 import { users } from '../db/schema';
@@ -10,12 +10,35 @@ import retrieveToken from '../utils/retrieve-token';
 
 const env = getEnvConfig();
 const issuer = `${env.supabaseUrl}/auth/v1`;
-const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
+let joseModulePromise: Promise<typeof import('jose')> | null = null;
+let jwksPromise: Promise<ReturnType<(typeof import('jose'))['createRemoteJWKSet']>> | null = null;
+
+const loadJose = async () => {
+  if (!joseModulePromise) {
+    joseModulePromise = import('jose');
+  }
+
+  return joseModulePromise;
+};
+
+const getJwks = async () => {
+  if (!jwksPromise) {
+    jwksPromise = loadJose().then(({ createRemoteJWKSet }) =>
+      createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`)),
+    );
+  }
+
+  return jwksPromise;
+};
 
 const readEmail = (claims: JWTPayload) => {
   const email = claims.email;
   return typeof email === 'string' ? email : '';
 };
+
+const isJoseAuthenticationError = (error: unknown) =>
+  error instanceof Error &&
+  (error.name.startsWith('JOSE') || error.name.startsWith('JWS') || error.name.startsWith('JWT'));
 
 const requireAdminAuth: RequestHandler = async (req, _res, next) => {
   try {
@@ -25,6 +48,7 @@ const requireAdminAuth: RequestHandler = async (req, _res, next) => {
     }
 
     const token = retrieveToken(String(authHeader));
+    const [{ jwtVerify }, jwks] = await Promise.all([loadJose(), getJwks()]);
     const { payload } = await jwtVerify(token, jwks, {
       issuer,
       audience: 'authenticated',
@@ -54,6 +78,11 @@ const requireAdminAuth: RequestHandler = async (req, _res, next) => {
 
     next();
   } catch (error) {
+    if (!(error instanceof Exception) && isJoseAuthenticationError(error)) {
+      next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token'));
+      return;
+    }
+
     next(error);
   }
 };

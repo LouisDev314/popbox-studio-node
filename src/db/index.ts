@@ -16,4 +16,12 @@ export const db = drizzle(pg, {
   schema,
 });
 
+export const verifyDatabaseConnection = async () => {
+  if (!getEnvConfig().databaseUrl) {
+    throw new Error('DATABASE_URL is not configured');
+  }
+
+  await pg`select 1`;
+};
+
 export { sql, schema };

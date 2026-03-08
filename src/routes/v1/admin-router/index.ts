@@ -32,6 +32,8 @@ import {
   updateAdminOrderStatus,
   updateShipment,
 } from '../../../services/orders';
+import { ORDER_STATUSES } from '../../../utils/order-status';
+import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 
 const adminRouter: Router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -117,7 +119,7 @@ const kujiPrizeParamsSchema = z.object({
 });
 
 const adminOrderQuerySchema = paginationQuerySchema.extend({
-  status: z.string().optional(),
+  status: z.enum(ORDER_STATUSES).optional(),
 });
 
 const adminOrderParamsSchema = z.object({
@@ -125,15 +127,17 @@ const adminOrderParamsSchema = z.object({
 });
 
 const orderStatusBodySchema = z.object({
-  status: z.string().min(1),
+  status: z.enum(ORDER_STATUSES),
 });
+
+const dateTimeStringSchema = z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Invalid datetime string');
 
 const shipmentBodySchema = z.object({
   carrierName: z.string().optional().nullable(),
   trackingNumber: z.string().optional().nullable(),
   trackingUrl: z.string().url().optional().nullable(),
-  shippedAt: z.string().optional().nullable(),
-  deliveredAt: z.string().optional().nullable(),
+  shippedAt: dateTimeStringSchema.optional().nullable(),
+  deliveredAt: dateTimeStringSchema.optional().nullable(),
 });
 
 const refundBodySchema = z.object({
@@ -143,12 +147,14 @@ const refundBodySchema = z.object({
 adminRouter.use(requireAdminAuth);
 
 adminRouter.get('/products', validateQuery(productListQuerySchema, 'admin product filters'), async (req, res) => {
-  const result = await listAdminProducts(req.query);
+  const query = readValidatedQuery<Parameters<typeof listAdminProducts>[0]>(req);
+  const result = await listAdminProducts(query);
   return res.send_ok('Admin products retrieved', result);
 });
 
 adminRouter.post('/products', validateBody(productBodySchema, 'admin product creation'), async (req, res) => {
-  const result = await createProduct(req.body);
+  const body = readValidatedBody<Parameters<typeof createProduct>[0]>(req);
+  const result = await createProduct(body);
   return res.send_created('Product created', result);
 });
 
@@ -157,7 +163,9 @@ adminRouter.patch(
   validateParams(productIdParamsSchema, 'product id'),
   validateBody(productPatchBodySchema, 'admin product update'),
   async (req, res) => {
-    const result = await updateProduct(String(req.params.id), req.body);
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateProduct>[1]>(req);
+    const result = await updateProduct(params.id, body);
     return res.send_ok('Product updated', result);
   },
 );
@@ -167,11 +175,13 @@ adminRouter.post(
   validateParams(productIdParamsSchema, 'product id'),
   upload.single('file'),
   async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+
     if (!req.file) {
       return res.send_badRequest('Image file is required');
     }
 
-    const result = await uploadProductImage(String(req.params.id), req.file, typeof req.body.altText === 'string' ? req.body.altText : null);
+    const result = await uploadProductImage(params.id, req.file, typeof req.body.altText === 'string' ? req.body.altText : null);
     return res.send_created('Product image uploaded', result);
   },
 );
@@ -181,13 +191,16 @@ adminRouter.patch(
   validateParams(productIdParamsSchema, 'product id'),
   validateBody(imageReorderBodySchema, 'image reorder'),
   async (req, res) => {
-    const result = await reorderProductImages(String(req.params.id), req.body.imageIds);
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const body = readValidatedBody<z.infer<typeof imageReorderBodySchema>>(req);
+    const result = await reorderProductImages(params.id, body.imageIds);
     return res.send_ok('Product images reordered', result);
   },
 );
 
 adminRouter.delete('/products/:id/images/:imageId', validateParams(productImageParamsSchema, 'product image'), async (req, res) => {
-  const result = await deleteProductImage(String(req.params.id), String(req.params.imageId));
+  const params = readValidatedParams<z.infer<typeof productImageParamsSchema>>(req);
+  const result = await deleteProductImage(params.id, params.imageId);
   return res.send_ok('Product image deleted', result);
 });
 
@@ -196,13 +209,16 @@ adminRouter.patch(
   validateParams(productIdParamsSchema, 'product id'),
   validateBody(inventoryBodySchema, 'inventory update'),
   async (req, res) => {
-    const result = await updateStandardInventory(String(req.params.id), req.body);
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateStandardInventory>[1]>(req);
+    const result = await updateStandardInventory(params.id, body);
     return res.send_ok('Inventory updated', result);
   },
 );
 
 adminRouter.get('/products/:id/kuji-prizes', validateParams(productIdParamsSchema, 'product id'), async (req, res) => {
-  const result = await listKujiPrizes(String(req.params.id));
+  const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+  const result = await listKujiPrizes(params.id);
   return res.send_ok('Kuji prizes retrieved', result);
 });
 
@@ -211,7 +227,9 @@ adminRouter.post(
   validateParams(productIdParamsSchema, 'product id'),
   validateBody(kujiPrizeBodySchema, 'kuji prize creation'),
   async (req, res) => {
-    const result = await createKujiPrize(String(req.params.id), req.body);
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof createKujiPrize>[1]>(req);
+    const result = await createKujiPrize(params.id, body);
     return res.send_created('Kuji prize created', result);
   },
 );
@@ -221,13 +239,16 @@ adminRouter.patch(
   validateParams(kujiPrizeParamsSchema, 'kuji prize'),
   validateBody(kujiPrizePatchBodySchema, 'kuji prize update'),
   async (req, res) => {
-    const result = await updateKujiPrize(String(req.params.id), String(req.params.prizeId), req.body);
+    const params = readValidatedParams<z.infer<typeof kujiPrizeParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateKujiPrize>[2]>(req);
+    const result = await updateKujiPrize(params.id, params.prizeId, body);
     return res.send_ok('Kuji prize updated', result);
   },
 );
 
 adminRouter.delete('/products/:id/kuji-prizes/:prizeId', validateParams(kujiPrizeParamsSchema, 'kuji prize'), async (req, res) => {
-  const result = await deleteKujiPrize(String(req.params.id), String(req.params.prizeId));
+  const params = readValidatedParams<z.infer<typeof kujiPrizeParamsSchema>>(req);
+  const result = await deleteKujiPrize(params.id, params.prizeId);
   return res.send_ok('Kuji prize deleted', result);
 });
 
@@ -237,7 +258,8 @@ adminRouter.get('/collections', async (_req, res) => {
 });
 
 adminRouter.post('/collections', validateBody(collectionBodySchema, 'collection creation'), async (req, res) => {
-  const result = await createCollection(req.body);
+  const body = readValidatedBody<Parameters<typeof createCollection>[0]>(req);
+  const result = await createCollection(body);
   return res.send_created('Collection created', result);
 });
 
@@ -246,7 +268,9 @@ adminRouter.patch(
   validateParams(collectionParamsSchema, 'collection id'),
   validateBody(collectionPatchBodySchema, 'collection update'),
   async (req, res) => {
-    const result = await updateCollection(String(req.params.id), req.body);
+    const params = readValidatedParams<z.infer<typeof collectionParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateCollection>[1]>(req);
+    const result = await updateCollection(params.id, body);
     return res.send_ok('Collection updated', result);
   },
 );
@@ -257,22 +281,27 @@ adminRouter.get('/tags', async (_req, res) => {
 });
 
 adminRouter.post('/tags', validateBody(tagBodySchema, 'tag creation'), async (req, res) => {
-  const result = await createTag(req.body);
+  const body = readValidatedBody<Parameters<typeof createTag>[0]>(req);
+  const result = await createTag(body);
   return res.send_created('Tag created', result);
 });
 
 adminRouter.patch('/tags/:id', validateParams(collectionParamsSchema, 'tag id'), validateBody(tagPatchBodySchema, 'tag update'), async (req, res) => {
-  const result = await updateTag(String(req.params.id), req.body);
+  const params = readValidatedParams<z.infer<typeof collectionParamsSchema>>(req);
+  const body = readValidatedBody<Parameters<typeof updateTag>[1]>(req);
+  const result = await updateTag(params.id, body);
   return res.send_ok('Tag updated', result);
 });
 
 adminRouter.get('/orders', validateQuery(adminOrderQuerySchema, 'admin order filters'), async (req, res) => {
-  const result = await listAdminOrders(req.query);
+  const query = readValidatedQuery<Parameters<typeof listAdminOrders>[0]>(req);
+  const result = await listAdminOrders(query);
   return res.send_ok('Orders retrieved', result);
 });
 
 adminRouter.get('/orders/:id', validateParams(adminOrderParamsSchema, 'order id'), async (req, res) => {
-  const result = await getAdminOrder(String(req.params.id));
+  const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+  const result = await getAdminOrder(params.id);
   return res.send_ok('Order retrieved', result);
 });
 
@@ -281,7 +310,9 @@ adminRouter.patch(
   validateParams(adminOrderParamsSchema, 'order id'),
   validateBody(orderStatusBodySchema, 'order status update'),
   async (req, res) => {
-    const result = await updateAdminOrderStatus(String(req.params.id), req.body.status);
+    const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+    const body = readValidatedBody<z.infer<typeof orderStatusBodySchema>>(req);
+    const result = await updateAdminOrderStatus(params.id, body.status);
     return res.send_ok('Order status updated', result);
   },
 );
@@ -291,7 +322,9 @@ adminRouter.patch(
   validateParams(adminOrderParamsSchema, 'order id'),
   validateBody(shipmentBodySchema, 'shipment update'),
   async (req, res) => {
-    const result = await updateShipment(String(req.params.id), req.body);
+    const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateShipment>[1]>(req);
+    const result = await updateShipment(params.id, body);
     return res.send_ok('Shipment updated', result);
   },
 );
@@ -301,13 +334,16 @@ adminRouter.post(
   validateParams(adminOrderParamsSchema, 'order id'),
   validateBody(refundBodySchema, 'order refund'),
   async (req, res) => {
-    const result = await refundOrder(String(req.params.id), req.body.reason);
+    const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+    const body = readValidatedBody<z.infer<typeof refundBodySchema>>(req);
+    const result = await refundOrder(params.id, body.reason);
     return res.send_ok('Order refunded', result);
   },
 );
 
 adminRouter.get('/customers', validateQuery(paginationQuerySchema, 'customer filters'), async (req, res) => {
-  const result = await listCustomers(req.query);
+  const query = readValidatedQuery<Parameters<typeof listCustomers>[0]>(req);
+  const result = await listCustomers(query);
   return res.send_ok('Customers retrieved', result);
 });
 

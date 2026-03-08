@@ -250,7 +250,11 @@ const mapProduct = (product: ProductRow, relations: ProductRelationMaps) => {
 };
 
 export const listCollections = async () => {
-  const rows = await db.select().from(collections).orderBy(asc(collections.sortOrder), asc(collections.id));
+  const rows = await db
+    .select()
+    .from(collections)
+    .where(eq(collections.isActive, true))
+    .orderBy(asc(collections.sortOrder), asc(collections.id));
   return rows.map((collection) => ({
     id: collection.id,
     name: collection.name,

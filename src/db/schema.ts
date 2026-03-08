@@ -1,11 +1,12 @@
-import { customType } from 'drizzle-orm/pg-core';
 import {
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
   pgEnum,
+  pgSchema,
   pgTable,
   primaryKey,
   text,
@@ -24,6 +25,8 @@ const tsvector = customType<{ data: string }>({
 
 const createdAtColumn = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 const updatedAtColumn = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
+
+const authSchema = pgSchema('auth');
 
 export const userRoleEnum = pgEnum('user_role', ['admin', 'customer']);
 export const productTypeEnum = pgEnum('product_type', ['standard', 'kuji']);
@@ -48,10 +51,16 @@ export const paymentProviderEnum = pgEnum('payment_provider', ['stripe']);
 export const paymentStatusEnum = pgEnum('payment_status', ['pending', 'paid', 'failed', 'refunded']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['received', 'processed', 'failed']);
 
+const authUsers = authSchema.table('users', {
+  id: uuid('id').primaryKey(),
+});
+
 export const users = pgTable(
   'users',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
+    id: uuid('id')
+      .primaryKey()
+      .references(() => authUsers.id, { onDelete: 'cascade' }),
     email: varchar('email', { length: 320 }).notNull(),
     role: userRoleEnum('role').notNull().default('customer'),
     createdAt: createdAtColumn(),

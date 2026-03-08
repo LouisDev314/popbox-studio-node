@@ -6,7 +6,7 @@ import HttpStatusCode from '../constant/http-status-code';
 const validateParams = <T extends ZodType>(schema: T, errMsg: string) => {
   return (req: Request, _res: Response, next: NextFunction) => {
     try {
-      req.params = schema.parse(req.params) as Request['params'];
+      req.validated.params = schema.parse(req.params);
       next();
     } catch (err) {
       if (err instanceof ZodError) {

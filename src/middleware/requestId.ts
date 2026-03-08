@@ -7,7 +7,6 @@ type Options = {
   headerName?: string; // incoming/outgoing header
 };
 
-// TODO: not sure if this is the right way to implement
 const requestId = (options: Options = {}) => {
   const headerName = options.headerName ?? 'x-request-id';
 
@@ -18,6 +17,7 @@ const requestId = (options: Options = {}) => {
     const id = (incoming && String(incoming).trim()) || randomUUID();
 
     req.id = id;
+    req.validated = {};
     res.setHeader(headerName, id);
 
     // attach request-scoped logger (pino-style child loggers supported)

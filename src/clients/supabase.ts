@@ -3,18 +3,9 @@ import getEnvConfig from '../config/env';
 
 const env = getEnvConfig();
 
-export const supabaseAdmin = createClient(env.supabaseUrl, env.supabaseSecretKey, {
+export const supabaseAdmin = createClient(env.supabaseUrl, env.supabaseServiceRoleKey, {
   auth: {
     persistSession: false,
     autoRefreshToken: false,
   },
 });
-
-export const createPublicSupabaseClient = () => {
-  return createClient(env.supabaseUrl, env.supabasePublicKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-};

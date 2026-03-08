@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import stripe from '../../clients/stripe';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
@@ -13,7 +13,7 @@ import {
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constant/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
-import { assertOrderStatusTransition } from '../../utils/order-status';
+import { assertOrderStatusTransition, type OrderStatus } from '../../utils/order-status';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './shared';
 import { sendShipmentEmail } from '../notifications';
 
@@ -83,10 +83,10 @@ export const revealAllTickets = async (orderId: string) => {
   return getGuestTicketView((await getOrderDetailById(orderId)).publicId);
 };
 
-export const listAdminOrders = async (filters: { status?: string; cursor?: string; limit?: number }) => {
+export const listAdminOrders = async (filters: { status?: OrderStatus; cursor?: string; limit?: number }) => {
   const limit = clampLimit(filters.limit);
   const cursor = decodeCursor<OrdersCursor>(filters.cursor);
-  const conditions = filters.status ? [eq(orders.status, filters.status as typeof orders.$inferSelect.status)] : [];
+  const conditions = filters.status ? [eq(orders.status, filters.status)] : [];
 
   if (cursor) {
     conditions.push(
@@ -139,7 +139,7 @@ export const getAdminOrder = async (orderId: string) => {
   return getOrderDetailById(orderId);
 };
 
-export const updateAdminOrderStatus = async (orderId: string, nextStatus: string) => {
+export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
 
   if (!order) {
@@ -149,7 +149,7 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: string
   assertOrderStatusTransition(order.status, nextStatus);
 
   const updateValues: Partial<typeof orders.$inferInsert> = {
-    status: nextStatus as typeof order.status,
+    status: nextStatus,
   };
 
   if (nextStatus === 'cancelled') updateValues.cancelledAt = new Date();
@@ -198,7 +198,7 @@ export const updateShipment = async (
     await updateAdminOrderStatus(orderId, 'shipped');
   }
 
-  const orderUrl = `${env.frontendBaseUrl}/orders/${detail.publicId}`;
+  const orderUrl = `${env.customerAppBaseUrl}/orders/${detail.publicId}`;
   await sendShipmentEmail({
     email: detail.customer.email,
     firstName: detail.customer.firstName,

@@ -2,15 +2,15 @@
 
 ## Objective
 
-Build the production-ready MVP of a single-vendor B2C anime merchandise e-commerce platform with:
+Maintain and verify the backend-only MVP of a single-vendor B2C anime merchandise e-commerce platform with:
 
-- real Stripe checkout
-- Supabase-backed catalog/inventory/orders
+- Stripe checkout
+- Supabase-backed catalog, inventory, and orders
 - Kuji ticket allocation and reveal flow
 - guest order access
-- admin product/order management
+- admin product and order management
 
-This plan is intentionally split into milestones so Codex can execute them in separate threads without exhausting context.
+Frontend work is out of scope for this repository.
 
 ---
 
@@ -20,321 +20,234 @@ This plan is intentionally split into milestones so Codex can execute them in se
 2. Only execute the milestone explicitly requested in the current thread.
 3. Do not start later milestones early.
 4. Keep implementation aligned with the repo’s existing code style and architecture.
-5. Prefer finishing one milestone cleanly over partially scaffolding several.
+5. Prefer honest verification over milestone claiming.
+6. Do not create live fixtures in the production-target Supabase project unless explicitly approved with a cleanup plan.
 
 ---
 
-# Milestone 1 — Foundation and schema
+## Verification Snapshot on March 8, 2026
 
-## Goal
-Establish the backend/data foundation for the full project.
+### Supabase MCP
 
-## Scope
-- Inspect repo structure and existing backend conventions
-- Add/update database schema and migrations for the agreed MVP tables
-- Add shared enums/types/constants if needed
-- Wire route/module registration for new domains
-- Add auth middleware integration skeleton
-- Add admin guard middleware
-- Add Stripe/Resend/Supabase service wiring skeletons if needed
-- Add `search_vector` and required indexes
-- Add trigram extension/index if needed
+- Verified project `bpclnekuanwtojarniyc` is `ACTIVE_HEALTHY`.
+- Verified the public schema has 17 tables.
+- Verified `pgcrypto` and `pg_trgm` are installed.
+- Verified `products_search_vector_gin_idx` and `products_name_trgm_gin_idx` exist.
+- Verified search refresh triggers exist on `products`, `product_tags`, and `tags`.
+- Verified auth baseline counts:
+  - `auth.users = 1`
+  - `public.users = 1`
+  - `public.users.role = 'admin'` count is `1`
+- Verified storage baseline:
+  - bucket `product-images` exists and is public
+  - file size limit is `5242880`
+  - allowed MIME types are `image/jpeg`, `image/png`, `image/webp`, `image/avif`
+- Verified empty-state data counts:
+  - `collections = 0`
+  - `products = 0`
+  - `orders = 0`
+  - `product_images = 0`
+  - `storage.objects = 0`
 
-## Included tables
-- users
-- customers
-- addresses
-- collections
-- tags
-- products
-- product_tags
-- product_images
-- product_inventory
-- inventory_reservations
-- kuji_prizes
-- orders
-- order_items
-- payments
-- tickets
-- shipments
-- stripe_webhook_events
+### Postman MCP
 
-## Not in scope
-- full business logic
-- frontend pages
-- Stripe checkout logic
-- cron jobs
-- reveal endpoints
-- admin CRUD behavior beyond scaffolding
+- `POSTMAN_GET_ALL_APIS` returned no accessible APIs.
+- A workspace spec lookup returned `403`, so Postman MCP is not currently a usable source of truth for contracts in this repo.
+- `openapi.yaml` remains the contract source until Postman access changes.
 
-## Definition of done
-- Schema/migrations are coherent
-- Backend compiles/boots
-- New modules/routes are registered cleanly
-- Search/index foundations are in place
-- No unrelated features started
+### Local Runtime
 
----
+- Verified `pnpm -s build` succeeds.
+- Verified `node dist/index.js` boots successfully.
+- Verified the mounted public route surface is `/v1/...`, not `/api/v1/...`.
+- Verified:
+  - `GET /health`
+  - `GET /v1/home`
+  - `GET /v1/collections`
+  - `GET /v1/tags`
+  - `GET /v1/products`
+  - `GET /v1/search?q=aa`
+  - `GET /v1/products/not-a-real-slug`
+- Verified failure-path behavior:
+  - `GET /v1/search?q=a` returns wrapped `400`
+  - malformed JSON on `POST /v1/checkout/session` returns wrapped `400`
+  - invalid guest order token returns `401`
+  - missing admin auth returns `401`
+  - malformed or expired admin JWT returns `401`
+  - invalid Stripe signature returns `400`
 
-# Milestone 2 — Catalog, search, and admin catalog management
+### Verification Limits
 
-## Goal
-Make products manageable and browsable.
-
-## Scope
-### Public/storefront APIs
-- `GET /v1/home`
-- `GET /v1/collections`
-- `GET /v1/tags`
-- `GET /v1/products`
-- `GET /v1/products/:slug`
-- `GET /v1/search`
-
-### Admin APIs
-- products CRUD
-- collections CRUD
-- tags CRUD
-- product image attach/reorder/delete
-- inventory update
-- kuji prize CRUD
-
-## Business requirements
-- products support `standard` and `kuji`
-- collections and tags power filtering
-- product detail includes Kuji prize info when applicable
-- home endpoint returns:
-    - New Drops
-    - Trending Now
-    - All Products preview
-- search uses `search_vector` + trigram
-
-## Not in scope
-- checkout
-- reservations
-- Stripe
-- guest order flow
-- refunds
-- cron jobs
-
-## Definition of done
-- Catalog APIs are usable from Postman
-- Admin can create a Kuji product and set prize pool
-- Search and filters work
-- Product image metadata flow is implemented
-- Public product browsing is functional
+- No live catalog fixtures were created in the production-target Supabase project.
+- No live checkout session, webhook delivery, paid order, ticket allocation, shipment, or refund flow was exercised in this audit.
+- A previously used admin JWT is now expired, so no admin happy-path read/write claim is carried forward from this pass.
 
 ---
 
-# Milestone 3 — Checkout, reservations, payments, and Kuji allocation
+# Milestone 1 — Foundation, Schema, and Backend-Only Baseline
 
-## Goal
-Implement the core money flow safely.
+## Status
+Verified.
 
-## Scope
-### Public APIs
-- `POST /v1/checkout/session`
-- `GET /v1/checkout/success`
+## What is true
 
-### System API
-- `POST /v1/webhooks/stripe`
+- The repo is backend-only again in active structure.
+- The Drizzle schema and SQL migrations cover the expected MVP tables.
+- The live Supabase project matches the core schema assumptions, extensions, and search indexes.
+- The production start path now works again:
+  - CommonJS output no longer crashes on `jose`
+  - the server boots
+  - the documented `/v1/...` route surface matches the runtime
+- Configuration cleanup removed clearly misleading boundaries:
+  - unused `ADMIN_APP_BASE_URL`
+  - unused public Supabase client/env plumbing
+  - unsafe defaults for `CUSTOMER_APP_BASE_URL`
+  - unsafe default shipping price
 
-### Jobs
-- reservation cleanup
-- pending order cleanup
+## Remaining notes
 
-## Required business flow
-1. Validate checkout request
-2. Create/find customer
-3. Create pending order
-4. Create order items
-5. Create inventory reservations with 10-minute TTL
-6. Increment reserved stock
-7. Create Stripe Checkout Session
-8. Persist Stripe session id
-9. On webhook success:
-    - verify webhook signature
-    - dedupe via webhook events table
-    - create/update payment
-    - convert reservations
-    - decrement on_hand and reserved
-    - mark order paid
-    - allocate Kuji tickets using weighted draw
-    - send order confirmation email with secure order link
-
-## Critical requirements
-- use DB transactions
-- use safe locking during Kuji allocation
-- mark `paid_needs_attention` if payment finalization cannot complete safely
-- keep handlers idempotent
-
-## Not in scope
-- frontend pages beyond what is absolutely needed for integration
-- admin refund flow
-- guest reveal flow
-
-## Definition of done
-- Checkout session endpoint works
-- Stripe webhook flow is implemented
-- Reservation lifecycle works
-- Kuji allocation works
-- Confirmation email flow is wired
+- Foundation is verified for build, boot, schema, and mounted route shape.
+- Later milestones still depend on real catalog/order/payment data and external integrations.
 
 ---
 
-# Milestone 4 — Guest order access and reveal flow
+# Milestone 2 — Catalog, Search, and Admin Catalog Management
 
-## Goal
-Allow customers to revisit orders and reveal tickets later.
+## Status
+Partially verified.
 
-## Scope
-### Public APIs
-- `GET /v1/orders/:publicId`
-- `GET /v1/orders/:publicId/tickets`
-- `POST /v1/orders/:publicId/tickets/:ticketId/reveal`
-- `POST /v1/orders/:publicId/tickets/reveal-all`
+## What is true
 
-## Requirements
-- guest access token must be required
-- token hash stored in DB
-- order page can be accessed later through emailed secure link
-- unrevealed tickets do not expose prize info
-- reveal one / reveal all are idempotent
-- revealed tickets expose prize info
-- support revealed/unrevealed separation cleanly
+- Public catalog read routes are implemented.
+- Empty-state behavior is verified for:
+  - `GET /v1/home`
+  - `GET /v1/collections`
+  - `GET /v1/tags`
+  - `GET /v1/products`
+  - `GET /v1/products/:slug` not-found behavior
+  - `GET /v1/search`
+- Public search validation is verified.
+- Admin catalog CRUD, inventory updates, and kuji prize CRUD are implemented in code.
+- Product image upload/delete code now fails honestly when the configured bucket is missing instead of pretending readiness.
 
-## Not in scope
-- customer accounts/order history
-- returns/refunds UI
+## What is not verified
 
-## Definition of done
-- guest order lookup works securely
-- ticket listing works
-- reveal one works
-- reveal all works
+- No admin happy-path catalog request was re-verified in this audit because a current live admin JWT was not available.
+- No live catalog fixtures exist in the target Supabase project.
+- Product image upload/delete happy paths were not exercised against a disposable storage fixture.
 
----
+## What blocks completion
 
-# Milestone 5 — Admin orders, shipment, and refund exception flow
-
-## Goal
-Enable real operational management of orders.
-
-## Scope
-### Admin APIs
-- `GET /v1/admin/orders`
-- `GET /v1/admin/orders/:id`
-- `PATCH /v1/admin/orders/:id/status`
-- `PATCH /v1/admin/orders/:id/shipment`
-- `POST /v1/admin/orders/:id/refund`
-- `GET /v1/admin/customers`
-
-## Requirements
-- enforce sensible order status transitions
-- shipment update supports:
-    - carrier name
-    - tracking number
-    - tracking URL
-- shipped email sent on shipment update
-- refund is full-refund only
-- refund is admin-only exceptional path
-- refunded Kuji tickets are voided
-
-## Definition of done
-- admin can operate order lifecycle
-- admin can refund exceptional cases
-- shipment flow is usable
+- Current live admin JWT for manual admin-route verification.
+- Approved disposable catalog/storage fixtures for create/update/image flows.
 
 ---
 
-# Milestone 6 — Frontend storefront and guest pages
+# Milestone 3 — Checkout, Reservations, Payments, and Kuji Allocation
 
-## Goal
-Make the MVP usable through the frontend.
+## Status
+Blocked.
 
-## Scope
-### Frontend pages
-- home page
-- product listing page
-- product detail page
-- cart page
-- checkout success page
-- guest order page `/orders/[publicId]`
+## What is true
 
-## Requirements
-- localStorage cart
-- localStorage wishlist
-- home page uses aggregate home endpoint
-- product pages use backend APIs
-- success page verifies session and clears cart
-- guest order page reads secure token and supports reveal flow
-- use Next.js image optimization where practical
+- Checkout, reservation, webhook, cleanup-job, and kuji allocation code paths exist.
+- Negative-path behavior is verified for:
+  - malformed checkout JSON
+  - invalid checkout query/body validation
+  - invalid Stripe webhook signatures
+- `GET /v1/checkout/success` no longer finalizes orders.
+- Stripe webhooks are now the only code path that finalizes payment, converts reservations, allocates tickets, and updates paid order state.
 
-## Not in scope
-- advanced UI polish
-- dashboard analytics
-- full customer account system
+## What is not verified
 
-## Definition of done
-- end-to-end happy path is usable from frontend
-- guest order revisit and reveal works
-- storefront can browse/search/add to cart/check out
+- Stripe checkout session creation against a real active product and inventory state.
+- Webhook-driven finalization.
+- Reservation conversion and expiry behavior under real checkout traffic.
+- Kuji allocation against a real prize pool.
+- Order confirmation email delivery.
+
+## What blocks completion
+
+- Approved live or disposable products, inventory, and kuji prize data.
+- Real Stripe checkout configuration and webhook delivery.
+- Real Resend configuration if email delivery is part of the verification target.
 
 ---
 
-# Milestone 7 — Hardening and cleanup
+# Milestone 4 — Guest Order Access and Reveal Flow
 
-## Goal
-Tighten the MVP to production-ready baseline.
+## Status
+Blocked.
 
-## Scope
-- review API validation coverage
-- review error handling consistency
-- review logs for checkout/webhook/allocation/reveal/refund
-- review migration correctness
-- review env usage and secrets boundaries
-- review rate limiting coverage
-- fix integration mismatches
-- clean obvious code smells introduced during implementation
+## What is true
 
-## Definition of done
-- major flows are coherent
-- response/error handling is consistent with project style
-- implementation is ready for manual Postman and browser testing
+- Guest order access requires a hashed token stored on the order.
+- Guest routes accept `x-order-token` or `?token=...`.
+- Invalid guest tokens return `401`.
+- Ticket reveal endpoints are implemented and written to be idempotent.
+- Unrevealed guest ticket views hide prize details.
 
----
+## What is not verified
 
-## Recommended thread usage
+- Guest order lookup with a real paid order.
+- Ticket listing for a real kuji order.
+- Single-ticket reveal happy path.
+- Reveal-all happy path.
 
-### Thread 1
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 1.”
+## What blocks completion
 
-### Thread 2
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 2. Do not change Milestone 1 architecture unless necessary.”
-
-### Thread 3
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 3.”
-
-### Thread 4
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 4.”
-
-### Thread 5
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 5.”
-
-### Thread 6
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 6.”
-
-### Thread 7
-“Read `AGENTS.md` and `PLAN.md`. Execute only Milestone 7.”
+- Real paid order data with generated tickets.
+- Milestone 3 webhook finalization and kuji allocation working against live data.
 
 ---
 
-## Important note for Codex threads
+# Milestone 5 — Admin Orders, Shipment, and Refund Exception Flow
 
-When a milestone is large, it is acceptable to split it again, but only if the current thread stays inside the same milestone boundary.
+## Status
+Blocked.
 
-Example:
-- Milestone 3A = checkout + reservations
-- Milestone 3B = webhook + payment finalization
-- Milestone 3C = Kuji allocation + confirmation email
+## What is true
 
-Do not mix milestones unless explicitly instructed.
+- Admin order/customer routes are implemented.
+- Order-status input is restricted to the known enum.
+- Shipment datetime inputs are validated as real datetimes.
+- Order status transition rules exist in code.
+- Auth baseline is verified in the database:
+  - admin user exists in `public.users`
+  - JWT subject lookup is aligned with `auth.users`
+
+## What is not verified
+
+- Admin happy-path reads and writes with a current live JWT.
+- Shipment creation/update against a real order.
+- Refund flow against a real Stripe payment intent.
+- Customer listing against non-empty data.
+
+## What blocks completion
+
+- Current live admin JWT for manual route verification.
+- Real order/payment/shipment data in a disposable or approved environment.
+- Real Stripe refund exercise.
+
+---
+
+# Milestone 6 — Hardening and Cleanup
+
+## Status
+Partially verified.
+
+## What is true
+
+- Request validation now stays in explicit validated request state instead of mutating `req.body`, `req.query`, and `req.params`.
+- Wrapped error handling is verified for the exercised 4xx cases above.
+- Request IDs and structured logging remain in place.
+- Rate limiting is active on global, checkout, and webhook routes.
+- OpenAPI can still serve as the contract source because the mounted route surface is aligned with it again.
+- The code no longer claims checkout-success finalization that conflicts with the Stripe webhook boundary.
+
+## What remains open
+
+- Admin happy-path runtime verification is still missing.
+- End-to-end integration verification for storage, Stripe, Resend, and refund flows is still missing.
+- Some operational edge cases remain review candidates, but changing them in this thread would become feature work or broader behavior changes.
+
