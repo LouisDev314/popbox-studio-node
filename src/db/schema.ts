@@ -66,9 +66,7 @@ export const users = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    emailUnique: uniqueIndex('users_email_unique').on(table.email),
-  }),
+  (table) => [uniqueIndex('users_email_unique').on(table.email)],
 );
 
 export const customers = pgTable(
@@ -83,11 +81,11 @@ export const customers = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    emailUnique: uniqueIndex('customers_email_unique').on(table.email),
-    userIdIndex: index('customers_user_id_idx').on(table.userId),
-    createdAtIndex: index('customers_created_at_idx').on(table.createdAt, table.id),
-  }),
+  (table) => [
+    uniqueIndex('customers_email_unique').on(table.email),
+    index('customers_user_id_idx').on(table.userId),
+    index('customers_created_at_idx').on(table.createdAt, table.id),
+  ],
 );
 
 export const addresses = pgTable(
@@ -106,9 +104,7 @@ export const addresses = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    customerIdIndex: index('addresses_customer_id_idx').on(table.customerId, table.createdAt),
-  }),
+  (table) => [index('addresses_customer_id_idx').on(table.customerId, table.createdAt)],
 );
 
 export const collections = pgTable(
@@ -123,11 +119,11 @@ export const collections = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    slugUnique: uniqueIndex('collections_slug_unique').on(table.slug),
-    activeSortIndex: index('collections_active_sort_idx').on(table.isActive, table.sortOrder, table.id),
-    nonNegativeSortOrder: check('collections_sort_order_check', sql`${table.sortOrder} >= 0`),
-  }),
+  (table) => [
+    uniqueIndex('collections_slug_unique').on(table.slug),
+    index('collections_active_sort_idx').on(table.isActive, table.sortOrder, table.id),
+    check('collections_sort_order_check', sql`${table.sortOrder} >= 0`),
+  ],
 );
 
 export const tags = pgTable(
@@ -140,10 +136,7 @@ export const tags = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    slugUnique: uniqueIndex('tags_slug_unique').on(table.slug),
-    tagTypeIndex: index('tags_tag_type_idx').on(table.tagType, table.name),
-  }),
+  (table) => [uniqueIndex('tags_slug_unique').on(table.slug), index('tags_tag_type_idx').on(table.tagType, table.name)],
 );
 
 export const products = pgTable(
@@ -165,24 +158,14 @@ export const products = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    slugUnique: uniqueIndex('products_slug_unique').on(table.slug),
-    skuUnique: uniqueIndex('products_sku_unique').on(table.sku),
-    activeCreatedIndex: index('products_status_created_idx').on(table.status, table.createdAt, table.id),
-    collectionStatusIndex: index('products_collection_status_created_idx').on(
-      table.collectionId,
-      table.status,
-      table.createdAt,
-      table.id,
-    ),
-    typeStatusIndex: index('products_type_status_created_idx').on(
-      table.productType,
-      table.status,
-      table.createdAt,
-      table.id,
-    ),
-    nonNegativePrice: check('products_price_cents_check', sql`${table.priceCents} >= 0`),
-  }),
+  (table) => [
+    uniqueIndex('products_slug_unique').on(table.slug),
+    uniqueIndex('products_sku_unique').on(table.sku),
+    index('products_status_created_idx').on(table.status, table.createdAt, table.id),
+    index('products_collection_status_created_idx').on(table.collectionId, table.status, table.createdAt, table.id),
+    index('products_type_status_created_idx').on(table.productType, table.status, table.createdAt, table.id),
+    check('products_price_cents_check', sql`${table.priceCents} >= 0`),
+  ],
 );
 
 export const productTags = pgTable(
@@ -196,10 +179,10 @@ export const productTags = pgTable(
       .references(() => tags.id, { onDelete: 'cascade' }),
     createdAt: createdAtColumn(),
   },
-  (table) => ({
-    pk: primaryKey({ columns: [table.productId, table.tagId], name: 'product_tags_pk' }),
-    tagIndex: index('product_tags_tag_id_idx').on(table.tagId, table.productId),
-  }),
+  (table) => [
+    primaryKey({ columns: [table.productId, table.tagId], name: 'product_tags_pk' }),
+    index('product_tags_tag_id_idx').on(table.tagId, table.productId),
+  ],
 );
 
 export const productImages = pgTable(
@@ -215,10 +198,10 @@ export const productImages = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    productSortIndex: index('product_images_product_sort_idx').on(table.productId, table.sortOrder, table.id),
-    nonNegativeSortOrder: check('product_images_sort_order_check', sql`${table.sortOrder} >= 0`),
-  }),
+  (table) => [
+    index('product_images_product_sort_idx').on(table.productId, table.sortOrder, table.id),
+    check('product_images_sort_order_check', sql`${table.sortOrder} >= 0`),
+  ],
 );
 
 export const productInventory = pgTable(
@@ -233,12 +216,12 @@ export const productInventory = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    inventoryIndex: index('product_inventory_on_hand_idx').on(table.onHand, table.reserved),
-    nonNegativeOnHand: check('product_inventory_on_hand_check', sql`${table.onHand} >= 0`),
-    nonNegativeReserved: check('product_inventory_reserved_check', sql`${table.reserved} >= 0`),
-    nonNegativeLowStock: check('product_inventory_low_stock_check', sql`${table.lowStockThreshold} >= 0`),
-  }),
+  (table) => [
+    index('product_inventory_on_hand_idx').on(table.onHand, table.reserved),
+    check('product_inventory_on_hand_check', sql`${table.onHand} >= 0`),
+    check('product_inventory_reserved_check', sql`${table.reserved} >= 0`),
+    check('product_inventory_low_stock_check', sql`${table.lowStockThreshold} >= 0`),
+  ],
 );
 
 export const orders = pgTable(
@@ -267,17 +250,17 @@ export const orders = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    publicIdUnique: uniqueIndex('orders_public_id_unique').on(table.publicId),
-    stripeCheckoutUnique: uniqueIndex('orders_stripe_checkout_session_unique').on(table.stripeCheckoutSessionId),
-    customerCreatedIndex: index('orders_customer_created_idx').on(table.customerId, table.createdAt, table.id),
-    statusCreatedIndex: index('orders_status_created_idx').on(table.status, table.createdAt, table.id),
-    placedAtIndex: index('orders_placed_at_idx').on(table.placedAt, table.id),
-    nonNegativeSubtotal: check('orders_subtotal_cents_check', sql`${table.subtotalCents} >= 0`),
-    nonNegativeTax: check('orders_tax_cents_check', sql`${table.taxCents} >= 0`),
-    nonNegativeShipping: check('orders_shipping_cents_check', sql`${table.shippingCents} >= 0`),
-    nonNegativeTotal: check('orders_total_cents_check', sql`${table.totalCents} >= 0`),
-  }),
+  (table) => [
+    uniqueIndex('orders_public_id_unique').on(table.publicId),
+    uniqueIndex('orders_stripe_checkout_session_unique').on(table.stripeCheckoutSessionId),
+    index('orders_customer_created_idx').on(table.customerId, table.createdAt, table.id),
+    index('orders_status_created_idx').on(table.status, table.createdAt, table.id),
+    index('orders_placed_at_idx').on(table.placedAt, table.id),
+    check('orders_subtotal_cents_check', sql`${table.subtotalCents} >= 0`),
+    check('orders_tax_cents_check', sql`${table.taxCents} >= 0`),
+    check('orders_shipping_cents_check', sql`${table.shippingCents} >= 0`),
+    check('orders_total_cents_check', sql`${table.totalCents} >= 0`),
+  ],
 );
 
 export const inventoryReservations = pgTable(
@@ -296,12 +279,12 @@ export const inventoryReservations = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    orderIndex: index('inventory_reservations_order_id_idx').on(table.orderId, table.status),
-    productIndex: index('inventory_reservations_product_id_idx').on(table.productId, table.status),
-    expiryIndex: index('inventory_reservations_status_expires_idx').on(table.status, table.expiresAt, table.id),
-    nonNegativeQuantity: check('inventory_reservations_quantity_check', sql`${table.quantity} > 0`),
-  }),
+  (table) => [
+    index('inventory_reservations_order_id_idx').on(table.orderId, table.status),
+    index('inventory_reservations_product_id_idx').on(table.productId, table.status),
+    index('inventory_reservations_status_expires_idx').on(table.status, table.expiresAt, table.id),
+    check('inventory_reservations_quantity_check', sql`${table.quantity} > 0`),
+  ],
 );
 
 export const kujiPrizes = pgTable(
@@ -321,18 +304,14 @@ export const kujiPrizes = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    productSortIndex: index('kuji_prizes_product_sort_idx').on(table.productId, table.sortOrder, table.id),
-    productRemainingIndex: index('kuji_prizes_product_remaining_idx').on(
-      table.productId,
-      table.remainingQuantity,
-      table.id,
-    ),
-    prizeCodeUnique: uniqueIndex('kuji_prizes_product_code_unique').on(table.productId, table.prizeCode),
-    nonNegativeInitial: check('kuji_prizes_initial_quantity_check', sql`${table.initialQuantity} >= 0`),
-    nonNegativeRemaining: check('kuji_prizes_remaining_quantity_check', sql`${table.remainingQuantity} >= 0`),
-    nonNegativeSortOrder: check('kuji_prizes_sort_order_check', sql`${table.sortOrder} >= 0`),
-  }),
+  (table) => [
+    index('kuji_prizes_product_sort_idx').on(table.productId, table.sortOrder, table.id),
+    index('kuji_prizes_product_remaining_idx').on(table.productId, table.remainingQuantity, table.id),
+    uniqueIndex('kuji_prizes_product_code_unique').on(table.productId, table.prizeCode),
+    check('kuji_prizes_initial_quantity_check', sql`${table.initialQuantity} >= 0`),
+    check('kuji_prizes_remaining_quantity_check', sql`${table.remainingQuantity} >= 0`),
+    check('kuji_prizes_sort_order_check', sql`${table.sortOrder} >= 0`),
+  ],
 );
 
 export const orderItems = pgTable(
@@ -354,13 +333,13 @@ export const orderItems = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    orderIndex: index('order_items_order_id_idx').on(table.orderId, table.id),
-    productIndex: index('order_items_product_id_idx').on(table.productId, table.createdAt),
-    positiveQuantity: check('order_items_quantity_check', sql`${table.quantity} > 0`),
-    nonNegativeUnitPrice: check('order_items_unit_price_check', sql`${table.unitPriceCents} >= 0`),
-    nonNegativeLineTotal: check('order_items_line_total_check', sql`${table.lineTotalCents} >= 0`),
-  }),
+  (table) => [
+    index('order_items_order_id_idx').on(table.orderId, table.id),
+    index('order_items_product_id_idx').on(table.productId, table.createdAt),
+    check('order_items_quantity_check', sql`${table.quantity} > 0`),
+    check('order_items_unit_price_check', sql`${table.unitPriceCents} >= 0`),
+    check('order_items_line_total_check', sql`${table.lineTotalCents} >= 0`),
+  ],
 );
 
 export const payments = pgTable(
@@ -380,12 +359,12 @@ export const payments = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    orderIndex: uniqueIndex('payments_order_id_unique').on(table.orderId),
-    paymentIntentIndex: uniqueIndex('payments_provider_payment_intent_unique').on(table.providerPaymentIntentId),
-    checkoutSessionIndex: uniqueIndex('payments_provider_checkout_session_unique').on(table.providerCheckoutSessionId),
-    nonNegativeAmount: check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
-  }),
+  (table) => [
+    uniqueIndex('payments_order_id_unique').on(table.orderId),
+    uniqueIndex('payments_provider_payment_intent_unique').on(table.providerPaymentIntentId),
+    uniqueIndex('payments_provider_checkout_session_unique').on(table.providerCheckoutSessionId),
+    check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
+  ],
 );
 
 export const tickets = pgTable(
@@ -414,14 +393,14 @@ export const tickets = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    orderIndex: index('tickets_order_id_idx').on(table.orderId, table.createdAt, table.id),
-    orderItemIndex: index('tickets_order_item_id_idx').on(table.orderItemId, table.createdAt),
-    customerIndex: index('tickets_customer_id_idx').on(table.customerId, table.createdAt),
-    productIndex: index('tickets_kuji_product_id_idx').on(table.kujiProductId, table.createdAt),
-    revealIndex: index('tickets_order_revealed_idx').on(table.orderId, table.revealedAt, table.createdAt),
-    ticketNumberUnique: uniqueIndex('tickets_ticket_number_unique').on(table.ticketNumber),
-  }),
+  (table) => [
+    index('tickets_order_id_idx').on(table.orderId, table.createdAt, table.id),
+    index('tickets_order_item_id_idx').on(table.orderItemId, table.createdAt),
+    index('tickets_customer_id_idx').on(table.customerId, table.createdAt),
+    index('tickets_kuji_product_id_idx').on(table.kujiProductId, table.createdAt),
+    index('tickets_order_revealed_idx').on(table.orderId, table.revealedAt, table.createdAt),
+    uniqueIndex('tickets_ticket_number_unique').on(table.ticketNumber),
+  ],
 );
 
 export const shipments = pgTable(
@@ -439,10 +418,10 @@ export const shipments = pgTable(
     createdAt: createdAtColumn(),
     updatedAt: updatedAtColumn(),
   },
-  (table) => ({
-    orderUnique: uniqueIndex('shipments_order_id_unique').on(table.orderId),
-    trackingIndex: index('shipments_tracking_number_idx').on(table.trackingNumber),
-  }),
+  (table) => [
+    uniqueIndex('shipments_order_id_unique').on(table.orderId),
+    index('shipments_tracking_number_idx').on(table.trackingNumber),
+  ],
 );
 
 export const stripeWebhookEvents = pgTable(
@@ -457,8 +436,8 @@ export const stripeWebhookEvents = pgTable(
     errorMessage: text('error_message'),
     createdAt: createdAtColumn(),
   },
-  (table) => ({
-    stripeEventIdUnique: uniqueIndex('stripe_webhook_events_event_id_unique').on(table.stripeEventId),
-    statusCreatedIndex: index('stripe_webhook_events_status_created_idx').on(table.status, table.createdAt),
-  }),
+  (table) => [
+    uniqueIndex('stripe_webhook_events_event_id_unique').on(table.stripeEventId),
+    index('stripe_webhook_events_status_created_idx').on(table.status, table.createdAt),
+  ],
 );

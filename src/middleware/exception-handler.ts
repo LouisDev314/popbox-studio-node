@@ -25,7 +25,6 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
   void next;
 
   const requestId = (req as any).id;
-  const log = (req as any).log ?? logger;
 
   if (err instanceof Exception) {
     const code = isHttpErrorStatus(err.code) ? err.code : HttpStatusCode.INTERNAL_SERVER_ERROR;
@@ -33,7 +32,7 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
 
     // If it’s a server error, don’t leak internals to client
     if (isServerError(code)) {
-      log.error(
+      logger.error(
         {
           requestId,
           code,
@@ -52,7 +51,7 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
   }
 
   // Unknown / programmer error / library error
-  log.error({ requestId, err, stack: (err as any)?.stack }, 'Unhandled error');
+  logger.error({ requestId, err, stack: (err as any)?.stack }, 'Unhandled error');
   return res.send_internalServerError('Internal server error');
 };
 

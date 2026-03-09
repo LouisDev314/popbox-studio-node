@@ -16,7 +16,6 @@ import httpLogger from './utils/http-logger';
 import { pgStop, pgInit } from './db';
 // TODO
 // import { startBackgroundJobs } from './jobs';
-// import { verifyDatabaseConnection } from './db';
 
 dotenv.config();
 
