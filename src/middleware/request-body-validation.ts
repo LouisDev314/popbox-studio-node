@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError, ZodType } from 'zod';
 import Exception from '../utils/Exception';
-import HttpStatusCode from '../constant/http-status-code';
+import HttpStatusCode from '../constants/http-status-code';
 
 const validateBody = (schema: ZodType, errMsg: string) => {
   return (req: Request, _res: Response, next: NextFunction) => {

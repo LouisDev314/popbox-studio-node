@@ -1,5 +1,5 @@
 import Exception from './Exception';
-import HttpStatusCode from '../constant/http-status-code';
+import HttpStatusCode from '../constants/http-status-code';
 
 const retrieveToken = (header: string) => {
   const match = header.match(/^Bearer\s+(.+)$/i);

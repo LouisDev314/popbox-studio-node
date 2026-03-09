@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getHomepageData } from '../../../services/catalog';
+import { getHomepageData } from '../../../services/home';
 
 const homeRouter: Router = Router();
 

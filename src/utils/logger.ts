@@ -10,7 +10,7 @@ const logger = pino({
 
   base: {
     env: nodeEnv,
-    service: 'popbox-studio-node',
+    // service: 'popbox-studio-node',
   },
 
   timestamp: pino.stdTimeFunctions.isoTime,

@@ -1,7 +1,7 @@
 import type { ErrorRequestHandler } from 'express';
 import Exception from '../utils/Exception';
 import logger from '../utils/logger';
-import HttpStatusCode from '../constant/http-status-code';
+import HttpStatusCode from '../constants/http-status-code';
 
 const STATUS_TO_METHOD: Record<number, keyof Express.Response> = {
   [HttpStatusCode.BAD_REQUEST]: 'send_badRequest',
