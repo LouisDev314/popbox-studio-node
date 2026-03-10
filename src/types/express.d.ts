@@ -1,4 +1,3 @@
-import 'express';
 import type { JWTPayload } from 'jose';
 
 type ResponseContent = unknown;
