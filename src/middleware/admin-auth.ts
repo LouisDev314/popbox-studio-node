@@ -8,8 +8,7 @@ import Exception from '../utils/Exception';
 import HttpStatusCode from '../constants/http-status-code';
 import retrieveBearerToken from '../utils/retrieve-bearer-token';
 
-const env = getEnvConfig();
-const issuer = `${env.supabaseUrl}/auth/v1`;
+const issuer = `${getEnvConfig().supabaseUrl}/auth/v1`;
 let joseModulePromise: Promise<typeof import('jose')> | null = null;
 let jwksPromise: Promise<ReturnType<(typeof import('jose'))['createRemoteJWKSet']>> | null = null;
 
@@ -42,12 +41,7 @@ const isJoseAuthenticationError = (error: unknown) =>
 
 const requireAdminAuth: RequestHandler = async (req, _res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-      return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Authorization header is required'));
-    }
-
-    const token = retrieveBearerToken(String(authHeader));
+    const token = retrieveBearerToken(String(req.headers));
     const [{ jwtVerify }, jwks] = await Promise.all([loadJose(), getJwks()]);
     const { payload } = await jwtVerify(token, jwks, {
       issuer,
