@@ -1,30 +1,6 @@
-import type { JWTPayload } from 'jose';
+import 'express';
 
 type ResponseContent = unknown;
-
-declare global {
-  namespace Express {
-    interface Request {
-      id: string;
-      validated: {
-        body?: unknown;
-        query?: unknown;
-        params?: unknown;
-      };
-      authUser?: {
-        id: string;
-        email: string;
-        role: string;
-        claims: JWTPayload;
-      };
-      orderAccess?: {
-        orderId: string;
-        publicId: string;
-        token: string;
-      };
-    }
-  }
-}
 
 declare module 'express-serve-static-core' {
   interface Response {
@@ -47,3 +23,4 @@ declare module 'express-serve-static-core' {
 }
 
 export {};
+
