@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { RequestHandler } from 'express';
-import type { JWTPayload } from 'jose';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
+
 import getEnvConfig from '../config/env';
 import { db } from '../db';
 import { users } from '../db/schema';
@@ -9,46 +10,21 @@ import HttpStatusCode from '../constants/http-status-code';
 import retrieveBearerToken from '../utils/retrieve-bearer-token';
 
 const issuer = `${getEnvConfig().supabaseUrl}/auth/v1`;
-let joseModulePromise: Promise<typeof import('jose')> | null = null;
-let jwksPromise: Promise<ReturnType<(typeof import('jose'))['createRemoteJWKSet']>> | null = null;
 
-const loadJose = async () => {
-  if (!joseModulePromise) {
-    joseModulePromise = import('jose');
-  }
-
-  return joseModulePromise;
-};
-
-const getJwks = async () => {
-  if (!jwksPromise) {
-    jwksPromise = loadJose().then(({ createRemoteJWKSet }) =>
-      createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`)),
-    );
-  }
-
-  return jwksPromise;
-};
-
-const readEmail = (claims: JWTPayload) => {
-  const email = claims.email;
-  return typeof email === 'string' ? email : '';
-};
-
-const isJoseAuthenticationError = (error: unknown) =>
-  error instanceof Error &&
-  (error.name.startsWith('JOSE') || error.name.startsWith('JWS') || error.name.startsWith('JWT'));
+// Ask Supabase public key server for verification keys and cache it
+const JWKS = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
 
 const requireAdminAuth: RequestHandler = async (req, _res, next) => {
   try {
-    const token = retrieveBearerToken(String(req.headers));
-    const [{ jwtVerify }, jwks] = await Promise.all([loadJose(), getJwks()]);
-    const { payload } = await jwtVerify(token, jwks, {
+    const token = retrieveBearerToken(req.headers.authorization);
+
+    const { payload } = await jwtVerify(token, JWKS, {
       issuer,
       audience: 'authenticated',
     });
 
     const userId = typeof payload.sub === 'string' ? payload.sub : '';
+
     if (!userId) {
       return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token'));
     }
@@ -65,18 +41,14 @@ const requireAdminAuth: RequestHandler = async (req, _res, next) => {
 
     req.authUser = {
       id: user.id,
-      email: user.email || readEmail(payload),
+      email: user.email || '',
       role: user.role,
       claims: payload,
     };
 
     next();
-  } catch (error) {
-    if (isJoseAuthenticationError(error)) {
-      return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token'));
-    }
-
-    next(error);
+  } catch {
+    return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token'));
   }
 };
 
