@@ -1,24 +1,22 @@
-import type { JwtPayload } from 'jose';
 import 'express';
+import type { JWTPayload } from 'jose';
 
 type ResponseContent = unknown;
-type ValidatedRequestState = {
-  body?: unknown;
-  query?: unknown;
-  params?: unknown;
-};
 
 declare global {
   namespace Express {
     interface Request {
       id: string;
-      // log: Logger;
-      validated: ValidatedRequestState;
+      validated: {
+        body?: unknown;
+        query?: unknown;
+        params?: unknown;
+      };
       authUser?: {
         id: string;
         email: string;
         role: string;
-        claims: JwtPayload;
+        claims: JWTPayload;
       };
       orderAccess?: {
         orderId: string;
@@ -48,3 +46,5 @@ declare module 'express-serve-static-core' {
     send_gatewayTimeout: (message?: string, data?: ResponseContent) => this;
   }
 }
+
+export {};

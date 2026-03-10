@@ -6,42 +6,9 @@ import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { DEFAULT_LIMIT, MAX_LIMIT } from '../../constants/pagination';
+import { ProductCursor, ProductListFilters, ProductRelationMaps, ProductRow, ProductSort } from '../../types/product';
 
 const { supabaseUrl, supabaseStorageBucket } = getEnvConfig();
-
-type ProductSort = 'newest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc';
-
-type ProductCursor = {
-  id: string;
-  createdAt: string;
-  priceCents: number;
-  name: string;
-};
-
-type ProductListFilters = {
-  collection?: string;
-  tag?: string;
-  type?: 'standard' | 'kuji';
-  sort?: ProductSort;
-  limit?: number;
-  cursor?: string;
-  status?: 'active' | 'draft' | 'archived';
-};
-
-type ProductRow = typeof products.$inferSelect;
-type ProductInventoryRow = typeof productInventory.$inferSelect;
-type CollectionRow = typeof collections.$inferSelect;
-type ProductImageRow = typeof productImages.$inferSelect;
-type TagRow = typeof tags.$inferSelect;
-type KujiPrizeRow = typeof kujiPrizes.$inferSelect;
-
-type ProductRelationMaps = {
-  images: Map<string, ProductImageRow[]>;
-  tags: Map<string, TagRow[]>;
-  inventory: Map<string, ProductInventoryRow>;
-  collections: Map<string, CollectionRow>;
-  kujiPrizes: Map<string, KujiPrizeRow[]>;
-};
 
 const clampLimit = (limit?: number) => {
   if (!limit || Number.isNaN(limit)) return DEFAULT_LIMIT;
