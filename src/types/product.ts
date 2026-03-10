@@ -33,3 +33,28 @@ export type ProductRelationMaps = {
   collections: Map<string, CollectionRow>;
   kujiPrizes: Map<string, KujiPrizeRow[]>;
 };
+
+export type ProductCard = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  productType: ProductRow['productType'];
+  status: ProductRow['status'];
+  priceCents: number;
+  currency: string;
+  collection: Pick<CollectionRow, 'id' | 'name' | 'slug'> | null;
+  images: Array<{
+    id: ProductImageRow['id'];
+    storageKey: ProductImageRow['storageKey'];
+    altText: ProductImageRow['altText'];
+    sortOrder: ProductImageRow['sortOrder'];
+    url: string;
+  }>;
+  inventory: {
+    onHand: ProductInventoryRow['onHand'];
+    reserved: ProductInventoryRow['reserved'];
+    available: number;
+    lowStockThreshold: ProductInventoryRow['lowStockThreshold'];
+  } | null;
+};

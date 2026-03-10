@@ -6,7 +6,14 @@ import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { DEFAULT_LIMIT, MAX_LIMIT } from '../../constants/pagination';
-import { ProductCursor, ProductListFilters, ProductRelationMaps, ProductRow, ProductSort } from '../../types/product';
+import {
+  ProductCard,
+  ProductCursor,
+  ProductListFilters,
+  ProductRelationMaps,
+  ProductRow,
+  ProductSort,
+} from '../../types/product';
 import {
   NAME_SIMILARITY_FLOOR,
   NAME_SIMILARITY_MATCH_THRESHOLD,
@@ -15,6 +22,27 @@ import {
 } from '../../constants/search';
 
 const { supabaseUrl, supabaseStorageBucket } = getEnvConfig();
+
+type ProductCardQueryRow = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  productType: ProductRow['productType'];
+  status: ProductRow['status'];
+  priceCents: number;
+  currency: string;
+  collectionId: string | null;
+  collectionName: string | null;
+  collectionSlug: string | null;
+  imageId: string | null;
+  imageStorageKey: string | null;
+  imageAltText: string | null;
+  imageSortOrder: number | null;
+  inventoryOnHand: number | null;
+  inventoryReserved: number | null;
+  inventoryLowStockThreshold: number | null;
+};
 
 const clampLimit = (limit?: number) => {
   if (!limit || Number.isNaN(limit)) return DEFAULT_LIMIT;
@@ -152,6 +180,104 @@ const buildImageUrl = (storageKey: string) => {
   return `${supabaseUrl}/storage/v1/object/public/${supabaseStorageBucket}/${cleanPath}`;
 };
 
+export const mapProductCard = (row: ProductCardQueryRow): ProductCard => ({
+  id: row.id,
+  name: row.name,
+  slug: row.slug,
+  description: row.description,
+  productType: row.productType,
+  status: row.status,
+  priceCents: row.priceCents,
+  currency: row.currency,
+  collection:
+    row.collectionId && row.collectionName && row.collectionSlug
+      ? {
+          id: row.collectionId,
+          name: row.collectionName,
+          slug: row.collectionSlug,
+        }
+      : null,
+  images:
+    row.imageId && row.imageStorageKey && row.imageSortOrder !== null
+      ? [
+          {
+            id: row.imageId,
+            storageKey: row.imageStorageKey,
+            altText: row.imageAltText,
+            sortOrder: row.imageSortOrder,
+            url: buildImageUrl(row.imageStorageKey),
+          },
+        ]
+      : [],
+  inventory:
+    row.inventoryOnHand !== null && row.inventoryReserved !== null && row.inventoryLowStockThreshold !== null
+      ? {
+          onHand: row.inventoryOnHand,
+          reserved: row.inventoryReserved,
+          available: Math.max(row.inventoryOnHand - row.inventoryReserved, 0),
+          lowStockThreshold: row.inventoryLowStockThreshold,
+        }
+      : null,
+});
+
+export const getProductCardsByIds = async (productIds: string[]): Promise<ProductCard[]> => {
+  if (productIds.length === 0) {
+    return [];
+  }
+
+  const requestedIds = sql.join(
+    productIds.map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await db.execute(sql<ProductCardQueryRow>`
+    SELECT
+      p.id AS "id",
+      p.name AS "name",
+      p.slug AS "slug",
+      p.description AS "description",
+      p.product_type AS "productType",
+      p.status AS "status",
+      p.price_cents AS "priceCents",
+      p.currency AS "currency",
+      c.id AS "collectionId",
+      c.name AS "collectionName",
+      c.slug AS "collectionSlug",
+      image.id AS "imageId",
+      image.storage_key AS "imageStorageKey",
+      image.alt_text AS "imageAltText",
+      image.sort_order AS "imageSortOrder",
+      inventory.on_hand AS "inventoryOnHand",
+      inventory.reserved AS "inventoryReserved",
+      inventory.low_stock_threshold AS "inventoryLowStockThreshold"
+    FROM ${products} AS p
+    LEFT JOIN ${collections} AS c
+      ON c.id = p.collection_id
+    LEFT JOIN ${productInventory} AS inventory
+      ON inventory.product_id = p.id
+    LEFT JOIN LATERAL (
+      SELECT
+        pi.id,
+        pi.storage_key,
+        pi.alt_text,
+        pi.sort_order
+      FROM ${productImages} AS pi
+      WHERE pi.product_id = p.id
+      ORDER BY pi.sort_order ASC, pi.id ASC
+      LIMIT 1
+    ) AS image
+      ON true
+    WHERE p.id IN (${requestedIds})
+  `)) as ProductCardQueryRow[];
+
+  const rowMap = new Map(rows.map((row) => [row.id, mapProductCard(row)]));
+
+  return productIds.flatMap((productId) => {
+    const productCard = rowMap.get(productId);
+    return productCard ? [productCard] : [];
+  });
+};
+
 // Convert into API response shape
 export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) => {
   const inventory = relations.inventory.get(product.id);
@@ -275,11 +401,10 @@ export const listProducts = async (filters: ProductListFilters) => {
 
   const hasMore = rows.length > limit;
   const pageRows = rows.slice(0, limit);
-  const relations = await loadProductRelations(pageRows.map((row) => row.id));
   const lastItem = pageRows.at(-1);
 
   return {
-    items: pageRows.map((row) => mapProduct(row, relations)),
+    items: await getProductCardsByIds(pageRows.map((row) => row.id)),
     nextCursor:
       hasMore && lastItem
         ? encodeCursor({
@@ -292,8 +417,9 @@ export const listProducts = async (filters: ProductListFilters) => {
 };
 
 export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
-  // Short circuit
-  if (!query.trim()) {
+  const normalizedQuery = query.trim().replace(/\s+/g, ' ');
+
+  if (!normalizedQuery.trim()) {
     return {
       items: [],
       nextCursor: null,
@@ -301,24 +427,23 @@ export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
   }
 
   const safeLimit = clampLimit(limit);
-  // Raw SQL to rank full-text search
   const searchSql = sql<{
     id: string;
-    // relevance: number;
   }>`
     WITH search_query AS (
-      SELECT websearch_to_tsquery('simple', ${query}) AS ts_query
+      SELECT websearch_to_tsquery('simple', ${normalizedQuery}) AS ts_query
     )
     SELECT p.id,
       (
         ts_rank_cd(p.search_vector, sq.ts_query) * ${TEXT_WEIGHT} +
-        GREATEST(similarity(p.name, ${query}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
+        GREATEST(similarity(p.name, ${normalizedQuery}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
       )::float8 AS relevance
-    FROM ${products} AS p, search_query sq
+    FROM ${products} AS p
+    CROSS JOIN search_query sq
     WHERE p.status = 'active'
       AND (
         p.search_vector @@ sq.ts_query
-        OR similarity(p.name, ${query}) > ${NAME_SIMILARITY_MATCH_THRESHOLD}
+        OR similarity(p.name, ${normalizedQuery}) >= ${NAME_SIMILARITY_MATCH_THRESHOLD}
       )
     ORDER BY relevance DESC, p.created_at DESC, p.id DESC
     LIMIT ${safeLimit}
@@ -327,22 +452,8 @@ export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
   const result = await db.execute(searchSql);
   const ids = result.map((row) => String(row.id));
 
-  if (ids.length === 0) {
-    return {
-      items: [],
-      nextCursor: null,
-    };
-  }
-
-  const rows = await db.select().from(products).where(inArray(products.id, ids));
-  const rowMap = new Map(rows.map((row) => [row.id, row]));
-  const relations = await loadProductRelations(ids);
-
   return {
-    items: ids
-      .map((id: string) => rowMap.get(id))
-      .filter((row): row is ProductRow => Boolean(row))
-      .map((row) => mapProduct(row, relations)),
+    items: await getProductCardsByIds(ids),
     nextCursor: null,
   };
 };
