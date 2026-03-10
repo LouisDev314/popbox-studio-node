@@ -1,4 +1,32 @@
-FROM ubuntu:latest
-LABEL authors="louischan"
+FROM node:22-alpine AS deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
-ENTRYPOINT ["top", "-b"]
+FROM node:22-alpine AS build
+WORKDIR /app
+RUN corepack enable
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm run build
+
+FROM node:22-alpine AS prod-deps
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+
+FROM node:22-alpine AS runner
+ENV NODE_ENV=production
+WORKDIR /app
+
+RUN addgroup -S nodejs && adduser -S node -G nodejs
+
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+
+EXPOSE 3000
+USER node
+CMD ["node", "dist/index.js"]
