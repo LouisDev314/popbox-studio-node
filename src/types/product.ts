@@ -58,3 +58,42 @@ export type ProductCard = {
     lowStockThreshold: ProductInventoryRow['lowStockThreshold'];
   } | null;
 };
+
+export type ProductCardQueryRow = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  productType: ProductRow['productType'];
+  status: ProductRow['status'];
+  priceCents: number;
+  currency: string;
+  collectionId: string | null;
+  collectionName: string | null;
+  collectionSlug: string | null;
+  imageId: string | null;
+  imageStorageKey: string | null;
+  imageAltText: string | null;
+  imageSortOrder: number | null;
+  inventoryOnHand: number | null;
+  inventoryReserved: number | null;
+  inventoryLowStockThreshold: number | null;
+};
+
+export type ProductSuggestion = {
+  id: string;
+  name: string;
+  slug: string;
+  thumbnailUrl: string | null;
+  priceCents: number;
+  currency: string;
+};
+
+export type ProductSuggestionQueryRow = {
+  id: string;
+  name: string;
+  slug: string;
+  priceCents: number;
+  currency: string;
+  imageStorageKey: string | null;
+};

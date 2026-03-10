@@ -2,3 +2,5 @@ export const TEXT_WEIGHT = 1.0;
 export const NAME_SIMILARITY_WEIGHT = 0.5;
 export const NAME_SIMILARITY_FLOOR = 0.1;
 export const NAME_SIMILARITY_MATCH_THRESHOLD = 0.15;
+export const AUTOCOMPLETE_DEFAULT_LIMIT = 8;
+export const AUTOCOMPLETE_MAX_LIMIT = 10;
