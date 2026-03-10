@@ -46,11 +46,11 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
     }
 
     // 4xx: safe to return the message & data (assuming you keep them clean)
-    return (res[method] as any)(err.msg, err.data);
+    return res[method](err.msg, err.data);
   }
 
   // Unknown / programmer error / library error
-  logger.error({ requestId, err, stack: (err as any)?.stack }, 'Unhandled error');
+  logger.error({ requestId, err, stack: err?.stack }, 'Unhandled error');
   return res.send_internalServerError('Internal server error');
 };
 
