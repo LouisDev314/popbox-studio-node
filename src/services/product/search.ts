@@ -6,7 +6,7 @@ import {
   NAME_SIMILARITY_WEIGHT,
   TEXT_WEIGHT,
 } from '../../constants/search';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DEFAULT_LIMIT } from '../../constants/pagination';
 import { products } from '../../db/schema';
 import { clampLimit } from '../../utils/limit';
@@ -24,6 +24,38 @@ const buildPrefixTsQuery = (query: string) => {
   return tokens.map((token) => `${token}:*`).join(' & ');
 };
 
+const buildNameSimilarityScore = (query: string) => sql`
+  GREATEST(similarity(${products.name}, ${query}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
+`;
+
+const runRankedProductQuery = async ({
+  tsQuery,
+  matchCondition,
+  relevance,
+  limit,
+}: {
+  tsQuery: SQL;
+  matchCondition: SQL;
+  relevance: SQL;
+  limit: number;
+}) => {
+  const result = await db.execute(sql`
+    WITH search_query AS (
+      SELECT ${tsQuery} AS ts_query
+    )
+    SELECT ${products.id} AS id,
+      (${relevance})::float8 AS relevance
+    FROM ${products}
+    CROSS JOIN search_query sq
+    WHERE ${products.status} = 'active'
+      AND (${matchCondition})
+    ORDER BY relevance DESC, ${products.createdAt} DESC, ${products.id} DESC
+    LIMIT ${limit}
+  `);
+
+  return result.map((row) => String(row.id));
+};
+
 export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
   const normalizedQuery = normalizeSearchQuery(query);
 
@@ -35,30 +67,18 @@ export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
   }
 
   const safeLimit = clampLimit(limit);
-  const searchSql = sql<{
-    id: string;
-  }>`
-    WITH search_query AS (
-      SELECT websearch_to_tsquery('simple', ${normalizedQuery}) AS ts_query
-    )
-    SELECT p.id,
-      (
-        ts_rank_cd(p.search_vector, sq.ts_query) * ${TEXT_WEIGHT} +
-        GREATEST(similarity(p.name, ${normalizedQuery}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
-      )::float8 AS relevance
-    FROM ${products} AS p
-    CROSS JOIN search_query sq
-    WHERE p.status = 'active'
-      AND (
-        p.search_vector @@ sq.ts_query
-        OR similarity(p.name, ${normalizedQuery}) >= ${NAME_SIMILARITY_MATCH_THRESHOLD}
-      )
-    ORDER BY relevance DESC, p.created_at DESC, p.id DESC
-    LIMIT ${safeLimit}
-  `;
-
-  const result = await db.execute(searchSql);
-  const ids = result.map((row) => String(row.id));
+  const ids = await runRankedProductQuery({
+    tsQuery: sql`websearch_to_tsquery('simple', ${normalizedQuery})`,
+    matchCondition: sql`
+      ${products.searchVector} @@ sq.ts_query
+      OR similarity(${products.name}, ${normalizedQuery}) >= ${NAME_SIMILARITY_MATCH_THRESHOLD}
+    `,
+    relevance: sql`
+      ts_rank_cd(${products.searchVector}, sq.ts_query) * ${TEXT_WEIGHT} +
+      ${buildNameSimilarityScore(normalizedQuery)}
+    `,
+    limit: safeLimit,
+  });
 
   return {
     items: await getProductCardsByIds(ids),
@@ -77,36 +97,25 @@ export const autocomplete = async (query: string, limit = AUTOCOMPLETE_DEFAULT_L
   }
 
   const safeLimit = Math.min(clampLimit(limit), AUTOCOMPLETE_MAX_LIMIT);
-  const autocompleteSql = sql<{
-    id: string;
-  }>`
-    WITH search_query AS (
-      SELECT to_tsquery('simple', ${prefixTsQuery}) AS ts_query
-    )
-    SELECT p.id,
-      (
-        CASE
-          WHEN lower(p.name) = lower(${normalizedQuery}) THEN 100
-          WHEN p.name ILIKE ${`${normalizedQuery}%`} THEN 50
-          ELSE 0
-        END +
-        ts_rank_cd(p.search_vector, sq.ts_query) * ${TEXT_WEIGHT} +
-        GREATEST(similarity(p.name, ${normalizedQuery}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
-      )::float8 AS relevance
-    FROM ${products} AS p
-    CROSS JOIN search_query sq
-    WHERE p.status = 'active'
-      AND (
-        p.name ILIKE ${`${normalizedQuery}%`}
-        OR p.search_vector @@ sq.ts_query
-        OR similarity(p.name, ${normalizedQuery}) >= ${NAME_SIMILARITY_MATCH_THRESHOLD}
-      )
-    ORDER BY relevance DESC, p.created_at DESC, p.id DESC
-    LIMIT ${safeLimit}
-  `;
-
-  const result = await db.execute(autocompleteSql);
-  const ids = result.map((row) => String(row.id));
+  const prefixPattern = `${normalizedQuery}%`;
+  const ids = await runRankedProductQuery({
+    tsQuery: sql`to_tsquery('simple', ${prefixTsQuery})`,
+    matchCondition: sql`
+      ${products.name} ILIKE ${prefixPattern}
+      OR ${products.searchVector} @@ sq.ts_query
+      OR similarity(${products.name}, ${normalizedQuery}) >= ${NAME_SIMILARITY_MATCH_THRESHOLD}
+    `,
+    relevance: sql`
+      CASE
+        WHEN lower(${products.name}) = lower(${normalizedQuery}) THEN 100
+        WHEN ${products.name} ILIKE ${prefixPattern} THEN 50
+        ELSE 0
+      END +
+      ts_rank_cd(${products.searchVector}, sq.ts_query) * ${TEXT_WEIGHT} +
+      ${buildNameSimilarityScore(normalizedQuery)}
+    `,
+    limit: safeLimit,
+  });
 
   return {
     items: await getProductSuggestionsByIds(ids),
