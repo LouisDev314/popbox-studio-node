@@ -7,6 +7,12 @@ import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { DEFAULT_LIMIT, MAX_LIMIT } from '../../constants/pagination';
 import { ProductCursor, ProductListFilters, ProductRelationMaps, ProductRow, ProductSort } from '../../types/product';
+import {
+  NAME_SIMILARITY_FLOOR,
+  NAME_SIMILARITY_MATCH_THRESHOLD,
+  NAME_SIMILARITY_WEIGHT,
+  TEXT_WEIGHT,
+} from '../../constants/search';
 
 const { supabaseUrl, supabaseStorageBucket } = getEnvConfig();
 
@@ -146,6 +152,7 @@ const buildImageUrl = (storageKey: string) => {
   return `${supabaseUrl}/storage/v1/object/public/${supabaseStorageBucket}/${cleanPath}`;
 };
 
+// Convert into API response shape
 export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) => {
   const inventory = relations.inventory.get(product.id);
   const collection = product.collectionId ? relations.collections.get(product.collectionId) : undefined;
@@ -285,24 +292,33 @@ export const listProducts = async (filters: ProductListFilters) => {
 };
 
 export const searchProducts = async (query: string, limit = DEFAULT_LIMIT) => {
+  // Short circuit
+  if (!query.trim()) {
+    return {
+      items: [],
+      nextCursor: null,
+    };
+  }
+
   const safeLimit = clampLimit(limit);
+  // Raw SQL to rank full-text search
   const searchSql = sql<{
     id: string;
-    relevance: number;
+    // relevance: number;
   }>`
     WITH search_query AS (
       SELECT websearch_to_tsquery('simple', ${query}) AS ts_query
     )
     SELECT p.id,
       (
-        ts_rank_cd(p.search_vector, sq.ts_query) * 1.0 +
-        GREATEST(similarity(p.name, ${query}) - 0.1, 0) * 0.5
+        ts_rank_cd(p.search_vector, sq.ts_query) * ${TEXT_WEIGHT} +
+        GREATEST(similarity(p.name, ${query}) - ${NAME_SIMILARITY_FLOOR}, 0) * ${NAME_SIMILARITY_WEIGHT}
       )::float8 AS relevance
     FROM ${products} AS p, search_query sq
     WHERE p.status = 'active'
       AND (
         p.search_vector @@ sq.ts_query
-        OR similarity(p.name, ${query}) > 0.2
+        OR similarity(p.name, ${query}) > ${NAME_SIMILARITY_MATCH_THRESHOLD}
       )
     ORDER BY relevance DESC, p.created_at DESC, p.id DESC
     LIMIT ${safeLimit}
