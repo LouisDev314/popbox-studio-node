@@ -6,6 +6,7 @@ import HttpStatusCode from '../constants/http-status-code';
 const validateBody = <T extends ZodType>(schema: T, errMsg: string) => {
   return (req: Request, _res: Response, next: NextFunction) => {
     try {
+      req.validated ??= {};
       req.validated.body = schema.parse(req.body);
       next();
     } catch (err) {
