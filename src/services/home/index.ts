@@ -2,12 +2,12 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { collections, products } from '../../db/schema';
 import { HOMEPAGE_LIMIT } from '../../constants/pagination';
-import { loadProductRelations, mapProduct } from '../product';
+import { getProductCardsByIds } from '../product';
 
 export const getHomepageData = async () => {
   const [featuredProducts, allProducts] = await Promise.all([
     db
-      .select()
+      .select({ id: products.id })
       .from(products)
       .where(
         and(
@@ -21,7 +21,7 @@ export const getHomepageData = async () => {
       .orderBy(desc(products.createdAt), desc(products.id))
       .limit(HOMEPAGE_LIMIT),
     db
-      .select()
+      .select({ id: products.id })
       .from(products)
       .where(eq(products.status, 'active'))
       .orderBy(desc(products.createdAt), desc(products.id))
@@ -31,12 +31,25 @@ export const getHomepageData = async () => {
   // TODO: later replace this with real trending algorithm output
   const trendingProducts = featuredProducts;
 
-  const allIds = Array.from(new Set([...featuredProducts, ...trendingProducts, ...allProducts].map((row) => row.id)));
-  const relations = await loadProductRelations(allIds);
+  const featuredIds = featuredProducts.map((row) => row.id);
+  const trendingIds = trendingProducts.map((row) => row.id);
+  const allProductIds = allProducts.map((row) => row.id);
+  const uniqueIds = Array.from(new Set([...featuredIds, ...trendingIds, ...allProductIds]));
+  const productCards = await getProductCardsByIds(uniqueIds);
+  const cardMap = new Map(productCards.map((productCard) => [productCard.id, productCard]));
 
   return {
-    featured: featuredProducts.map((row) => mapProduct(row, relations)),
-    trendingNow: trendingProducts.map((row) => mapProduct(row, relations)),
-    allProductsPreview: allProducts.map((row) => mapProduct(row, relations)),
+    featured: featuredIds.flatMap((productId) => {
+      const productCard = cardMap.get(productId);
+      return productCard ? [productCard] : [];
+    }),
+    trendingNow: trendingIds.flatMap((productId) => {
+      const productCard = cardMap.get(productId);
+      return productCard ? [productCard] : [];
+    }),
+    allProductsPreview: allProductIds.flatMap((productId) => {
+      const productCard = cardMap.get(productId);
+      return productCard ? [productCard] : [];
+    }),
   };
 };
