@@ -19,12 +19,11 @@ const isHttpErrorStatus = (code: unknown): code is number =>
 
 const isServerError = (code: number) => code >= 500;
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
   // keep Express signature (don’t remove next)
   void next;
 
-  const requestId = (req as any).id;
+  const requestId = req.id;
 
   if (err instanceof Exception) {
     const code = isHttpErrorStatus(err.code) ? err.code : HttpStatusCode.INTERNAL_SERVER_ERROR;
