@@ -7,6 +7,8 @@ import { db } from '../../db';
 import { orders, stripeWebhookEvents } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { finalizeCheckoutSession, releaseReservationsForOrder } from '../checkout/helpers';
+import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
+import logger from '../../utils/logger';
 
 export const handleStripeWebhook = async (signature: string | string[] | undefined, rawBody: Buffer) => {
   if (!signature || Array.isArray(signature)) {
@@ -20,29 +22,41 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
     throw new Exception(HttpStatusCode.BAD_REQUEST, 'Invalid Stripe signature');
   }
 
-  const existing = await db
-    .select()
-    .from(stripeWebhookEvents)
-    .where(eq(stripeWebhookEvents.stripeEventId, event.id))
-    .limit(1);
+  const lockHandle = await tryAcquireAdvisoryLock(`stripe:webhook:${event.id}`);
 
-  if (existing[0]?.status === 'processed') {
+  if (!lockHandle) {
     return {
       received: true,
       duplicate: true,
     };
   }
 
-  if (!existing[0]) {
-    await db.insert(stripeWebhookEvents).values({
-      stripeEventId: event.id,
-      eventType: event.type,
-      status: 'received',
-      payload: event as unknown as Record<string, unknown>,
-    });
-  }
-
   try {
+    await db
+      .insert(stripeWebhookEvents)
+      .values({
+        stripeEventId: event.id,
+        eventType: event.type,
+        status: 'received',
+        payload: event as unknown as Record<string, unknown>,
+      })
+      .onConflictDoNothing({
+        target: stripeWebhookEvents.stripeEventId,
+      });
+
+    const existing = await db
+      .select()
+      .from(stripeWebhookEvents)
+      .where(eq(stripeWebhookEvents.stripeEventId, event.id))
+      .limit(1);
+
+    if (existing[0]?.status === 'processed') {
+      return {
+        received: true,
+        duplicate: true,
+      };
+    }
+
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       await finalizeCheckoutSession(event.data.object as Stripe.Checkout.Session);
     }
@@ -86,6 +100,9 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
       })
       .where(eq(stripeWebhookEvents.stripeEventId, event.id));
 
+    logger.error({ error, stripeEventId: event.id, eventType: event.type }, 'Stripe webhook processing failed');
     throw error;
+  } finally {
+    await releaseAdvisoryLock(lockHandle);
   }
 };
