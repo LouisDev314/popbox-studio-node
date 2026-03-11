@@ -42,14 +42,16 @@ export const revealTicket = async (orderId: string, ticketId: string) => {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
   }
 
-  if (!ticket.revealedAt && !ticket.voidedAt) {
-    await db
-      .update(tickets)
-      .set({
-        revealedAt: new Date(),
-      })
-      .where(eq(tickets.id, ticket.id));
+  if (ticket.revealedAt || ticket.voidedAt) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'Ticket is revealed or voided');
   }
+
+  await db
+    .update(tickets)
+    .set({
+      revealedAt: new Date(),
+    })
+    .where(eq(tickets.id, ticket.id));
 
   return getTicketViewById(orderId, ticketId);
 };
@@ -60,7 +62,7 @@ export const revealAllTickets = async (orderId: string) => {
     .set({
       revealedAt: sql`COALESCE(${tickets.revealedAt}, now())`,
     })
-    .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`));
+    .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`, sql`${tickets.revealedAt} IS NULL`));
 
   return getGuestTicketView((await getOrderDetailById(orderId)).publicId);
 };
