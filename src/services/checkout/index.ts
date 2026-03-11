@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import stripe from '../../integrations/stripe';
 import getEnvConfig from '../../config/env';
@@ -36,6 +36,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput) =
   const guestAccessToken = createGuestAccessToken();
   const guestAccessTokenHash = hashGuestAccessToken(guestAccessToken);
   const expiresAt = new Date(Date.now() + getEnvConfig().stripeCheckoutSessionReservationTtl);
+  const stripeExpiresAt = Math.floor(expiresAt.getTime() / 1000);
   const publicId = createPublicId('ord');
   const shippingCents = getEnvConfig().stripeShippingRateCents;
 
@@ -159,6 +160,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput) =
       shipping_address_collection: {
         allowed_countries: ['CA'],
       },
+      expires_at: stripeExpiresAt,
       line_items: orderProducts.map((item) => {
         const productData: Stripe.Checkout.SessionCreateParams.LineItem.PriceData.ProductData = {
           name: item.name,

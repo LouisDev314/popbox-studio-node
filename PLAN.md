@@ -64,9 +64,9 @@ Prevent Stripe from accepting payment after local inventory reservations have ex
 - Inventory is not double-sold because of mismatched expiry windows.
 
 ### Manual verification checklist
-1. Set a short TTL locally, such as two minutes.
+1. Set the shared checkout TTL to a valid Stripe value, such as 30 minutes.
 2. Create a checkout session and confirm the order reservation `expires_at` matches the Stripe session expiry.
-3. Wait until after expiry and run the cleanup job path.
+3. For local simulation, manually move the reservation `expires_at` into the past in the database and run the cleanup job path.
 4. Confirm the order becomes `expired` and reservations are released.
 5. Deliver a simulated late `checkout.session.completed` webhook and confirm the order moves to `paid_needs_attention`.
 

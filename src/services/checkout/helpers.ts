@@ -292,6 +292,11 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
     throw new NeedsAttentionError('No active reservations were available for conversion');
   }
 
+  const currentTime = Date.now();
+  if (activeReservations.some((reservation) => reservation.expiresAt.getTime() <= currentTime)) {
+    throw new NeedsAttentionError('Reservation expired before payment finalization');
+  }
+
   for (const reservation of activeReservations) {
     const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number }>`
       SELECT on_hand AS "onHand", reserved
