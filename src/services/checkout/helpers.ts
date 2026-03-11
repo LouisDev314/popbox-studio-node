@@ -140,30 +140,51 @@ export const releaseReservationsForOrder = async (
   orderId: string,
   nextStatus: 'released' | 'expired',
 ) => {
-  const activeReservations = await tx
-    .select()
-    .from(inventoryReservations)
-    .where(and(eq(inventoryReservations.orderId, orderId), eq(inventoryReservations.status, 'active')));
+  await releaseReservationsForOrders(tx, [orderId], nextStatus);
+};
 
-  if (activeReservations.length === 0) {
+export const releaseReservationsForOrders = async (
+  tx: DbClient,
+  orderIds: string[],
+  nextStatus: 'released' | 'expired',
+) => {
+  if (orderIds.length === 0) {
     return;
   }
 
-  for (const reservation of activeReservations) {
-    await tx
-      .update(productInventory)
-      .set({
-        reserved: sql`GREATEST(${productInventory.reserved} - ${reservation.quantity}, 0)`,
-      })
-      .where(eq(productInventory.productId, reservation.productId));
-  }
+  const normalizedOrderIds = [...new Set(orderIds)].sort();
+  const orderIdList = sql.join(
+    normalizedOrderIds.map((orderId) => sql`${orderId}`),
+    sql`, `,
+  );
 
-  await tx
-    .update(inventoryReservations)
-    .set({
-      status: nextStatus,
-    })
-    .where(and(eq(inventoryReservations.orderId, orderId), eq(inventoryReservations.status, 'active')));
+  await tx.execute(sql`
+    WITH locked_orders AS (
+      SELECT id
+      FROM orders
+      WHERE id IN (${orderIdList})
+      ORDER BY id
+      FOR UPDATE
+    ),
+    inventory_deltas AS (
+      SELECT product_id, SUM(quantity)::integer AS quantity
+      FROM inventory_reservations
+      WHERE order_id IN (SELECT id FROM locked_orders)
+        AND status = 'active'
+      GROUP BY product_id
+    ),
+    updated_inventory AS (
+      UPDATE product_inventory AS pi
+      SET reserved = GREATEST(pi.reserved - inventory_deltas.quantity, 0)
+      FROM inventory_deltas
+      WHERE pi.product_id = inventory_deltas.product_id
+      RETURNING pi.product_id
+    )
+    UPDATE inventory_reservations AS ir
+    SET status = ${nextStatus}
+    WHERE ir.order_id IN (SELECT id FROM locked_orders)
+      AND ir.status = 'active'
+  `);
 };
 
 export const ensurePaymentSessionMetadata = (session: Stripe.Checkout.Session) => {
@@ -339,36 +360,64 @@ export const markOrderPaidNeedsAttention = async (tx: DbClient, orderId: string,
 
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
   const { orderId, guestAccessToken } = ensurePaymentSessionMetadata(session);
-
-  const [orderRecord] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (!orderRecord) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for checkout session');
-  }
-
-  if (['paid', 'packed', 'shipped', 'refunded'].includes(orderRecord.status)) {
-    return {
-      orderId,
-      publicId: orderRecord.publicId,
-      guestAccessToken,
-      needsAttention: orderRecord.status === 'paid_needs_attention',
-      alreadyFinalized: true,
-    };
-  }
+  let orderPublicId = '';
+  let subtotalCents = 0;
+  let totalCents = 0;
 
   try {
-    await db.transaction(async (tx) => {
+    const finalizeResult = await db.transaction(async (tx) => {
+      const lockedOrderResult = await tx.execute<{
+        publicId: string;
+        customerId: string;
+        status: (typeof orders.$inferSelect)['status'];
+        subtotalCents: number;
+        totalCents: number;
+      }>(sql`
+        SELECT
+          id,
+          public_id AS "publicId",
+          customer_id AS "customerId",
+          status,
+          subtotal_cents AS "subtotalCents",
+          total_cents AS "totalCents"
+        FROM orders
+        WHERE id = ${orderId}
+        FOR UPDATE
+      `);
+      const lockedOrder = lockedOrderResult[0];
+
+      if (!lockedOrder) {
+        throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for checkout session');
+      }
+
+      orderPublicId = lockedOrder.publicId;
+      subtotalCents = Number(lockedOrder.subtotalCents);
+      totalCents = Number(lockedOrder.totalCents);
+
+      if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
+        return {
+          alreadyFinalized: true,
+          needsAttention: lockedOrder.status === 'paid_needs_attention',
+          publicId: lockedOrder.publicId,
+        };
+      }
+
+      if (lockedOrder.status !== 'pending_payment') {
+        throw new NeedsAttentionError(`Order is ${lockedOrder.status} and can no longer be finalized`);
+      }
+
       await convertReservations(tx, orderId);
-      await allocateKujiTickets(tx, orderId, orderRecord.customerId);
+      await allocateKujiTickets(tx, orderId, lockedOrder.customerId);
 
       await tx
         .update(orders)
         .set({
           status: 'paid',
           stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          subtotalCents: session.amount_subtotal ?? orderRecord.subtotalCents,
+          subtotalCents: session.amount_subtotal ?? subtotalCents,
           taxCents: session.total_details?.amount_tax ?? 0,
           shippingCents: session.total_details?.amount_shipping ?? 0,
-          totalCents: session.amount_total ?? orderRecord.totalCents,
+          totalCents: session.amount_total ?? totalCents,
           paidAt: new Date(),
           placedAt: new Date(),
         })
@@ -379,13 +428,29 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         .set({
           providerCheckoutSessionId: session.id,
           providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          amountCents: session.amount_total ?? orderRecord.totalCents,
+          amountCents: session.amount_total ?? totalCents,
           currency: (session.currency ?? 'cad').toUpperCase(),
           status: 'paid',
           rawResponse: session as unknown as Record<string, unknown>,
         })
         .where(eq(payments.orderId, orderId));
+
+      return {
+        alreadyFinalized: false,
+        needsAttention: false,
+        publicId: lockedOrder.publicId,
+      };
     });
+
+    if (finalizeResult.alreadyFinalized) {
+      return {
+        orderId,
+        publicId: finalizeResult.publicId,
+        guestAccessToken,
+        needsAttention: finalizeResult.needsAttention,
+        alreadyFinalized: true,
+      };
+    }
   } catch (error) {
     if (error instanceof NeedsAttentionError) {
       logger.warn({ orderId, reason: error.message }, 'Order payment finalized with manual attention required');
@@ -395,7 +460,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
 
       return {
         orderId,
-        publicId: orderRecord.publicId,
+        publicId: orderPublicId,
         guestAccessToken,
         needsAttention: true,
         alreadyFinalized: false,
@@ -421,7 +486,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
 
   return {
     orderId,
-    publicId: orderRecord.publicId,
+    publicId: orderPublicId,
     guestAccessToken,
     needsAttention: false,
     alreadyFinalized: false,

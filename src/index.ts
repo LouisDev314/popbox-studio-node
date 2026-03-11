@@ -14,15 +14,13 @@ import healthRouter from './routes/v1/health-router';
 import { globalLimiter } from './middleware/rate-limit';
 import httpLogger from './utils/http-logger';
 import { pgStop, pgInit } from './db';
-// TODO
-// import { startBackgroundJobs } from './jobs';
+import { startBackgroundJobs } from './jobs';
 
 /* -------------------------Setup variables------------------------- */
 const { port, corsOrigin } = getEnvConfig();
 const app = express();
 let server: Server;
-// TODO
-// const stopBackgroundJobs: (() => void) | null = null;
+let stopBackgroundJobs: (() => void) | null = null;
 
 /* -------------------------Setup Express middleware------------------------- */
 responseInterceptor();
@@ -57,6 +55,7 @@ app.use(exceptionHandler);
 const applicationBootstrap = async () => {
   // Task/service to start
   await Promise.all([pgInit()]);
+  stopBackgroundJobs = startBackgroundJobs();
 };
 
 const start = async () => {
@@ -79,6 +78,7 @@ const stop = async () => {
         server.close((err) => (err ? reject(err) : resolve()));
       }).then(() => {
         // Task/service to stop
+        stopBackgroundJobs?.();
         return Promise.all([pgStop()]);
       }),
       new Promise((_, reject) => {
