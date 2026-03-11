@@ -240,6 +240,7 @@ export const orders = pgTable(
     totalCents: integer('total_cents').notNull().default(0),
     stripeCheckoutSessionId: varchar('stripe_checkout_session_id', { length: 255 }),
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
+    checkoutIdempotencyKey: varchar('checkout_idempotency_key', { length: 255 }),
     shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, unknown>>().notNull(),
     billingAddressJson: jsonb('billing_address_json').$type<Record<string, unknown> | null>(),
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
@@ -253,6 +254,7 @@ export const orders = pgTable(
   (table) => [
     uniqueIndex('orders_public_id_unique').on(table.publicId),
     uniqueIndex('orders_stripe_checkout_session_unique').on(table.stripeCheckoutSessionId),
+    uniqueIndex('orders_checkout_idempotency_key_unique').on(table.checkoutIdempotencyKey),
     index('orders_customer_created_idx').on(table.customerId, table.createdAt, table.id),
     index('orders_status_created_idx').on(table.status, table.createdAt, table.id),
     index('orders_placed_at_idx').on(table.placedAt, table.id),

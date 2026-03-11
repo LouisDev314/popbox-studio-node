@@ -88,7 +88,7 @@ Prevent duplicate orders and duplicate Stripe Checkout sessions during retries.
 - `supabase/migrations/*`
 
 ### Implementation steps
-1. Accept a checkout idempotency key from the request contract or header without breaking the existing API shape more than necessary.
+1. Accept a checkout idempotency key from the `Idempotency-Key` header without changing the checkout body shape.
 2. Persist that key on the order or payment record with a uniqueness guarantee.
 3. Reuse an existing pending order and Stripe session when the same key is replayed.
 4. Pass the same idempotency key through to Stripe session creation.
@@ -100,9 +100,9 @@ Prevent duplicate orders and duplicate Stripe Checkout sessions during retries.
 - Stripe does not receive duplicate session creations for the same idempotent attempt.
 
 ### Manual verification checklist
-1. Submit the same checkout payload twice with the same idempotency key.
+1. Submit the same checkout payload twice with the same `Idempotency-Key` header.
 2. Confirm both responses point to the same order and Stripe session.
-3. Repeat with a different idempotency key and confirm a new order is created.
+3. Repeat with a different `Idempotency-Key` header and confirm a new order is created.
 4. Simulate a client retry after a timeout and confirm no duplicate pending orders exist.
 
 ## Phase 4 - Fix Inventory Lock Ordering and Race Conditions

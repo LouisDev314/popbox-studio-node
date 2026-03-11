@@ -14,8 +14,18 @@ checkoutRouter.post(
   checkoutLimiter,
   validateBody(checkoutBodySchema, 'checkout request'),
   async (req, res) => {
+    const idempotencyKey = req.get('Idempotency-Key')?.trim();
+
+    if (!idempotencyKey) {
+      return res.send_badRequest('Idempotency-Key header is required');
+    }
+
+    if (idempotencyKey.length > 255) {
+      return res.send_badRequest('Idempotency-Key header must be 255 characters or fewer');
+    }
+
     const body = readValidatedBody<Parameters<typeof createCheckoutSession>[0]>(req);
-    const result = await createCheckoutSession(body);
+    const result = await createCheckoutSession(body, idempotencyKey);
     return res.send_created('Checkout session created', result);
   },
 );
