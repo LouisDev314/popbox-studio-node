@@ -44,7 +44,9 @@ export const normalizeItems = (items: CheckoutItemInput[]) => {
     map.set(item.productId, (map.get(item.productId) ?? 0) + item.quantity);
   }
 
-  return Array.from(map.entries()).map(([productId, quantity]) => ({ productId, quantity }));
+  return Array.from(map.entries())
+    .sort(([leftProductId], [rightProductId]) => leftProductId.localeCompare(rightProductId))
+    .map(([productId, quantity]) => ({ productId, quantity }));
 };
 
 export const assertCanadianAddress = (address: AddressInput) => {
@@ -173,11 +175,18 @@ export const releaseReservationsForOrders = async (
         AND status = 'active'
       GROUP BY product_id
     ),
+    locked_inventory AS (
+      SELECT pi.product_id, inventory_deltas.quantity
+      FROM product_inventory AS pi
+      INNER JOIN inventory_deltas ON inventory_deltas.product_id = pi.product_id
+      ORDER BY pi.product_id
+      FOR UPDATE
+    ),
     updated_inventory AS (
       UPDATE product_inventory AS pi
-      SET reserved = GREATEST(pi.reserved - inventory_deltas.quantity, 0)
-      FROM inventory_deltas
-      WHERE pi.product_id = inventory_deltas.product_id
+      SET reserved = GREATEST(pi.reserved - locked_inventory.quantity, 0)
+      FROM locked_inventory
+      WHERE pi.product_id = locked_inventory.product_id
       RETURNING pi.product_id
     )
     UPDATE inventory_reservations AS ir
@@ -297,11 +306,22 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
     throw new NeedsAttentionError('Reservation expired before payment finalization');
   }
 
-  for (const reservation of activeReservations) {
+  const reservationsInLockOrder = [...activeReservations].sort((leftReservation, rightReservation) => {
+    const productComparison = leftReservation.productId.localeCompare(rightReservation.productId);
+
+    if (productComparison !== 0) {
+      return productComparison;
+    }
+
+    return leftReservation.id.localeCompare(rightReservation.id);
+  });
+
+  for (const reservation of reservationsInLockOrder) {
     const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number }>`
       SELECT on_hand AS "onHand", reserved
       FROM product_inventory
       WHERE product_id = ${reservation.productId}
+      ORDER BY product_id
       FOR UPDATE
     `);
 
