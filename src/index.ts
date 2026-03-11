@@ -1,7 +1,6 @@
 import './types/express';
 import express from 'express';
 import cors from 'cors';
-// import dotenv from 'dotenv';
 import { Server } from 'http';
 import responseInterceptor from './middleware/response-interceptor';
 import getEnvConfig from './config/env';
@@ -17,8 +16,6 @@ import httpLogger from './utils/http-logger';
 import { pgStop, pgInit } from './db';
 // TODO
 // import { startBackgroundJobs } from './jobs';
-
-// dotenv.config();
 
 /* -------------------------Setup variables------------------------- */
 const { port, corsOrigin } = getEnvConfig();
