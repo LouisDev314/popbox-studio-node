@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { z } from 'zod';
 import requireAdminAuth from '../../../middleware/admin-auth';
 import validateBody from '../../../middleware/request-body-validation';
@@ -22,7 +21,7 @@ import {
   updateProduct,
   updateStandardInventory,
   updateTag,
-  uploadProductImage,
+  uploadProductImages,
 } from '../../../services/admin';
 import {
   getAdminOrder,
@@ -56,9 +55,13 @@ import {
   tagBodySchema,
   tagPatchBodySchema,
 } from '../../../schemas/admin';
+import {
+  parseProductImageUpload,
+  readProductImageFiles,
+  readProductImageUploadMetadata,
+} from '../../../services/admin/helpers';
 
 const adminRouter: Router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
 adminRouter.use(requireAdminAuth);
 
@@ -89,20 +92,18 @@ adminRouter.patch(
 adminRouter.post(
   '/products/:id/images',
   validateParams(productIdParamsSchema, 'product id'),
-  upload.single('file'),
+  parseProductImageUpload,
   async (req, res) => {
     const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const files = readProductImageFiles(req);
 
-    if (!req.file) {
-      return res.send_badRequest('Image file is required');
+    if (!files.length) {
+      return res.send_badRequest('At least one image file is required');
     }
 
-    const result = await uploadProductImage(
-      params.id,
-      req.file,
-      typeof req.body.altText === 'string' ? req.body.altText : null,
-    );
-    return res.send_created('Product image uploaded', result);
+    const metadata = readProductImageUploadMetadata(req, files.length);
+    const result = await uploadProductImages(params.id, files, metadata);
+    return res.send_created('Product images uploaded', result);
   },
 );
 

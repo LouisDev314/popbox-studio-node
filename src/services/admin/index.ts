@@ -10,13 +10,13 @@ import { listProducts } from '../product';
 import { clampLimit } from '../../utils/limit';
 import {
   assertProductExists,
-  buildImageUrl,
   buildStoragePath,
   ensureUniqueSlug,
   replaceProductTags,
   syncKujiInventory,
   throwStorageFailure,
 } from '../../utils/product';
+import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
 type CursorPayload = {
   createdAt: string;
@@ -201,27 +201,20 @@ export const updateProduct = async (
   return updated;
 };
 
-export const uploadProductImage = async (productId: string, file: Express.Multer.File, altText?: string | null) => {
+export const uploadProductImages = async (
+  productId: string,
+  files: Express.Multer.File[],
+  metadata?: {
+    altTexts?: Array<string | null | undefined>;
+  },
+) => {
   await assertProductExists(productId);
+  validateProductImageFiles(files);
 
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-  if (!allowedTypes.includes(file.mimetype)) {
-    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Unsupported image file type');
+  const altTexts = metadata?.altTexts ?? [];
+  if (altTexts.length > 0 && altTexts.length !== files.length) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'altTexts must match the number of uploaded files');
   }
-
-  if (file.size > 5 * 1024 * 1024) {
-    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Image must be 5MB or smaller');
-  }
-
-  const storageKey = buildStoragePath(productId, file.originalname);
-  const { error } = await supabaseAdmin.storage
-    .from(getEnvConfig().supabaseStorageBucket)
-    .upload(storageKey, file.buffer, {
-      contentType: file.mimetype,
-      upsert: false,
-    });
-
-  throwStorageFailure('Unable to upload image', error);
 
   const [lastImage] = await db
     .select({
@@ -230,24 +223,57 @@ export const uploadProductImage = async (productId: string, file: Express.Multer
     .from(productImages)
     .where(eq(productImages.productId, productId));
 
-  const [image] = await db
-    .insert(productImages)
-    .values({
-      productId,
-      storageKey,
-      altText: altText ?? null,
-      sortOrder: (lastImage?.sortOrder ?? 0) + 1,
-    })
-    .returning();
+  const uploadedStorageKeys: string[] = [];
+  const pendingImages: Array<{
+    productId: string;
+    storageKey: string;
+    altText: string | null;
+    sortOrder: number;
+  }> = [];
 
-  if (!image) {
-    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Image record creation failed');
+  try {
+    for (const [index, file] of files.entries()) {
+      const storageKey = buildStoragePath(productId, file.originalname);
+      const { error } = await supabaseAdmin.storage
+        .from(getEnvConfig().supabaseStorageBucket)
+        .upload(storageKey, file.buffer, {
+          contentType: file.mimetype,
+          upsert: false,
+        });
+
+      throwStorageFailure('Unable to upload image', error);
+
+      uploadedStorageKeys.push(storageKey);
+      pendingImages.push({
+        productId,
+        storageKey,
+        altText: altTexts[index] ?? null,
+        sortOrder: (lastImage?.sortOrder ?? 0) + index + 1,
+      });
+    }
+  } catch (error) {
+    await rollbackUploadedProductImages(productId, uploadedStorageKeys, error);
+    throw error;
   }
 
-  return {
-    ...image,
-    url: buildImageUrl(image.storageKey),
-  };
+  try {
+    const insertedImages = await db.transaction(async (tx) => {
+      const rows = await tx.insert(productImages).values(pendingImages).returning();
+
+      if (rows.length !== pendingImages.length) {
+        throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Image record creation failed');
+      }
+
+      return rows;
+    });
+
+    return {
+      images: insertedImages.map(mapProductImage),
+    };
+  } catch (error) {
+    await rollbackUploadedProductImages(productId, uploadedStorageKeys, error);
+    throw error;
+  }
 };
 
 export const reorderProductImages = async (productId: string, imageIds: string[]) => {
