@@ -1,18 +1,18 @@
 import Exception from '../utils/Exception';
 import HttpStatusCode from './http-status-code';
 
-export const ORDER_STATUSES = [
-  'pending_payment',
-  'paid',
-  'packed',
-  'shipped',
-  'cancelled',
-  'refunded',
-  'paid_needs_attention',
-  'expired',
-];
+const OrderStatus = {
+  PENDING_PAYMENT: 'pending_payment',
+  PAID: 'paid',
+  PACKED: 'packed',
+  SHIPPED: 'shipped',
+  CANCELLED: 'cancelled',
+  REFUNDED: 'refunded',
+  PAID_NEEDS_ATTENTION: 'paid_needs_attention',
+  EXPIRED: 'expired',
+} as const;
 
-export type OrderStatus = (typeof ORDER_STATUSES)[number];
+export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending_payment: ['paid', 'cancelled', 'expired', 'paid_needs_attention'],

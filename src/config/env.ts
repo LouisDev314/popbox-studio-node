@@ -5,6 +5,7 @@ const env = {
   nodeEnv: process.env.NODE_ENV || 'dev',
   logLevel: process.env.LOG_LEVEL || 'info',
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3001',
+  clientBaseUrl: process.env.CLIENT_BASE_URL || 'http://localhost:3001',
   adminBaseUrl: process.env.ADMIN_BASE_URL || 'http://localhost:3001/admin',
 
   // Supabase
@@ -19,7 +20,7 @@ const env = {
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
 
   // SMTP
-  resendAPIKey: process.env.RESEND_API_KEY || '',
+  resendApiKey: process.env.RESEND_API_KEY || '',
   resendFromEmail: process.env.RESEND_FROM_EMAIL || '',
 
   // Salt
