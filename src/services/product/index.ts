@@ -1,5 +1,4 @@
 import { and, asc, desc, eq, inArray, lt, gt, or, sql, type SQL } from 'drizzle-orm';
-import getEnvConfig from '../../config/env';
 import { db } from '../../db';
 import { collections, kujiPrizes, productImages, productInventory, productTags, products, tags } from '../../db/schema';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
@@ -17,8 +16,7 @@ import {
   ProductSort,
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
-
-const { supabaseUrl, supabaseStorageBucket } = getEnvConfig();
+import { buildImageUrl } from '../../utils/product';
 
 const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
   newest: [desc(products.createdAt), desc(products.id)],
@@ -143,12 +141,6 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
   }
 
   return maps;
-};
-
-// Supabase storage
-const buildImageUrl = (storageKey: string) => {
-  const cleanPath = storageKey.startsWith('/') ? storageKey.slice(1) : storageKey;
-  return `${supabaseUrl}/storage/v1/object/public/${supabaseStorageBucket}/${cleanPath}`;
 };
 
 export const mapProductCard = (row: ProductCardQueryRow): ProductCard => ({

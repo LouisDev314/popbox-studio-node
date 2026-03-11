@@ -1,4 +1,4 @@
-type CursorPayload = Record<string, string | number>;
+export type CursorPayload = Record<string, string | number>;
 
 export const encodeCursor = (payload: CursorPayload): string => {
   if (!payload || Object.keys(payload).length === 0) {

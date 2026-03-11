@@ -5,6 +5,7 @@ import tagsRouter from './tags-router';
 import productsRouter from './products-router';
 import searchRouter from './search-router';
 import ordersRouter from './orders-router';
+import adminRouter from './admin-router';
 
 const v1Router: Router = Router();
 
@@ -14,5 +15,6 @@ v1Router.use('/tags', tagsRouter);
 v1Router.use('/products', productsRouter);
 v1Router.use('/search', searchRouter);
 v1Router.use('/orders', ordersRouter);
+v1Router.use('/admin', adminRouter);
 
 export default v1Router;
