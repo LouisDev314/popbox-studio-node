@@ -18,6 +18,10 @@ const env = {
   // Stripe
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+  stripeShippingRateCents: process.env.STRIPE_SHIPPING_RATE_CENTS || '',
+  stripeSuccessUrl: process.env.STRIPE_SUCCESS_URL || '',
+  stripeCancelUrl: process.env.STRIPE_CANCEL_URL || '',
+  stripeCheckoutSessionReservationTtl: Number(process.env.STRIPE_CHECK_SESSION_RESERVATION_TTL) || 10 * 60 * 1000,
 
   // SMTP
   resendApiKey: process.env.RESEND_API_KEY || '',

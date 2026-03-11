@@ -6,6 +6,7 @@ import productsRouter from './products-router';
 import searchRouter from './search-router';
 import ordersRouter from './orders-router';
 import adminRouter from './admin-router';
+import checkoutRouter from './checkout-router';
 
 const v1Router: Router = Router();
 
@@ -16,5 +17,6 @@ v1Router.use('/products', productsRouter);
 v1Router.use('/search', searchRouter);
 v1Router.use('/orders', ordersRouter);
 v1Router.use('/admin', adminRouter);
+v1Router.use('/checkout', checkoutRouter);
 
 export default v1Router;
