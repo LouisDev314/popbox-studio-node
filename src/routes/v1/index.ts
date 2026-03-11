@@ -7,6 +7,7 @@ import searchRouter from './search-router';
 import ordersRouter from './orders-router';
 import adminRouter from './admin-router';
 import checkoutRouter from './checkout-router';
+import webhooksRouter from './webhooks-router';
 
 const v1Router: Router = Router();
 
@@ -18,5 +19,6 @@ v1Router.use('/search', searchRouter);
 v1Router.use('/orders', ordersRouter);
 v1Router.use('/admin', adminRouter);
 v1Router.use('/checkout', checkoutRouter);
+v1Router.use('/webhooks', webhooksRouter);
 
 export default v1Router;
