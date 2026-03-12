@@ -1,213 +1,238 @@
 # Production Hardening Plan
 
-## Phase 1 - Fix Stripe Webhook Raw Body Handling
+This plan reflects the repository state as of March 12, 2026.
+
+Repo-truth notes:
+- Checkout idempotency already exists via `Idempotency-Key` plus `orders.checkout_idempotency_key`.
+- Basic late-payment handling already exists through `paid_needs_attention`, but the trust boundary and expiry alignment still need tightening.
+- Refund tracking already exists in `payments.refunded_amount_cents`, but there is no durable Stripe refund reconciliation path yet.
+- Guest order access currently trusts a long-lived token from `?token=` or `x-order-token` on every request; this needs to become a one-click token exchange into an HttpOnly cookie-backed guest session.
+
+## Phase 1 - Stripe Webhook Runtime Correctness
 
 ### Goal
-Ensure Stripe webhook signature verification works reliably and webhook delivery can finalize orders safely.
+Make Stripe signature verification work on the real runtime path and keep webhook processing safe under duplicate deliveries and failures.
 
 ### Risk being fixed
-- Global JSON parsing currently runs before the webhook route, which can mutate the request body and break Stripe signature verification.
-- Duplicate webhook deliveries can race with each other and should not create inconsistent order state.
+- `express.json()` currently runs before `/api/v1/webhooks/stripe`, which breaks Stripe raw-body verification in the deployed runtime path.
+- The webhook route is not isolated from global body parsing.
+- Failure handling should always persist the best-available webhook processing state and stay non-fatal to the process.
 
-### Files likely affected
+### Files expected
 - `src/index.ts`
 - `src/routes/v1/index.ts`
 - `src/routes/v1/webhooks-router/index.ts`
 - `src/services/webhooks/index.ts`
 
-### Implementation steps
+### Implementation summary
 1. Mount the Stripe webhook router before global JSON and URL-encoded middleware.
-2. Apply `express.raw({ type: 'application/json' })` on the Stripe webhook route.
-3. Keep the raw request body as a `Buffer` all the way into `stripe.webhooks.constructEvent(...)`.
-4. Make duplicate webhook deliveries safe by avoiding duplicate event-row insert failures and short-circuiting already-processed events.
-5. Ensure webhook processing failures are recorded without crashing the process.
+2. Keep `express.raw({ type: 'application/json' })` only on the Stripe webhook route.
+3. Ensure the runtime path passes an untouched `Buffer` to `stripe.webhooks.constructEvent(...)`.
+4. Keep duplicate delivery handling idempotent by short-circuiting already-processed events and avoiding duplicate event-row failures.
+5. Record webhook failure state without crashing the process.
 
 ### Acceptance criteria
-- Stripe webhook signature verification uses the untouched raw request body.
-- Global JSON middleware does not affect `/api/v1/webhooks/stripe`.
-- Duplicate `checkout.session.completed` deliveries do not corrupt order state.
-- Orders can finalize through the webhook flow.
+- Stripe signature verification uses the untouched raw request body.
+- `/api/v1/webhooks/stripe` is not affected by global JSON parsing.
+- Replayed webhook deliveries are treated as duplicates safely.
+- Processing failures return an error response but do not crash the process.
 
 ### Manual verification checklist
-1. Start the server with a dummy `STRIPE_WEBHOOK_SECRET`, for example `whsec_test`, plus valid local database configuration.
-2. Generate a signed test payload locally with Stripe's SDK using `stripe.webhooks.generateTestHeaderString(...)` and send it with `curl --data-binary` to `/api/v1/webhooks/stripe`.
-3. Confirm the webhook returns `200` and the event is recorded in `stripe_webhook_events`.
-4. Replay the exact same payload and signature a second time and confirm the request still returns `200` and is treated as a duplicate.
-5. Send the same JSON payload through normal `-d` JSON handling with an invalid signature and confirm the route rejects it with `400`.
+1. Start the server with a valid database and a dummy `STRIPE_WEBHOOK_SECRET` such as `whsec_test`.
+2. Generate a signed payload locally with Stripe’s SDK and send it with `curl --data-binary` to `/api/v1/webhooks/stripe`.
+3. Confirm the route returns success and a row is written to `stripe_webhook_events`.
+4. Replay the exact same event and confirm it is treated as a duplicate without re-finalizing the order.
+5. Send the same JSON with an invalid signature and confirm the route rejects it with `400`.
+6. Force a downstream processing failure and confirm the event row records `failed` without taking down the process.
 
-## Phase 2 - Align Reservation TTL with Stripe Session Expiry
+## Phase 2 - Reservation and Checkout Expiry Correctness
 
 ### Goal
-Prevent Stripe from accepting payment after local inventory reservations have expired.
+Enforce one checkout TTL and ensure Stripe session expiry, reservation expiry, and cleanup behavior all use the same window.
 
 ### Risk being fixed
-- Reservation expiry is currently split between environment config and a hardcoded ten-minute cleanup rule.
-- Stripe session expiry is not explicitly aligned with local reservation expiry, which can allow late payment against expired stock.
+- TTL currently comes from config but is used as a raw millisecond value without validating Stripe’s `expires_at` constraints.
+- Pending-order expiry cleanup is based on `orders.created_at`, while reservation expiry is based on `inventory_reservations.expires_at`; they should be aligned intentionally.
+- Late successful payment must remain a manual-attention path, never an automatic stock allocation.
 
-### Files likely affected
+### Files expected
 - `src/config/env.ts`
 - `src/constants/checkout.ts`
 - `src/services/checkout/index.ts`
 - `src/services/checkout/helpers.ts`
 - `src/jobs/helpers.ts`
 
-### Implementation steps
-1. Define a single reservation TTL constant sourced from config.
-2. Use that TTL for local `expiresAt` reservation timestamps.
-3. Set Stripe Checkout `expires_at` from the same TTL.
-4. Replace hardcoded pending-order expiry windows with the shared TTL.
-5. Ensure late webhook finalization routes the order to `paid_needs_attention` instead of auto-accepting it.
+### Implementation summary
+1. Define one validated checkout TTL source for MVP.
+2. Use it for local reservation expiry timestamps.
+3. Set Stripe Checkout `expires_at` from the same TTL in Stripe-valid seconds.
+4. Ensure cleanup logic expires pending orders on the same effective boundary.
+5. Preserve the explicit `paid_needs_attention` path for late successful payments.
 
 ### Acceptance criteria
-- Reservation expiry and Stripe Checkout expiry match exactly.
-- Expired orders are not auto-finalized as paid.
-- Inventory is not double-sold because of mismatched expiry windows.
+- Local reservation expiry and Stripe Checkout expiry match.
+- TTL is rejected at startup if it is invalid for Stripe Checkout.
+- Expired pending orders release reservations consistently.
+- Late successful webhooks become `paid_needs_attention` instead of `paid`.
 
 ### Manual verification checklist
-1. Set the shared checkout TTL to a valid Stripe value, such as 30 minutes.
-2. Create a checkout session and confirm the order reservation `expires_at` matches the Stripe session expiry.
-3. For local simulation, manually move the reservation `expires_at` into the past in the database and run the cleanup job path.
+1. Configure a Stripe-valid checkout TTL.
+2. Create a checkout session and confirm order reservation expiry and Stripe session expiry line up.
+3. Move a reservation past expiry and run the cleanup path.
 4. Confirm the order becomes `expired` and reservations are released.
-5. Deliver a simulated late `checkout.session.completed` webhook and confirm the order moves to `paid_needs_attention`.
+5. Deliver a late successful checkout webhook and confirm the order becomes `paid_needs_attention`.
 
-## Phase 3 - Add Idempotent Checkout Creation
+## Phase 3 - Finalization Trust-Boundary Correctness
 
 ### Goal
-Prevent duplicate orders and duplicate Stripe Checkout sessions during retries.
+Only mark orders paid when finalized Stripe data matches server-side expectations, and persist authoritative post-payment customer/address details from Stripe.
 
 ### Risk being fixed
-- The current checkout flow creates a new order and a new Stripe session on every request.
-- Double-submit and network retry scenarios can create duplicate pending orders.
+- Checkout is currently CAD-only by convention, but finalization does not yet enforce currency and amount invariants before marking the order paid.
+- Finalization currently trusts pre-Stripe order address snapshots instead of Stripe-confirmed checkout details.
+- Server-side pricing authority must remain intact during webhook finalization.
 
-### Files likely affected
-- `src/routes/v1/checkout-router/index.ts`
-- `src/schemas/checkout.ts`
+### Files expected
 - `src/services/checkout/index.ts`
 - `src/services/checkout/helpers.ts`
+- `src/services/webhooks/index.ts`
 - `src/db/schema.ts`
 - `supabase/migrations/*`
 
-### Implementation steps
-1. Accept a checkout idempotency key from the `Idempotency-Key` header without changing the checkout body shape.
-2. Persist that key on the order or payment record with a uniqueness guarantee.
-3. Reuse an existing pending order and Stripe session when the same key is replayed.
-4. Pass the same idempotency key through to Stripe session creation.
-5. Keep error handling safe so a failed Stripe call does not leave an idempotency key pointing at a broken paid state.
+### Implementation summary
+1. Enforce CAD-only at finalization time.
+2. Validate Stripe subtotal/shipping/total against the server-side order before marking it paid.
+3. Persist finalized Stripe customer, shipping, and billing details onto the order/payment record.
+4. Keep stale pre-Stripe request payloads out of the final paid-state trust boundary.
 
 ### Acceptance criteria
-- Repeating the same checkout request with the same idempotency key returns the original pending checkout session.
-- A double-click does not create duplicate orders.
-- Stripe does not receive duplicate session creations for the same idempotent attempt.
+- Non-CAD Stripe sessions are never marked paid.
+- Mismatched Stripe totals are never marked paid automatically.
+- Paid orders store finalized Stripe customer/address details needed for fulfillment and support.
+- Server-side product pricing remains authoritative.
 
 ### Manual verification checklist
-1. Submit the same checkout payload twice with the same `Idempotency-Key` header.
-2. Confirm both responses point to the same order and Stripe session.
-3. Repeat with a different `Idempotency-Key` header and confirm a new order is created.
-4. Simulate a client retry after a timeout and confirm no duplicate pending orders exist.
+1. Complete a normal CAD checkout and confirm the order is marked paid.
+2. Simulate a Stripe session payload with a mismatched amount and confirm the order becomes `paid_needs_attention` or equivalent safe state.
+3. Confirm the saved order uses Stripe-confirmed address/customer details after payment finalization.
 
-## Phase 4 - Fix Inventory Lock Ordering and Race Conditions
+## Phase 4 - Admin Cancellation and Inventory Invariants
 
 ### Goal
-Prevent deadlocks and inventory corruption during checkout, expiry, and payment finalization.
+Make unpaid-order cancellation and admin inventory edits preserve sane stock state.
 
 ### Risk being fixed
-- Checkout currently locks product inventory in request item order, which can deadlock under concurrent carts.
-- Reservation conversion and cleanup can contend for the same inventory rows.
+- Admin cancellation currently sets order status but does not guarantee reservations are released atomically.
+- Admin inventory edits can currently set `onHand` below `reserved`.
+- Kuji prize edits can currently create impossible `initialQuantity` and `remainingQuantity` combinations.
 
-### Files likely affected
+### Files expected
+- `src/services/orders/index.ts`
+- `src/services/admin/index.ts`
+- `src/utils/product.ts`
+- `src/db/schema.ts`
+
+### Implementation summary
+1. Release unpaid-order reservations atomically when an admin cancels a pending order.
+2. Reject standard inventory updates where `onHand < reserved`.
+3. Reject kuji prize edits that would create impossible remaining/initial states.
+4. Reuse existing transaction and locking patterns already present in checkout and cleanup flows.
+
+### Acceptance criteria
+- Cancelling an unpaid order releases active reservations in the same logical operation.
+- Standard inventory can never end up with `onHand < reserved`.
+- Kuji prize quantities remain internally consistent after admin edits.
+
+### Manual verification checklist
+1. Create a pending unpaid order and cancel it through the admin API.
+2. Confirm the order becomes `cancelled` and inventory reservations are released.
+3. Attempt to set `onHand` below reserved inventory and confirm the request is rejected.
+4. Attempt invalid kuji prize quantity edits and confirm the request is rejected.
+
+## Phase 5 - Refund Safety and Minimal Reconciliation
+
+### Goal
+Keep Stripe as the source of truth for money movement while making refunds idempotent enough for MVP and recoverable when local state drifts.
+
+### Risk being fixed
+- Local refund state currently updates after a Stripe refund call, but the Stripe refund identifier is not persisted for reconciliation.
+- Repeated admin refund attempts can create ambiguity during retries or partial failures.
+- There is no minimal operator path to reconcile unexpected Stripe-side refund state differences.
+
+### Files expected
+- `src/services/orders/index.ts`
+- `src/db/schema.ts`
+- `supabase/migrations/*`
+- `src/routes/v1/admin-router/index.ts`
+
+### Implementation summary
+1. Persist Stripe refund identifiers and basic refund metadata needed for reconciliation.
+2. Make refund requests idempotent enough for retry safety within current architecture.
+3. Add a minimal repo-supported reconciliation or recovery path for Stripe refund drift.
+4. Keep scope limited to MVP refund realities, not a finance subsystem.
+
+### Acceptance criteria
+- Refund retries do not create unsafe double-local-accounting behavior.
+- Local records can be matched back to actual Stripe refunds.
+- Operators have a minimal path to repair refund drift safely.
+
+### Manual verification checklist
+1. Refund a paid order and confirm Stripe refund identifiers are stored locally.
+2. Retry the same refund path and confirm it resolves safely.
+3. Simulate local/Stripe refund drift and confirm the documented reconciliation path can repair it.
+
+## Phase 6 - Guest Magic-Link Hardening
+
+### Goal
+Preserve one-click guest access while converting the emailed token into a secure long-lived-enough guest session cookie and removing the token from normal request flow.
+
+### Risk being fixed
+- Guest order APIs currently accept the raw token on every request from query string or header.
+- Token-bearing URLs are more likely to leak into logs, browser history, analytics, or screenshots.
+- Stripe session metadata currently carries the raw guest token.
+
+### Files expected
+- `src/middleware/guest-order-access.ts`
+- `src/routes/v1/orders-router/index.ts`
 - `src/services/checkout/index.ts`
 - `src/services/checkout/helpers.ts`
-- `src/jobs/helpers.ts`
+- `src/services/notifications/index.ts`
+- `src/utils/http-logger.ts`
+- `src/utils/logger.ts`
+- `src/types/express.ts`
 
-### Implementation steps
-1. Lock inventory rows in deterministic product-id order during checkout.
-2. Keep reservation creation and inventory reserve increments inside the same transaction.
-3. Ensure reservation conversion and expiration release follow the same lock order.
-4. Guard cleanup and webhook finalization against conflicting updates on the same order and inventory rows.
-
-### Acceptance criteria
-- Concurrent checkout attempts do not deadlock because of lock-order inversion.
-- Inventory counters never become negative.
-- Cleanup and payment finalization do not double-release or double-convert reservations.
-
-### Manual verification checklist
-1. Prepare two carts containing the same products in opposite order.
-2. Submit both checkout requests at nearly the same time.
-3. Confirm both requests resolve without hanging and inventory remains valid.
-4. Repeat while running the expiry cleanup path and confirm no negative inventory appears.
-
-## Phase 5 - Harden Admin Order Operations
-
-### Goal
-Prevent admin actions from breaking payment, refund, and inventory invariants.
-
-### Risk being fixed
-- Admin order status updates currently expose a generic status patch path, which can allow disallowed operational behavior even if transitions exist.
-- Refund handling should only change local state after Stripe confirms the refund.
-
-### Files likely affected
-- `src/routes/v1/admin-router/index.ts`
-- `src/services/orders/index.ts`
-- `src/constants/order-status.ts`
-- `src/schemas/admin.ts`
-
-### Implementation steps
-1. Restrict admin status operations to the allowed business actions for MVP.
-2. Explicitly block any admin path that could mark an unpaid order as paid.
-3. Keep refund execution Stripe-first and local-state-second.
-4. Preserve atomic local updates after a successful Stripe refund response.
-5. Enforce the no-refund-after-reveal rule for Kuji tickets.
+### Implementation summary
+1. Keep the emailed link one-click.
+2. Treat the emailed token as a login or exchange token, not as a forever bearer token.
+3. Add a backend exchange endpoint that verifies the token, sets a secure HttpOnly cookie-based guest session for that order, and redirects to a clean order URL.
+4. Move normal order and ticket access to the cookie-backed guest session.
+5. Redact token-bearing query strings and headers from logs.
+6. Avoid storing plaintext guest tokens in Stripe metadata or snapshots where practical.
+7. Keep the guest session long-lived enough for normal users, and document the persistence tradeoff.
 
 ### Acceptance criteria
-- Admins cannot manually mark orders paid.
-- Refunds cannot bypass Stripe.
-- Admin actions cannot create impossible order or payment states.
+- The emailed link remains one-click for users.
+- Successful token exchange sets an HttpOnly cookie and redirects to a clean URL.
+- Normal guest API access no longer requires `?token=` or `x-order-token`.
+- Token-bearing values are redacted from logs.
 
 ### Manual verification checklist
-1. Attempt to move a `pending_payment` order to `paid` from the admin API and confirm rejection.
-2. Refund a valid paid order and confirm Stripe is called before local status changes.
-3. Attempt to refund an order with revealed Kuji tickets and confirm rejection.
-4. Cancel an unpaid order and confirm it stays unpaid and inventory is consistent.
+1. Complete a checkout and use the emailed link.
+2. Confirm the backend validates the token, sets a guest session cookie, and redirects to a clean order URL.
+3. Refresh the order page and fetch tickets without resending the token.
+4. Confirm invalid or reused tokens fail safely.
+5. Confirm logs do not expose the token.
 
-## Phase 6 - Fix Late Payment Handling
-
-### Goal
-Handle payments that arrive after expiration without silently accepting the order.
-
-### Risk being fixed
-- A completed Stripe payment can arrive after local expiry and must not automatically consume stock.
-- Late success currently relies on generic error handling rather than an explicit late-payment path.
-
-### Files likely affected
-- `src/services/checkout/helpers.ts`
-- `src/services/webhooks/index.ts`
-- `src/jobs/helpers.ts`
-
-### Implementation steps
-1. Detect webhook finalization for expired or otherwise non-finalizable orders.
-2. Move those orders to `paid_needs_attention`.
-3. Do not convert or re-create inventory reservations for late payments.
-4. Preserve Stripe payment details for manual follow-up.
-
-### Acceptance criteria
-- Late payments never auto-allocate stock.
-- Late payments are visible as `paid_needs_attention`.
-
-### Manual verification checklist
-1. Expire a pending order locally.
-2. Deliver a simulated successful checkout webhook afterward.
-3. Confirm the order becomes `paid_needs_attention`.
-4. Confirm inventory is not reduced and reservations remain released.
-
-## Phase 7 - Environment Validation
+## Phase 7 - Startup Environment Validation
 
 ### Goal
-Fail fast when critical production secrets are missing.
+Fail fast with clear startup errors when critical runtime configuration is missing or invalid.
 
 ### Risk being fixed
-- The server can start with empty critical configuration values and fail later in checkout, webhook, auth, or email flows.
+- The app currently defaults many critical values to empty strings and may fail only after traffic hits a runtime path.
+- URL and secret configuration required for checkout, webhook, order-token hashing, email, and storage should be validated before boot.
 
-### Files likely affected
+### Files expected
 - `src/config/env.ts`
 - `src/index.ts`
 - `src/integrations/stripe.ts`
@@ -215,80 +240,79 @@ Fail fast when critical production secrets are missing.
 - `src/integrations/supabase.ts`
 - `src/db/index.ts`
 
-### Implementation steps
-1. Add startup validation for required production-critical environment variables.
-2. Validate `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `DATABASE_URL`, Supabase credentials, `ORDER_TOKEN_PEPPER`, and `RESEND_API_KEY`.
-3. Fail startup with a clear error when required config is missing.
+### Implementation summary
+1. Validate required env vars at startup.
+2. At minimum validate `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `DATABASE_URL`, Supabase credentials, `ORDER_TOKEN_PEPPER`, `RESEND_API_KEY`, and required public/base URLs for redirects and emails.
+3. Fail startup with explicit messages.
 
 ### Acceptance criteria
-- The server refuses to start when critical secrets are absent.
-- Startup errors clearly identify the missing configuration.
+- Missing critical configuration prevents startup.
+- Error messages identify the invalid or missing configuration clearly.
 
 ### Manual verification checklist
-1. Unset one required variable at a time.
-2. Start the server.
-3. Confirm startup fails immediately with a clear error message.
-4. Restore the variable and confirm startup succeeds again.
+1. Unset one required env var at a time.
+2. Start the server and confirm startup fails immediately with a clear error.
+3. Restore the env var and confirm startup succeeds.
 
-## Phase 8 - Health and Readiness Checks
+## Phase 8 - Health and Readiness
 
 ### Goal
-Improve operational visibility for deploys and runtime checks.
+Provide lightweight liveness and readiness endpoints for Render single-instance deployment.
 
 ### Risk being fixed
 - There is only a basic `/health` endpoint today.
-- There is no dedicated readiness check for database connectivity.
+- There is no separate readiness check for database reachability.
 
-### Files likely affected
+### Files expected
 - `src/routes/v1/health-router/index.ts`
 - `src/index.ts`
 - `src/db/index.ts`
 
-### Implementation steps
-1. Add `/health/live` for basic process liveness.
-2. Add `/health/ready` that verifies database connectivity.
-3. Keep the checks lightweight and compatible with Render.
+### Implementation summary
+1. Keep `/health/live` for process liveness.
+2. Add `/health/ready` with a lightweight database check.
+3. Preserve a simple `/health` response if useful for compatibility.
 
 ### Acceptance criteria
-- Liveness returns success when the process is running.
-- Readiness fails when the database is unavailable and succeeds when it is healthy.
+- Liveness succeeds whenever the process is running.
+- Readiness succeeds only when the database is reachable.
+- The checks stay cheap enough for normal platform probing.
 
 ### Manual verification checklist
 1. Call `/health/live` on a running server and confirm `200`.
 2. Call `/health/ready` with a healthy database and confirm `200`.
-3. Stop database connectivity or misconfigure `DATABASE_URL` and confirm `/health/ready` fails.
+3. Break database connectivity and confirm `/health/ready` fails.
 
-## Phase 9 - Operational Safety Improvements
+## Phase 9 - Operational Safety Polish
 
 ### Goal
-Improve production stability without changing the system architecture.
+Reduce accidental sensitive-data leakage and make non-fatal external failures easier to operate safely.
 
 ### Risk being fixed
-- Request logs can expose sensitive guest order tokens in query strings.
-- External-service failures need tighter containment.
-- Background cleanup and webhook processing should remain idempotent and non-fatal.
+- Token-bearing query strings and custom headers are not specifically redacted today.
+- Stripe and Resend failures should stay non-fatal where business-safe and log enough context for operators.
+- `paid_needs_attention` is present but could be easier to inspect or act on with minimal additional support.
 
-### Files likely affected
+### Files expected
 - `src/utils/http-logger.ts`
 - `src/utils/logger.ts`
+- `src/services/webhooks/index.ts`
 - `src/services/notifications/index.ts`
 - `src/services/orders/index.ts`
-- `src/services/webhooks/index.ts`
-- `src/jobs/index.ts`
-- `src/jobs/helpers.ts`
+- `src/routes/v1/admin-router/index.ts`
 
-### Implementation steps
-1. Redact sensitive query parameters such as guest access tokens from request logs.
-2. Tighten external-service error handling for Stripe, Resend, and webhook processing.
-3. Review cleanup job behavior for idempotency under retries.
-4. Ensure webhook failures are logged and surfaced without crashing the server.
+### Implementation summary
+1. Redact sensitive query parameters and headers from request logging.
+2. Tighten non-fatal handling around Stripe and Resend failures.
+3. Keep jobs and webhook processing idempotent and non-fatal.
+4. Improve `paid_needs_attention` operability if there is a safe small-scope path.
 
 ### Acceptance criteria
-- Sensitive request parameters are not emitted to logs.
-- External-service failures do not take down the process.
-- Retried jobs and retried webhooks remain safe.
+- Logs do not expose guest tokens or similar sensitive values.
+- External-service failures stay contained and actionable.
+- `paid_needs_attention` orders are easier to find or handle operationally.
 
 ### Manual verification checklist
-1. Hit a guest order URL containing a token and confirm the token is redacted in logs.
-2. Simulate Stripe or Resend failures and confirm the server stays up.
-3. Re-run cleanup paths and confirm repeated execution does not corrupt state.
+1. Exercise checkout, webhook, guest access, and email paths while watching logs.
+2. Confirm sensitive tokens are redacted.
+3. Simulate Stripe or Resend failures and confirm the process stays up and logs actionable errors.

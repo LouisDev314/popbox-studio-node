@@ -93,13 +93,24 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
     };
   } catch (error) {
     try {
-      await db
+      const updateResult = await db
         .update(stripeWebhookEvents)
         .set({
           status: 'failed',
+          processedAt: null,
           errorMessage: error instanceof Error ? error.message : 'Unknown webhook error',
         })
-        .where(eq(stripeWebhookEvents.stripeEventId, event.id));
+        .where(eq(stripeWebhookEvents.stripeEventId, event.id))
+        .returning({
+          stripeEventId: stripeWebhookEvents.stripeEventId,
+        });
+
+      if (updateResult.length === 0) {
+        logger.error(
+          { stripeEventId: event.id, eventType: event.type },
+          'Stripe webhook failed before a failure state could be persisted',
+        );
+      }
     } catch (updateError) {
       logger.error({ error: updateError, stripeEventId: event.id }, 'Failed to persist Stripe webhook failure state');
     }
