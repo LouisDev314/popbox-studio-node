@@ -19,7 +19,6 @@ declare global {
       orderAccess?: {
         orderId: string;
         publicId: string;
-        token: string;
       };
     }
   }

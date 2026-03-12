@@ -2,13 +2,13 @@ import { and, count, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import type Stripe from 'stripe';
 import stripe from '../../integrations/stripe';
-import getEnvConfig from '../../config/env';
 import { db } from '../../db';
 import { customers, orderItems, orders, paymentRefunds, payments, shipments, tickets } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import logger from '../../utils/logger';
+import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { sendShipmentEmail } from '../notifications';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
@@ -350,7 +350,19 @@ export const updateShipment = async (
     await updateAdminOrderStatus(orderId, 'shipped');
   }
 
-  const orderUrl = `${getEnvConfig().clientBaseUrl}/orders/${detail.publicId}`;
+  const [orderAccess] = await db
+    .select({
+      guestAccessTokenHash: orders.guestAccessTokenHash,
+    })
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!orderAccess?.guestAccessTokenHash) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Order access link is unavailable');
+  }
+
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, orderAccess.guestAccessTokenHash);
   try {
     await sendShipmentEmail({
       email: detail.customer.email,

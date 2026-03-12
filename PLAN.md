@@ -7,6 +7,7 @@ Repo-truth notes:
 - Basic late-payment handling already exists through `paid_needs_attention`, but the trust boundary and expiry alignment still need tightening.
 - Refund tracking already exists in `payments.refunded_amount_cents`, but there is no durable Stripe refund reconciliation path yet.
 - Guest order access currently trusts a long-lived token from `?token=` or `x-order-token` on every request; this needs to become a one-click token exchange into an HttpOnly cookie-backed guest session.
+- Cookie-backed guest session helpers already exist locally, but the runtime still accepts raw guest tokens on normal order APIs, still returns raw guest tokens from checkout success/finalization responses, and currently builds guest access links from an `apiBaseUrl` config that is not yet defined in `src/config/env.ts`.
 
 ## Phase 1 - Stripe Webhook Runtime Correctness
 
@@ -194,6 +195,7 @@ Preserve one-click guest access while converting the emailed token into a secure
 ### Files expected
 - `src/middleware/guest-order-access.ts`
 - `src/routes/v1/orders-router/index.ts`
+- `src/config/env.ts`
 - `src/services/checkout/index.ts`
 - `src/services/checkout/helpers.ts`
 - `src/services/notifications/index.ts`

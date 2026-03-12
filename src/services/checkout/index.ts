@@ -10,9 +10,9 @@ import { createGuestAccessToken, createPublicId, hashGuestAccessToken } from '..
 import logger from '../../utils/logger';
 import { getOrderDetailById } from '../orders/helpers';
 import { CreateCheckoutSessionInput, LockedProductRow } from '../../types/checkout';
+import { buildClientOrderUrl, buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import {
   assertCanadianAddress,
-  buildOrderUrl,
   createOrUpdateCustomer,
   ensurePaymentSessionMetadata,
   insertAddresses,
@@ -82,8 +82,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   }
 
   const normalizedItems = normalizeItems(input.items);
-  const guestAccessToken = createGuestAccessToken();
-  const guestAccessTokenHash = hashGuestAccessToken(guestAccessToken);
+  const guestAccessTokenHash = hashGuestAccessToken(createGuestAccessToken());
   const { expiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(getEnvConfig().stripeCheckoutSessionReservationTtl);
   const publicId = createPublicId('ord');
   const shippingCents = getEnvConfig().stripeShippingRateCents;
@@ -258,7 +257,6 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
         metadata: {
           orderId: createdOrder.id,
           orderPublicId: createdOrder.publicId,
-          guestAccessToken,
         },
       },
       {
@@ -326,19 +324,32 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     throw new Exception(HttpStatusCode.CONFLICT, 'Checkout session has not been paid yet');
   }
 
-  const { orderId, guestAccessToken } = ensurePaymentSessionMetadata(session);
+  const { orderId } = ensurePaymentSessionMetadata(session);
   const detail = await getOrderDetailById(orderId);
 
   if (!['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(detail.status)) {
     throw new Exception(HttpStatusCode.CONFLICT, 'Order payment is still awaiting webhook finalization');
   }
 
-  const orderUrl = buildOrderUrl(detail.publicId, guestAccessToken);
+  const [order] = await db
+    .select({
+      guestAccessTokenHash: orders.guestAccessTokenHash,
+    })
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!order?.guestAccessTokenHash) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Order access link is unavailable');
+  }
+
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, order.guestAccessTokenHash);
+  const clientOrderUrl = buildClientOrderUrl(detail.publicId);
 
   return {
     publicId: detail.publicId,
-    guestAccessToken,
     orderUrl,
+    clientOrderUrl,
     needsAttention: detail.status === 'paid_needs_attention',
     order: detail,
   };

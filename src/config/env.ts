@@ -1,13 +1,16 @@
 import 'dotenv/config';
 import { parseStripeCheckoutReservationTtlMs } from '../utils/checkout';
 
+const port = Number(process.env.PORT) || 3000;
+
 const env = {
-  port: Number(process.env.PORT) || 3000,
+  port,
   nodeEnv: process.env.NODE_ENV || 'dev',
   logLevel: process.env.LOG_LEVEL || 'info',
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3001',
   clientBaseUrl: process.env.CLIENT_BASE_URL || 'http://localhost:3001',
   adminBaseUrl: process.env.ADMIN_BASE_URL || 'http://localhost:3001/admin',
+  apiBaseUrl: process.env.API_BASE_URL || `http://localhost:${port}`,
 
   // Supabase
   databaseUrl: process.env.DATABASE_URL || '',
