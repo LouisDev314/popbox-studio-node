@@ -40,11 +40,7 @@ const loadGuestOrderAccessRecord = async (publicId: string) => {
   };
 };
 
-const hasValidPresentedToken = (params: {
-  presentedToken: string;
-  publicId: string;
-  guestAccessTokenHash: string;
-}) => {
+const hasValidPresentedToken = (params: { presentedToken: string; publicId: string; guestAccessTokenHash: string }) => {
   return (
     verifyGuestOrderAccessToken(params.presentedToken, params.publicId, params.guestAccessTokenHash) ||
     verifyLegacyGuestOrderAccessToken(params.presentedToken, params.guestAccessTokenHash)
@@ -67,7 +63,10 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
       return res.redirect(302, buildClientOrderUrl(publicId));
     }
 
-    if (!presentedToken || !hasValidPresentedToken({ presentedToken, publicId, guestAccessTokenHash: order.guestAccessTokenHash })) {
+    if (
+      !presentedToken ||
+      !hasValidPresentedToken({ presentedToken, publicId, guestAccessTokenHash: order.guestAccessTokenHash })
+    ) {
       if (sessionToken) {
         clearGuestOrderSessionCookie(res, publicId);
       }
