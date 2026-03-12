@@ -12,6 +12,7 @@ import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './hel
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
 import { OrdersCursor } from '../../types/order';
+import { releaseReservationsForOrder } from '../checkout/helpers';
 
 const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
 
@@ -156,7 +157,10 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
       status: nextStatus,
     };
 
-    if (nextStatus === 'cancelled') updateValues.cancelledAt = new Date();
+    if (nextStatus === 'cancelled') {
+      await releaseReservationsForOrder(tx, orderId, 'released');
+      updateValues.cancelledAt = new Date();
+    }
 
     return tx.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
   });
