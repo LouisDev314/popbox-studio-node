@@ -270,7 +270,7 @@ adminRouter.post(
   async (req, res) => {
     const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
     const body = readValidatedBody<z.infer<typeof refundBodySchema>>(req);
-    const result = await refundOrder(params.id, body.reason);
+    const result = await refundOrder(params.id, body.amountCents, body.reason);
     return res.send_ok('Order refunded', result);
   },
 );

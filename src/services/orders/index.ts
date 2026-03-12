@@ -12,6 +12,8 @@ import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-
 import { clampLimit } from '../../utils/limit';
 import { OrdersCursor } from '../../types/order';
 
+const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
+
 const getTicketViewById = async (orderId: string, ticketId: string) => {
   const ticketView = await getGuestTicketView((await getOrderDetailById(orderId)).publicId);
   const ticket = ticketView.tickets.find((item) => item.id === ticketId);
@@ -124,23 +126,40 @@ export const getAdminOrder = async (orderId: string) => {
 };
 
 export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-
-  if (!order) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+  if (!ADMIN_MUTABLE_ORDER_STATUSES.has(nextStatus)) {
+    throw new Exception(HttpStatusCode.CONFLICT, `Admins cannot set orders to ${nextStatus}`);
   }
 
-  assertOrderStatusTransition(order.status, nextStatus);
+  const [updated] = await db.transaction(async (tx) => {
+    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
 
-  const updateValues: Partial<typeof orders.$inferInsert> = {
-    status: nextStatus,
-  };
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+    }
 
-  if (nextStatus === 'cancelled') updateValues.cancelledAt = new Date();
-  if (nextStatus === 'refunded') updateValues.refundedAt = new Date();
-  if (nextStatus === 'paid') updateValues.paidAt = order.paidAt ?? new Date();
+    if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
+    }
 
-  const [updated] = await db.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
+    if (nextStatus === 'packed' && order.status !== 'paid') {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be packed');
+    }
+
+    if (nextStatus === 'shipped' && order.status !== 'packed') {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Only packed orders can be marked shipped');
+    }
+
+    assertOrderStatusTransition(order.status, nextStatus);
+
+    const updateValues: Partial<typeof orders.$inferInsert> = {
+      status: nextStatus,
+    };
+
+    if (nextStatus === 'cancelled') updateValues.cancelledAt = new Date();
+
+    return tx.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
+  });
+
   return updated;
 };
 
@@ -196,10 +215,17 @@ export const updateShipment = async (
   return getOrderDetailById(orderId);
 };
 
-export const refundOrder = async (orderId: string, reason?: string | null) => {
-  const [payment, order] = await Promise.all([
+export const refundOrder = async (orderId: string, amountCents?: number, reason?: string | null) => {
+  const [payment, order, orderTickets] = await Promise.all([
     db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1),
     db.select().from(orders).where(eq(orders.id, orderId)).limit(1),
+    db
+      .select({
+        id: tickets.id,
+        revealedAt: tickets.revealedAt,
+      })
+      .from(tickets)
+      .where(eq(tickets.orderId, orderId)),
   ]);
 
   const paymentRow = payment[0];
@@ -217,33 +243,73 @@ export const refundOrder = async (orderId: string, reason?: string | null) => {
     throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
   }
 
+  if (orderTickets.some((ticket) => ticket.revealedAt)) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
+  }
+
+  const refundableAmountCents = paymentRow.amountCents - paymentRow.refundedAmountCents;
+
+  if (refundableAmountCents <= 0) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'No refundable amount remains for this order');
+  }
+
+  const requestedRefundAmountCents = amountCents ?? refundableAmountCents;
+
+  if (requestedRefundAmountCents > refundableAmountCents) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
+  }
+
   await stripe.refunds.create({
     payment_intent: paymentRow.providerPaymentIntentId,
+    amount: requestedRefundAmountCents,
   });
 
   await db.transaction(async (tx) => {
-    await tx
-      .update(orders)
-      .set({
-        status: 'refunded',
-        refundedAt: new Date(),
-      })
-      .where(eq(orders.id, orderId));
+    const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
+
+    if (!lockedOrder || !lockedPayment) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+    }
+
+    if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(lockedOrder.status)) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
+    }
+
+    const lockedRefundableAmountCents = lockedPayment.amountCents - lockedPayment.refundedAmountCents;
+
+    if (requestedRefundAmountCents > lockedRefundableAmountCents) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
+    }
+
+    const nextRefundedAmountCents = lockedPayment.refundedAmountCents + requestedRefundAmountCents;
+    const isFullyRefunded = nextRefundedAmountCents >= lockedPayment.amountCents;
 
     await tx
       .update(payments)
       .set({
-        status: 'refunded',
+        refundedAmountCents: nextRefundedAmountCents,
+        status: isFullyRefunded ? 'refunded' : lockedPayment.status,
       })
       .where(eq(payments.orderId, orderId));
 
     await tx
-      .update(tickets)
+      .update(orders)
       .set({
-        voidedAt: new Date(),
-        voidReason: reason ?? 'Refunded by admin',
+        status: isFullyRefunded ? 'refunded' : lockedOrder.status,
+        refundedAt: isFullyRefunded ? new Date() : lockedOrder.refundedAt,
       })
-      .where(eq(tickets.orderId, orderId));
+      .where(eq(orders.id, orderId));
+
+    if (isFullyRefunded) {
+      await tx
+        .update(tickets)
+        .set({
+          voidedAt: new Date(),
+          voidReason: reason ?? 'Refunded by admin',
+        })
+        .where(eq(tickets.orderId, orderId));
+    }
   });
 
   return getOrderDetailById(orderId);

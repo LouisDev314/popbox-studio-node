@@ -90,7 +90,7 @@ export const adminOrderParamsSchema = z.object({
 });
 
 export const orderStatusBodySchema = z.object({
-  status: z.enum(ORDER_STATUS),
+  status: z.enum([ORDER_STATUS.PACKED, ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED]),
 });
 
 export const dateTimeStringSchema = z
@@ -106,5 +106,6 @@ export const shipmentBodySchema = z.object({
 });
 
 export const refundBodySchema = z.object({
+  amountCents: z.coerce.number().int().min(1).optional(),
   reason: z.string().optional().nullable(),
 });

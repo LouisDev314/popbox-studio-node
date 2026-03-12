@@ -355,6 +355,7 @@ export const payments = pgTable(
     providerPaymentIntentId: varchar('provider_payment_intent_id', { length: 255 }),
     providerCheckoutSessionId: varchar('provider_checkout_session_id', { length: 255 }),
     amountCents: integer('amount_cents').notNull(),
+    refundedAmountCents: integer('refunded_amount_cents').notNull().default(0),
     currency: varchar('currency', { length: 3 }).notNull().default('CAD'),
     status: paymentStatusEnum('status').notNull().default('pending'),
     rawResponse: jsonb('raw_response').$type<Record<string, unknown> | null>(),
@@ -366,6 +367,8 @@ export const payments = pgTable(
     uniqueIndex('payments_provider_payment_intent_unique').on(table.providerPaymentIntentId),
     uniqueIndex('payments_provider_checkout_session_unique').on(table.providerCheckoutSessionId),
     check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
+    check('payments_refunded_amount_cents_check', sql`${table.refundedAmountCents} >= 0`),
+    check('payments_refunded_amount_not_exceed_amount_check', sql`${table.refundedAmountCents} <= ${table.amountCents}`),
   ],
 );
 
