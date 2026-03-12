@@ -43,6 +43,21 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
   }
 }
 
+type FinalizedCheckoutAmounts = {
+  currency: string;
+  subtotalCents: number;
+  shippingCents: number;
+  taxCents: number;
+  discountCents: number;
+  totalCents: number;
+};
+
+type FinalizedCheckoutSnapshots = {
+  customerDetailsJson: Record<string, unknown>;
+  shippingAddressJson: Record<string, unknown> | null;
+  billingAddressJson: Record<string, unknown> | null;
+};
+
 type ExpireStripeCheckoutSessionResult =
   | {
       outcome: 'expired';
@@ -63,6 +78,164 @@ const getStripeErrorCode = (error: unknown) => {
   return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
     ? error.code
     : null;
+};
+
+const splitFullName = (fullName: string | null) => {
+  const normalized = fullName?.trim() || '';
+
+  if (!normalized) {
+    return {
+      firstName: null,
+      lastName: null,
+    };
+  }
+
+  const [firstName, ...remaining] = normalized.split(/\s+/);
+
+  return {
+    firstName: firstName || null,
+    lastName: remaining.length ? remaining.join(' ') : null,
+  };
+};
+
+const normalizeStripeCurrency = (currency: string | null | undefined) => currency?.trim().toUpperCase() || '';
+
+const getCollectedShippingDetails = (session: Stripe.Checkout.Session) => session.collected_information?.shipping_details ?? null;
+
+const isCompleteAddressSnapshot = (snapshot: Record<string, unknown> | null) => {
+  if (!snapshot) {
+    return false;
+  }
+
+  return ['fullName', 'line1', 'city', 'province', 'postalCode', 'countryCode'].every((field) => {
+    const value = snapshot[field];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+};
+
+const buildAddressSnapshot = (params: {
+  source: 'stripe_shipping_details' | 'stripe_customer_details';
+  fullName: string | null | undefined;
+  phone: string | null | undefined;
+  email?: string | null | undefined;
+  address: Stripe.Address | null | undefined;
+}) => {
+  const address = params.address;
+
+  if (!address) {
+    return null;
+  }
+
+  return {
+    fullName: params.fullName?.trim() || null,
+    line1: address.line1?.trim() || null,
+    line2: address.line2?.trim() || null,
+    city: address.city?.trim() || null,
+    province: address.state?.trim() || null,
+    postalCode: address.postal_code?.trim() || null,
+    countryCode: address.country?.trim().toUpperCase() || null,
+    phone: params.phone?.trim() || null,
+    email: params.email?.trim().toLowerCase() || null,
+    source: params.source,
+  } satisfies Record<string, unknown>;
+};
+
+const buildFinalizedCheckoutAmounts = (session: Stripe.Checkout.Session): FinalizedCheckoutAmounts => ({
+  currency: normalizeStripeCurrency(session.currency),
+  subtotalCents: session.amount_subtotal ?? 0,
+  shippingCents: session.total_details?.amount_shipping ?? 0,
+  taxCents: session.total_details?.amount_tax ?? 0,
+  discountCents: session.total_details?.amount_discount ?? 0,
+  totalCents: session.amount_total ?? 0,
+});
+
+const buildFinalizedCheckoutSnapshots = (session: Stripe.Checkout.Session): FinalizedCheckoutSnapshots => {
+  const shippingDetails = getCollectedShippingDetails(session);
+  const fullName = session.customer_details?.name?.trim() || shippingDetails?.name?.trim() || null;
+  const { firstName, lastName } = splitFullName(fullName);
+  const email = session.customer_details?.email?.trim().toLowerCase() || session.customer_email?.trim().toLowerCase() || null;
+  const phone = session.customer_details?.phone?.trim() || null;
+
+  return {
+    customerDetailsJson: {
+      email,
+      fullName,
+      firstName,
+      lastName,
+      phone,
+      source: 'stripe_customer_details',
+    },
+    shippingAddressJson: buildAddressSnapshot({
+      source: 'stripe_shipping_details',
+      fullName: shippingDetails?.name ?? fullName,
+      phone,
+      email,
+      address: shippingDetails?.address,
+    }),
+    billingAddressJson: buildAddressSnapshot({
+      source: 'stripe_customer_details',
+      fullName,
+      phone,
+      email,
+      address: session.customer_details?.address,
+    }),
+  };
+};
+
+const assertFinalizedCheckoutSessionMatchesOrder = (
+  lockedOrder: {
+    stripeCheckoutSessionId: string | null;
+    currency: string;
+    subtotalCents: number;
+    shippingCents: number;
+  },
+  session: Stripe.Checkout.Session,
+  amounts: FinalizedCheckoutAmounts,
+  snapshots: FinalizedCheckoutSnapshots,
+) => {
+  if (session.payment_status !== 'paid') {
+    throw new NeedsAttentionError(`Stripe Checkout Session ${session.id} is not in a paid state`);
+  }
+
+  if (lockedOrder.stripeCheckoutSessionId && lockedOrder.stripeCheckoutSessionId !== session.id) {
+    throw new NeedsAttentionError('Stripe Checkout Session id does not match the order record');
+  }
+
+  if (normalizeStripeCurrency(lockedOrder.currency) !== 'CAD' || amounts.currency !== 'CAD') {
+    throw new NeedsAttentionError('Stripe Checkout currency does not match the CAD-only order policy');
+  }
+
+  if (amounts.subtotalCents !== lockedOrder.subtotalCents) {
+    throw new NeedsAttentionError('Stripe Checkout subtotal does not match the server-side order subtotal');
+  }
+
+  if (amounts.shippingCents !== lockedOrder.shippingCents) {
+    throw new NeedsAttentionError('Stripe Checkout shipping does not match the server-side order shipping');
+  }
+
+  if (amounts.discountCents !== 0) {
+    throw new NeedsAttentionError('Stripe Checkout applied an unexpected discount');
+  }
+
+  if (amounts.totalCents !== amounts.subtotalCents + amounts.shippingCents + amounts.taxCents) {
+    throw new NeedsAttentionError('Stripe Checkout total does not reconcile with subtotal, shipping, and tax');
+  }
+
+  if (!isCompleteAddressSnapshot(snapshots.shippingAddressJson)) {
+    throw new NeedsAttentionError('Stripe shipping details are incomplete');
+  }
+
+  if (!isCompleteAddressSnapshot(snapshots.billingAddressJson)) {
+    throw new NeedsAttentionError('Stripe billing details are incomplete');
+  }
+
+  if ((snapshots.shippingAddressJson?.countryCode as string | undefined)?.toUpperCase() !== 'CA') {
+    throw new NeedsAttentionError('Stripe shipping details are outside Canada');
+  }
+
+  if (typeof snapshots.customerDetailsJson.email !== 'string' || !snapshots.customerDetailsJson.email) {
+    throw new NeedsAttentionError('Stripe customer email is missing');
+  }
 };
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
@@ -451,6 +624,8 @@ export const markOrderPaidNeedsAttention = async (
   tx: DbClient,
   orderId: string,
   session: Stripe.Checkout.Session,
+  finalizedSnapshots: FinalizedCheckoutSnapshots,
+  finalizedAmounts: FinalizedCheckoutAmounts,
   reservationStatus: 'released' | 'expired' = 'released',
 ) => {
   await releaseReservationsForOrder(tx, orderId, reservationStatus);
@@ -459,11 +634,16 @@ export const markOrderPaidNeedsAttention = async (
     .update(orders)
     .set({
       status: 'paid_needs_attention',
+      currency: finalizedAmounts.currency || 'CAD',
+      stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      subtotalCents: session.amount_subtotal ?? 0,
-      taxCents: session.total_details?.amount_tax ?? 0,
-      shippingCents: session.total_details?.amount_shipping ?? 0,
-      totalCents: session.amount_total ?? 0,
+      customerDetailsJson: finalizedSnapshots.customerDetailsJson,
+      shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
+      billingAddressJson: finalizedSnapshots.billingAddressJson,
+      subtotalCents: finalizedAmounts.subtotalCents,
+      taxCents: finalizedAmounts.taxCents,
+      shippingCents: finalizedAmounts.shippingCents,
+      totalCents: finalizedAmounts.totalCents,
       paidAt: new Date(),
       placedAt: new Date(),
     })
@@ -474,8 +654,8 @@ export const markOrderPaidNeedsAttention = async (
     .set({
       providerCheckoutSessionId: session.id,
       providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      amountCents: session.amount_total ?? 0,
-      currency: (session.currency ?? 'cad').toUpperCase(),
+      amountCents: finalizedAmounts.totalCents,
+      currency: finalizedAmounts.currency || 'CAD',
       status: 'paid',
       rawResponse: session as unknown as Record<string, unknown>,
     })
@@ -484,26 +664,30 @@ export const markOrderPaidNeedsAttention = async (
 
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
   const { orderId, guestAccessToken } = ensurePaymentSessionMetadata(session);
+  const finalizedAmounts = buildFinalizedCheckoutAmounts(session);
+  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
   let orderPublicId = '';
-  let subtotalCents = 0;
-  let totalCents = 0;
 
   try {
     const finalizeResult = await db.transaction(async (tx) => {
       const lockedOrderResult = await tx.execute<{
         publicId: string;
         customerId: string;
+        stripeCheckoutSessionId: string | null;
         status: (typeof orders.$inferSelect)['status'];
+        currency: string;
         subtotalCents: number;
-        totalCents: number;
+        shippingCents: number;
       }>(sql`
         SELECT
           id,
           public_id AS "publicId",
           customer_id AS "customerId",
+          stripe_checkout_session_id AS "stripeCheckoutSessionId",
           status,
+          currency,
           subtotal_cents AS "subtotalCents",
-          total_cents AS "totalCents"
+          shipping_cents AS "shippingCents"
         FROM orders
         WHERE id = ${orderId}
         FOR UPDATE
@@ -515,8 +699,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       }
 
       orderPublicId = lockedOrder.publicId;
-      subtotalCents = Number(lockedOrder.subtotalCents);
-      totalCents = Number(lockedOrder.totalCents);
 
       if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
         return {
@@ -534,6 +716,18 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         throw new NeedsAttentionError(`Order is ${lockedOrder.status} and can no longer be finalized`);
       }
 
+      assertFinalizedCheckoutSessionMatchesOrder(
+        {
+          stripeCheckoutSessionId: lockedOrder.stripeCheckoutSessionId,
+          currency: lockedOrder.currency,
+          subtotalCents: Number(lockedOrder.subtotalCents),
+          shippingCents: Number(lockedOrder.shippingCents),
+        },
+        session,
+        finalizedAmounts,
+        finalizedSnapshots,
+      );
+
       await convertReservations(tx, orderId);
       await allocateKujiTickets(tx, orderId, lockedOrder.customerId);
 
@@ -541,11 +735,16 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         .update(orders)
         .set({
           status: 'paid',
+          currency: finalizedAmounts.currency,
+          stripeCheckoutSessionId: session.id,
           stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          subtotalCents: session.amount_subtotal ?? subtotalCents,
-          taxCents: session.total_details?.amount_tax ?? 0,
-          shippingCents: session.total_details?.amount_shipping ?? 0,
-          totalCents: session.amount_total ?? totalCents,
+          customerDetailsJson: finalizedSnapshots.customerDetailsJson,
+          shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
+          billingAddressJson: finalizedSnapshots.billingAddressJson,
+          subtotalCents: finalizedAmounts.subtotalCents,
+          taxCents: finalizedAmounts.taxCents,
+          shippingCents: finalizedAmounts.shippingCents,
+          totalCents: finalizedAmounts.totalCents,
           paidAt: new Date(),
           placedAt: new Date(),
         })
@@ -556,8 +755,8 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         .set({
           providerCheckoutSessionId: session.id,
           providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          amountCents: session.amount_total ?? totalCents,
-          currency: (session.currency ?? 'cad').toUpperCase(),
+          amountCents: finalizedAmounts.totalCents,
+          currency: finalizedAmounts.currency,
           status: 'paid',
           rawResponse: session as unknown as Record<string, unknown>,
         })
@@ -593,7 +792,14 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       );
 
       await db.transaction(async (tx) => {
-        await markOrderPaidNeedsAttention(tx, orderId, session, isLatePayment ? 'expired' : 'released');
+        await markOrderPaidNeedsAttention(
+          tx,
+          orderId,
+          session,
+          finalizedSnapshots,
+          finalizedAmounts,
+          isLatePayment ? 'expired' : 'released',
+        );
       });
 
       return {

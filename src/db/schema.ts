@@ -241,6 +241,7 @@ export const orders = pgTable(
     stripeCheckoutSessionId: varchar('stripe_checkout_session_id', { length: 255 }),
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
     checkoutIdempotencyKey: varchar('checkout_idempotency_key', { length: 255 }),
+    customerDetailsJson: jsonb('customer_details_json').$type<Record<string, unknown> | null>(),
     shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, unknown>>().notNull(),
     billingAddressJson: jsonb('billing_address_json').$type<Record<string, unknown> | null>(),
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
