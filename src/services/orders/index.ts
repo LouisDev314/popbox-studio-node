@@ -15,13 +15,30 @@ import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-
 import { clampLimit } from '../../utils/limit';
 import { OrdersCursor } from '../../types/order';
 import { releaseReservationsForOrder } from '../checkout/helpers';
+import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
-const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['paid', 'packed', 'shipped', 'cancelled']);
+const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
 const NON_FAILED_REFUND_STATUSES = new Set(['pending', 'succeeded', 'requires_action']);
 
 type RefundContext = {
   order: typeof orders.$inferSelect;
   payment: typeof payments.$inferSelect;
+};
+
+const KUJI_ORDER_ACTION_LOCK_PREFIX = 'orders:kuji-action';
+
+const withOrderActionLock = async <T>(orderId: string, action: string, work: () => Promise<T>) => {
+  const lockHandle = await tryAcquireAdvisoryLock(`${KUJI_ORDER_ACTION_LOCK_PREFIX}:${orderId}`);
+
+  if (!lockHandle) {
+    throw new Exception(HttpStatusCode.CONFLICT, `Order is busy processing ${action}. Retry shortly.`);
+  }
+
+  try {
+    return await work();
+  } finally {
+    await releaseAdvisoryLock(lockHandle);
+  }
 };
 
 const buildRefundIdempotencyKey = (params: {
@@ -180,39 +197,43 @@ export const getGuestTickets = async (publicId: string) => {
 };
 
 export const revealTicket = async (orderId: string, ticketId: string) => {
-  const [ticket] = await db
-    .select()
-    .from(tickets)
-    .where(and(eq(tickets.id, ticketId), eq(tickets.orderId, orderId)))
-    .limit(1);
+  return withOrderActionLock(orderId, 'ticket reveal', async () => {
+    const [ticket] = await db
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.id, ticketId), eq(tickets.orderId, orderId)))
+      .limit(1);
 
-  if (!ticket) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
-  }
+    if (!ticket) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
+    }
 
-  if (ticket.revealedAt || ticket.voidedAt) {
-    throw new Exception(HttpStatusCode.BAD_REQUEST, 'Ticket is revealed or voided');
-  }
+    if (ticket.revealedAt || ticket.voidedAt) {
+      throw new Exception(HttpStatusCode.BAD_REQUEST, 'Ticket is revealed or voided');
+    }
 
-  await db
-    .update(tickets)
-    .set({
-      revealedAt: new Date(),
-    })
-    .where(eq(tickets.id, ticket.id));
+    await db
+      .update(tickets)
+      .set({
+        revealedAt: new Date(),
+      })
+      .where(eq(tickets.id, ticket.id));
 
-  return getTicketViewById(orderId, ticketId);
+    return getTicketViewById(orderId, ticketId);
+  });
 };
 
 export const revealAllTickets = async (orderId: string) => {
-  await db
-    .update(tickets)
-    .set({
-      revealedAt: sql`COALESCE(${tickets.revealedAt}, now())`,
-    })
-    .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`, sql`${tickets.revealedAt} IS NULL`));
+  return withOrderActionLock(orderId, 'ticket reveal', async () => {
+    await db
+      .update(tickets)
+      .set({
+        revealedAt: sql`COALESCE(${tickets.revealedAt}, now())`,
+      })
+      .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`, sql`${tickets.revealedAt} IS NULL`));
 
-  return getGuestTicketView((await getOrderDetailById(orderId)).publicId);
+    return getGuestTicketView((await getOrderDetailById(orderId)).publicId);
+  });
 };
 
 export const listAdminOrders = async (filters: { status?: OrderStatus; cursor?: string; limit?: number }) => {
@@ -276,6 +297,10 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
     throw new Exception(HttpStatusCode.CONFLICT, `Admins cannot set orders to ${nextStatus}`);
   }
 
+  if (nextStatus === 'paid') {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Admins cannot manually normalize paid_needs_attention orders to paid');
+  }
+
   const [updated] = await db.transaction(async (tx) => {
     const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
 
@@ -285,10 +310,6 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
 
     if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
       throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
-    }
-
-    if (nextStatus === 'paid' && order.status !== 'paid_needs_attention') {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only set orders to paid from paid_needs_attention');
     }
 
     if (nextStatus === 'packed' && order.status !== 'paid') {
@@ -385,92 +406,105 @@ export const updateShipment = async (
 };
 
 export const refundOrder = async (orderId: string, amountCents?: number, reason?: string | null) => {
-  const { payment: paymentRow, order: orderRow, orderTickets } = await getRefundContext(orderId);
+  return withOrderActionLock(orderId, 'refund', async () => {
+    const { payment: paymentRow, order: orderRow, orderTickets } = await getRefundContext(orderId);
 
-  if (!paymentRow.providerPaymentIntentId) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');
-  }
-
-  if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(orderRow.status)) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
-  }
-
-  if (orderTickets.some((ticket) => ticket.revealedAt)) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
-  }
-
-  const refundableAmountCents = paymentRow.amountCents - paymentRow.refundedAmountCents;
-
-  if (refundableAmountCents <= 0) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'No refundable amount remains for this order');
-  }
-
-  const requestedRefundAmountCents = amountCents ?? refundableAmountCents;
-  const refundIdempotencyKey = buildRefundIdempotencyKey({
-    orderId,
-    paymentId: paymentRow.id,
-    alreadyRefundedAmountCents: paymentRow.refundedAmountCents,
-    requestedRefundAmountCents,
-  });
-
-  if (requestedRefundAmountCents > refundableAmountCents) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
-  }
-
-  let stripeRefund: Stripe.Refund;
-  try {
-    stripeRefund = await stripe.refunds.create(
-      {
-        payment_intent: paymentRow.providerPaymentIntentId,
-        amount: requestedRefundAmountCents,
-        metadata: {
-          orderId,
-          paymentId: paymentRow.id,
-          refundIdempotencyKey,
-        },
-      },
-      {
-        idempotencyKey: refundIdempotencyKey,
-      },
-    );
-  } catch (error) {
-    logger.error({ error, orderId, requestedRefundAmountCents }, 'Stripe refund request failed');
-    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to create Stripe refund');
-  }
-
-  await db.transaction(async (tx) => {
-    const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-    const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
-
-    if (!lockedOrder || !lockedPayment) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+    if (!paymentRow.providerPaymentIntentId) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');
     }
 
-    if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(lockedOrder.status)) {
+    if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(orderRow.status)) {
       throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
     }
 
-    const lockedRefundableAmountCents = lockedPayment.amountCents - lockedPayment.refundedAmountCents;
+    if (orderTickets.some((ticket) => ticket.revealedAt)) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
+    }
 
-    if (requestedRefundAmountCents > lockedRefundableAmountCents) {
+    const refundableAmountCents = paymentRow.amountCents - paymentRow.refundedAmountCents;
+
+    if (refundableAmountCents <= 0) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'No refundable amount remains for this order');
+    }
+
+    const requestedRefundAmountCents = amountCents ?? refundableAmountCents;
+    const refundIdempotencyKey = buildRefundIdempotencyKey({
+      orderId,
+      paymentId: paymentRow.id,
+      alreadyRefundedAmountCents: paymentRow.refundedAmountCents,
+      requestedRefundAmountCents,
+    });
+
+    if (requestedRefundAmountCents > refundableAmountCents) {
       throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
     }
 
-    await upsertRefundRecord(tx, {
-      orderId,
-      paymentId: lockedPayment.id,
-      refund: stripeRefund,
-      idempotencyKey: refundIdempotencyKey,
+    let stripeRefund: Stripe.Refund;
+    try {
+      stripeRefund = await stripe.refunds.create(
+        {
+          payment_intent: paymentRow.providerPaymentIntentId,
+          amount: requestedRefundAmountCents,
+          metadata: {
+            orderId,
+            paymentId: paymentRow.id,
+            refundIdempotencyKey,
+          },
+        },
+        {
+          idempotencyKey: refundIdempotencyKey,
+        },
+      );
+    } catch (error) {
+      logger.error({ error, orderId, requestedRefundAmountCents }, 'Stripe refund request failed');
+      throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to create Stripe refund');
+    }
+
+    await db.transaction(async (tx) => {
+      const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
+      const lockedOrderTickets = await tx
+        .select({
+          id: tickets.id,
+          revealedAt: tickets.revealedAt,
+        })
+        .from(tickets)
+        .where(eq(tickets.orderId, orderId));
+
+      if (!lockedOrder || !lockedPayment) {
+        throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+      }
+
+      if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(lockedOrder.status)) {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
+      }
+
+      if (lockedOrderTickets.some((ticket) => ticket.revealedAt)) {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
+      }
+
+      const lockedRefundableAmountCents = lockedPayment.amountCents - lockedPayment.refundedAmountCents;
+
+      if (requestedRefundAmountCents > lockedRefundableAmountCents) {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
+      }
+
+      await upsertRefundRecord(tx, {
+        orderId,
+        paymentId: lockedPayment.id,
+        refund: stripeRefund,
+        idempotencyKey: refundIdempotencyKey,
+      });
+
+      await syncRefundAggregate(tx, {
+        order: lockedOrder,
+        payment: lockedPayment,
+        ticketVoidReason: reason,
+      });
     });
 
-    await syncRefundAggregate(tx, {
-      order: lockedOrder,
-      payment: lockedPayment,
-      ticketVoidReason: reason,
-    });
+    return getOrderDetailById(orderId);
   });
-
-  return getOrderDetailById(orderId);
 };
 
 export const reconcileOrderRefunds = async (orderId: string) => {

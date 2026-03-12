@@ -4,7 +4,7 @@ import pino from 'pino';
 import { randomUUID } from 'crypto';
 import logger from './logger';
 
-const SENSITIVE_QUERY_PARAMS = new Set(['token']);
+const SENSITIVE_QUERY_PARAMS = new Set(['token', 'session_id']);
 const SENSITIVE_HEADER_NAMES = new Set(['x-order-token']);
 const URL_REDACTION_VALUE = '[REDACTED]';
 
@@ -25,7 +25,9 @@ const redactSensitiveUrl = (rawUrl: string | undefined) => {
     const sanitizedPath = `${url.pathname}${url.search}${url.hash}`;
     return rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? url.toString() : sanitizedPath;
   } catch {
-    return rawUrl.replace(/([?&]token=)[^&]+/gi, `$1${URL_REDACTION_VALUE}`);
+    return rawUrl
+      .replace(/([?&]token=)[^&]+/gi, `$1${URL_REDACTION_VALUE}`)
+      .replace(/([?&]session_id=)[^&]+/gi, `$1${URL_REDACTION_VALUE}`);
   }
 };
 
