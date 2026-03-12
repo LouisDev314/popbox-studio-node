@@ -1,6 +1,8 @@
 import resend from '../../integrations/resend';
 import getEnvConfig from '../../config/env';
 import logger from '../../utils/logger';
+import Exception from '../../utils/Exception';
+import HttpStatusCode from '../../constants/http-status-code';
 
 const { resendApiKey, resendFromEmail } = getEnvConfig();
 
@@ -12,12 +14,17 @@ const sendEmail = async (subject: string, html: string, to: string) => {
     return;
   }
 
-  await resend.emails.send({
+  const response = await resend.emails.send({
     from: resendFromEmail,
     to,
     subject,
     html,
   });
+
+  if (response.error) {
+    logger.error({ error: response.error, subject, to }, 'Resend email send failed');
+    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send transactional email');
+  }
 };
 
 export const sendOrderConfirmationEmail = async (params: {

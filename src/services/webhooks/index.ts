@@ -92,17 +92,25 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
       duplicate: false,
     };
   } catch (error) {
-    await db
-      .update(stripeWebhookEvents)
-      .set({
-        status: 'failed',
-        errorMessage: error instanceof Error ? error.message : 'Unknown webhook error',
-      })
-      .where(eq(stripeWebhookEvents.stripeEventId, event.id));
+    try {
+      await db
+        .update(stripeWebhookEvents)
+        .set({
+          status: 'failed',
+          errorMessage: error instanceof Error ? error.message : 'Unknown webhook error',
+        })
+        .where(eq(stripeWebhookEvents.stripeEventId, event.id));
+    } catch (updateError) {
+      logger.error({ error: updateError, stripeEventId: event.id }, 'Failed to persist Stripe webhook failure state');
+    }
 
     logger.error({ error, stripeEventId: event.id, eventType: event.type }, 'Stripe webhook processing failed');
     throw error;
   } finally {
-    await releaseAdvisoryLock(lockHandle);
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error({ error: unlockError, stripeEventId: event.id }, 'Failed to release Stripe webhook advisory lock');
+    }
   }
 };

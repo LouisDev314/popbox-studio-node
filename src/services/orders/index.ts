@@ -6,6 +6,7 @@ import { customers, orderItems, orders, payments, shipments, tickets } from '../
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
+import logger from '../../utils/logger';
 import { sendShipmentEmail } from '../notifications';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
@@ -202,15 +203,19 @@ export const updateShipment = async (
   }
 
   const orderUrl = `${getEnvConfig().clientBaseUrl}/orders/${detail.publicId}`;
-  await sendShipmentEmail({
-    email: detail.customer.email,
-    firstName: detail.customer.firstName,
-    orderPublicId: detail.publicId,
-    orderUrl,
-    carrierName: shipmentData.carrierName,
-    trackingNumber: shipmentData.trackingNumber,
-    trackingUrl: shipmentData.trackingUrl,
-  });
+  try {
+    await sendShipmentEmail({
+      email: detail.customer.email,
+      firstName: detail.customer.firstName,
+      orderPublicId: detail.publicId,
+      orderUrl,
+      carrierName: shipmentData.carrierName,
+      trackingNumber: shipmentData.trackingNumber,
+      trackingUrl: shipmentData.trackingUrl,
+    });
+  } catch (emailError) {
+    logger.error({ orderId, emailError }, 'Failed to send shipment email');
+  }
 
   return getOrderDetailById(orderId);
 };
@@ -259,10 +264,15 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
     throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
   }
 
-  await stripe.refunds.create({
-    payment_intent: paymentRow.providerPaymentIntentId,
-    amount: requestedRefundAmountCents,
-  });
+  try {
+    await stripe.refunds.create({
+      payment_intent: paymentRow.providerPaymentIntentId,
+      amount: requestedRefundAmountCents,
+    });
+  } catch (error) {
+    logger.error({ error, orderId, requestedRefundAmountCents }, 'Stripe refund request failed');
+    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to create Stripe refund');
+  }
 
   await db.transaction(async (tx) => {
     const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);

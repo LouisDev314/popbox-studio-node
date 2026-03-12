@@ -1,15 +1,18 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { releaseReservationsForOrders } from '../services/checkout/helpers';
+import getEnvConfig from '../config/env';
 
 const CLEANUP_BATCH_SIZE = 100;
+const CHECKOUT_RESERVATION_TTL_MS = getEnvConfig().stripeCheckoutSessionReservationTtl;
 
 const claimExpiredReservationOrderIds = async (limit: number) => {
   return await db.transaction(async (tx) => {
     const result = await tx.execute<{ orderId: string }>(sql`
       SELECT o.id AS "orderId"
       FROM orders AS o
-      WHERE EXISTS (
+      WHERE o.status IN ('pending_payment', 'expired')
+        AND EXISTS (
         SELECT 1
         FROM inventory_reservations AS ir
         WHERE ir.order_id = o.id
@@ -35,7 +38,7 @@ const expirePendingOrdersBatch = async (limit: number) => {
         SELECT id
         FROM orders
         WHERE status = 'pending_payment'
-          AND created_at <= now() - interval '10 minutes'
+          AND created_at <= now() - (${CHECKOUT_RESERVATION_TTL_MS} * interval '1 millisecond')
         ORDER BY created_at, id
         FOR UPDATE SKIP LOCKED
         LIMIT ${limit}
