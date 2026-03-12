@@ -35,6 +35,13 @@ class NeedsAttentionError extends Error {
   }
 }
 
+class LatePaymentNeedsAttentionError extends NeedsAttentionError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LatePaymentNeedsAttentionError';
+  }
+}
+
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 export const normalizeItems = (items: CheckoutItemInput[]) => {
@@ -303,7 +310,7 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
 
   const currentTime = Date.now();
   if (activeReservations.some((reservation) => reservation.expiresAt.getTime() <= currentTime)) {
-    throw new NeedsAttentionError('Reservation expired before payment finalization');
+    throw new LatePaymentNeedsAttentionError('Late payment received after reservation expiration');
   }
 
   const reservationsInLockOrder = [...activeReservations].sort((leftReservation, rightReservation) => {
@@ -353,8 +360,13 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
     .where(and(eq(inventoryReservations.orderId, orderId), eq(inventoryReservations.status, 'active')));
 };
 
-export const markOrderPaidNeedsAttention = async (tx: DbClient, orderId: string, session: Stripe.Checkout.Session) => {
-  await releaseReservationsForOrder(tx, orderId, 'released');
+export const markOrderPaidNeedsAttention = async (
+  tx: DbClient,
+  orderId: string,
+  session: Stripe.Checkout.Session,
+  reservationStatus: 'released' | 'expired' = 'released',
+) => {
+  await releaseReservationsForOrder(tx, orderId, reservationStatus);
 
   await tx
     .update(orders)
@@ -427,6 +439,10 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         };
       }
 
+      if (lockedOrder.status === 'expired') {
+        throw new LatePaymentNeedsAttentionError('Late payment received after order expiration');
+      }
+
       if (lockedOrder.status !== 'pending_payment') {
         throw new NeedsAttentionError(`Order is ${lockedOrder.status} and can no longer be finalized`);
       }
@@ -478,9 +494,19 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     }
   } catch (error) {
     if (error instanceof NeedsAttentionError) {
-      logger.warn({ orderId, reason: error.message }, 'Order payment finalized with manual attention required');
+      const isLatePayment = error instanceof LatePaymentNeedsAttentionError;
+
+      logger.warn(
+        {
+          orderId,
+          reason: error.message,
+          latePayment: isLatePayment,
+        },
+        'Order payment finalized with manual attention required',
+      );
+
       await db.transaction(async (tx) => {
-        await markOrderPaidNeedsAttention(tx, orderId, session);
+        await markOrderPaidNeedsAttention(tx, orderId, session, isLatePayment ? 'expired' : 'released');
       });
 
       return {
