@@ -1,14 +1,16 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
-import { releaseReservationsForOrders } from '../services/checkout/helpers';
+import { expireStripeCheckoutSessionIfOpen, releaseReservationsForOrders } from '../services/checkout/helpers';
 import { orders } from '../db/schema';
+import logger from '../utils/logger';
 
 const CLEANUP_BATCH_SIZE = 100;
 
 const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pending_payment' | 'expired') => {
   return await db.transaction(async (tx) => {
-    const result = await tx.execute<{ orderId: string }>(sql`
+    const result = await tx.execute<{ orderId: string; stripeCheckoutSessionId: string | null }>(sql`
       SELECT o.id AS "orderId"
+        , o.stripe_checkout_session_id AS "stripeCheckoutSessionId"
       FROM orders AS o
       WHERE o.status = ${status}
         AND EXISTS (
@@ -22,7 +24,11 @@ const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pend
       FOR UPDATE OF o SKIP LOCKED
       LIMIT ${limit}
     `);
-    const orderIds = result.map((row) => row.orderId);
+    const claimedOrders = result.map((row) => ({
+      orderId: row.orderId,
+      stripeCheckoutSessionId: row.stripeCheckoutSessionId,
+    }));
+    const orderIds = claimedOrders.map((row) => row.orderId);
 
     if (status === 'pending_payment' && orderIds.length > 0) {
       await tx
@@ -35,7 +41,7 @@ const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pend
 
     await releaseReservationsForOrders(tx, orderIds, 'expired');
 
-    return orderIds;
+    return claimedOrders;
   });
 };
 
@@ -43,13 +49,13 @@ export const cleanupExpiredReservations = async (): Promise<{ processedOrders: n
   let processedOrders = 0;
 
   while (true) {
-    const orderIds = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'expired');
+    const claimedOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'expired');
 
-    if (orderIds.length === 0) {
+    if (claimedOrders.length === 0) {
       break;
     }
 
-    processedOrders += orderIds.length;
+    processedOrders += claimedOrders.length;
   }
 
   return {
@@ -57,8 +63,14 @@ export const cleanupExpiredReservations = async (): Promise<{ processedOrders: n
   };
 };
 
-export const cleanupExpiredPendingOrders = async (): Promise<{ expiredOrders: number }> => {
+export const cleanupExpiredPendingOrders = async (): Promise<{
+  expiredOrders: number;
+  stripeSessionsExpired: number;
+  stripeSessionExpireFailures: number;
+}> => {
   let expiredOrders = 0;
+  let stripeSessionsExpired = 0;
+  let stripeSessionExpireFailures = 0;
 
   while (true) {
     const batchExpiredOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'pending_payment');
@@ -68,9 +80,39 @@ export const cleanupExpiredPendingOrders = async (): Promise<{ expiredOrders: nu
     }
 
     expiredOrders += batchExpiredOrders.length;
+
+    for (const expiredOrder of batchExpiredOrders) {
+      if (!expiredOrder.stripeCheckoutSessionId) {
+        continue;
+      }
+
+      const expireResult = await expireStripeCheckoutSessionIfOpen(expiredOrder.stripeCheckoutSessionId);
+
+      if (expireResult.outcome === 'expired') {
+        stripeSessionsExpired += 1;
+        continue;
+      }
+
+      if (expireResult.outcome === 'error') {
+        stripeSessionExpireFailures += 1;
+        continue;
+      }
+
+      logger.info(
+        {
+          orderId: expiredOrder.orderId,
+          stripeCheckoutSessionId: expiredOrder.stripeCheckoutSessionId,
+          reason: expireResult.reason,
+          status: expireResult.status,
+        },
+        'Stripe Checkout Session did not need proactive expiration after local order expiration',
+      );
+    }
   }
 
   return {
     expiredOrders,
+    stripeSessionsExpired,
+    stripeSessionExpireFailures,
   };
 };

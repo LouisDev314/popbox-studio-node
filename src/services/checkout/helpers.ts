@@ -9,6 +9,7 @@ import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
+import stripe from '../../integrations/stripe';
 import {
   addresses,
   customers,
@@ -41,6 +42,28 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
     this.name = 'LatePaymentNeedsAttentionError';
   }
 }
+
+type ExpireStripeCheckoutSessionResult =
+  | {
+      outcome: 'expired';
+      status: Stripe.Checkout.Session.Status | null;
+    }
+  | {
+      outcome: 'noop';
+      reason: 'not_open' | 'not_found';
+      status: Stripe.Checkout.Session.Status | null;
+    }
+  | {
+      outcome: 'error';
+      reason: 'stripe_error';
+      status: Stripe.Checkout.Session.Status | null;
+    };
+
+const getStripeErrorCode = (error: unknown) => {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : null;
+};
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
@@ -215,6 +238,70 @@ export const ensurePaymentSessionMetadata = (session: Stripe.Checkout.Session) =
     orderId,
     guestAccessToken,
   };
+};
+
+export const expireStripeCheckoutSessionIfOpen = async (
+  sessionId: string,
+): Promise<ExpireStripeCheckoutSessionResult> => {
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.status !== 'open') {
+      return {
+        outcome: 'noop',
+        reason: 'not_open',
+        status: session.status,
+      };
+    }
+
+    const expiredSession = await stripe.checkout.sessions.expire(sessionId);
+
+    return {
+      outcome: 'expired',
+      status: expiredSession.status,
+    };
+  } catch (error) {
+    if (getStripeErrorCode(error) === 'resource_missing') {
+      return {
+        outcome: 'noop',
+        reason: 'not_found',
+        status: null,
+      };
+    }
+
+    try {
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+      if (session.status !== 'open') {
+        return {
+          outcome: 'noop',
+          reason: 'not_open',
+          status: session.status,
+        };
+      }
+    } catch (retryError) {
+      if (getStripeErrorCode(retryError) === 'resource_missing') {
+        return {
+          outcome: 'noop',
+          reason: 'not_found',
+          status: null,
+        };
+      }
+
+      logger.warn(
+        { error: retryError, sessionId },
+        'Stripe Checkout Session status could not be rechecked after local order expiration',
+      );
+    }
+
+    logger.error({ error, sessionId }, 'Failed to expire Stripe Checkout Session after local order expiration');
+
+    return {
+      outcome: 'error',
+      reason: 'stripe_error',
+      status: null,
+    };
+  }
 };
 
 export const allocateKujiTickets = async (tx: DbClient, orderId: string, customerId: string) => {
