@@ -27,6 +27,7 @@ import {
   getAdminOrder,
   listAdminOrders,
   listCustomers,
+  reconcileOrderRefunds,
   refundOrder,
   updateAdminOrderStatus,
   updateShipment,
@@ -274,6 +275,12 @@ adminRouter.post(
     return res.send_ok('Order refunded', result);
   },
 );
+
+adminRouter.post('/orders/:id/refund/reconcile', validateParams(adminOrderParamsSchema, 'order id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+  const result = await reconcileOrderRefunds(params.id);
+  return res.send_ok('Order refunds reconciled', result);
+});
 
 adminRouter.get('/customers', validateQuery(paginationQuerySchema, 'customer filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listCustomers>[0]>(req);

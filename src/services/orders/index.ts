@@ -1,8 +1,10 @@
 import { and, count, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { createHash } from 'crypto';
+import type Stripe from 'stripe';
 import stripe from '../../integrations/stripe';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
-import { customers, orderItems, orders, payments, shipments, tickets } from '../../db/schema';
+import { customers, orderItems, orders, paymentRefunds, payments, shipments, tickets } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
@@ -15,6 +17,148 @@ import { OrdersCursor } from '../../types/order';
 import { releaseReservationsForOrder } from '../checkout/helpers';
 
 const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
+const NON_FAILED_REFUND_STATUSES = new Set(['pending', 'succeeded', 'requires_action']);
+
+type RefundContext = {
+  order: typeof orders.$inferSelect;
+  payment: typeof payments.$inferSelect;
+};
+
+const buildRefundIdempotencyKey = (params: {
+  orderId: string;
+  paymentId: string;
+  alreadyRefundedAmountCents: number;
+  requestedRefundAmountCents: number;
+}) => {
+  return createHash('sha256')
+    .update(
+      `${params.orderId}:${params.paymentId}:${params.alreadyRefundedAmountCents}:${params.requestedRefundAmountCents}:stripe-refund`,
+    )
+    .digest('hex');
+};
+
+const normalizeStripeRefundStatus = (status: string | null | undefined) => status?.trim().toLowerCase() || 'unknown';
+
+const upsertRefundRecord = async (
+  tx: Parameters<typeof db.transaction>[0] extends (tx: infer T) => Promise<unknown> ? T : never,
+  params: {
+    orderId: string;
+    paymentId: string;
+    refund: Stripe.Refund;
+    idempotencyKey?: string | null;
+  },
+) => {
+  const normalizedStatus = normalizeStripeRefundStatus(params.refund.status);
+
+  await tx
+    .insert(paymentRefunds)
+    .values({
+      paymentId: params.paymentId,
+      orderId: params.orderId,
+      providerRefundId: params.refund.id,
+      idempotencyKey: params.idempotencyKey ?? params.refund.metadata?.refundIdempotencyKey ?? null,
+      amountCents: params.refund.amount,
+      currency: (params.refund.currency ?? 'cad').toUpperCase(),
+      status: normalizedStatus,
+      reason: params.refund.reason ?? null,
+      providerCreatedAt: new Date(params.refund.created * 1000),
+      rawResponse: params.refund as unknown as Record<string, unknown>,
+    })
+    .onConflictDoUpdate({
+      target: paymentRefunds.providerRefundId,
+      set: {
+        idempotencyKey: params.idempotencyKey ?? params.refund.metadata?.refundIdempotencyKey ?? null,
+        amountCents: params.refund.amount,
+        currency: (params.refund.currency ?? 'cad').toUpperCase(),
+        status: normalizedStatus,
+        reason: params.refund.reason ?? null,
+        providerCreatedAt: new Date(params.refund.created * 1000),
+        rawResponse: params.refund as unknown as Record<string, unknown>,
+        updatedAt: new Date(),
+      },
+    });
+};
+
+const syncRefundAggregate = async (
+  tx: Parameters<typeof db.transaction>[0] extends (tx: infer T) => Promise<unknown> ? T : never,
+  context: RefundContext & {
+    ticketVoidReason?: string | null | undefined;
+  },
+) => {
+  const refunds = await tx.select().from(paymentRefunds).where(eq(paymentRefunds.paymentId, context.payment.id));
+  const refundedAmountCents = refunds
+    .filter((refund) => NON_FAILED_REFUND_STATUSES.has(normalizeStripeRefundStatus(refund.status)))
+    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  const isFullyRefunded = refundedAmountCents >= context.payment.amountCents;
+  const hasRefundDrift = context.order.status === 'refunded' && !isFullyRefunded;
+
+  await tx
+    .update(payments)
+    .set({
+      refundedAmountCents,
+      status: isFullyRefunded ? 'refunded' : context.payment.status === 'refunded' ? 'paid' : context.payment.status,
+    })
+    .where(eq(payments.id, context.payment.id));
+
+  await tx
+    .update(orders)
+    .set({
+      status: isFullyRefunded
+        ? 'refunded'
+        : hasRefundDrift
+          ? 'paid_needs_attention'
+          : context.order.status === 'refunded'
+            ? 'paid_needs_attention'
+            : context.order.status,
+      refundedAt: isFullyRefunded ? new Date() : null,
+    })
+    .where(eq(orders.id, context.order.id));
+
+  if (isFullyRefunded) {
+    const ticketVoidReason = context.ticketVoidReason ?? 'Refunded by admin';
+    await tx
+      .update(tickets)
+      .set({
+        voidedAt: sql`COALESCE(${tickets.voidedAt}, now())`,
+        voidReason: sql`COALESCE(${tickets.voidReason}, ${ticketVoidReason})`,
+      })
+      .where(eq(tickets.orderId, context.order.id));
+  }
+
+  return {
+    refundedAmountCents,
+    refundCount: refunds.length,
+    isFullyRefunded,
+    hasRefundDrift,
+  };
+};
+
+const getRefundContext = async (orderId: string) => {
+  const [payment, order, orderTickets] = await Promise.all([
+    db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1),
+    db.select().from(orders).where(eq(orders.id, orderId)).limit(1),
+    db
+      .select({
+        id: tickets.id,
+        revealedAt: tickets.revealedAt,
+      })
+      .from(tickets)
+      .where(eq(tickets.orderId, orderId)),
+  ]);
+
+  const paymentRow = payment[0];
+  const orderRow = order[0];
+
+  if (!paymentRow || !orderRow) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+  }
+
+  return {
+    payment: paymentRow,
+    order: orderRow,
+    orderTickets,
+  };
+};
 
 const getTicketViewById = async (orderId: string, ticketId: string) => {
   const ticketView = await getGuestTicketView((await getOrderDetailById(orderId)).publicId);
@@ -225,24 +369,7 @@ export const updateShipment = async (
 };
 
 export const refundOrder = async (orderId: string, amountCents?: number, reason?: string | null) => {
-  const [payment, order, orderTickets] = await Promise.all([
-    db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1),
-    db.select().from(orders).where(eq(orders.id, orderId)).limit(1),
-    db
-      .select({
-        id: tickets.id,
-        revealedAt: tickets.revealedAt,
-      })
-      .from(tickets)
-      .where(eq(tickets.orderId, orderId)),
-  ]);
-
-  const paymentRow = payment[0];
-  const orderRow = order[0];
-
-  if (!paymentRow || !orderRow) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
-  }
+  const { payment: paymentRow, order: orderRow, orderTickets } = await getRefundContext(orderId);
 
   if (!paymentRow.providerPaymentIntentId) {
     throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');
@@ -263,16 +390,33 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
   }
 
   const requestedRefundAmountCents = amountCents ?? refundableAmountCents;
+  const refundIdempotencyKey = buildRefundIdempotencyKey({
+    orderId,
+    paymentId: paymentRow.id,
+    alreadyRefundedAmountCents: paymentRow.refundedAmountCents,
+    requestedRefundAmountCents,
+  });
 
   if (requestedRefundAmountCents > refundableAmountCents) {
     throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
   }
 
+  let stripeRefund: Stripe.Refund;
   try {
-    await stripe.refunds.create({
-      payment_intent: paymentRow.providerPaymentIntentId,
-      amount: requestedRefundAmountCents,
-    });
+    stripeRefund = await stripe.refunds.create(
+      {
+        payment_intent: paymentRow.providerPaymentIntentId,
+        amount: requestedRefundAmountCents,
+        metadata: {
+          orderId,
+          paymentId: paymentRow.id,
+          refundIdempotencyKey,
+        },
+      },
+      {
+        idempotencyKey: refundIdempotencyKey,
+      },
+    );
   } catch (error) {
     logger.error({ error, orderId, requestedRefundAmountCents }, 'Stripe refund request failed');
     throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to create Stripe refund');
@@ -296,37 +440,84 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
       throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
     }
 
-    const nextRefundedAmountCents = lockedPayment.refundedAmountCents + requestedRefundAmountCents;
-    const isFullyRefunded = nextRefundedAmountCents >= lockedPayment.amountCents;
+    await upsertRefundRecord(tx, {
+      orderId,
+      paymentId: lockedPayment.id,
+      refund: stripeRefund,
+      idempotencyKey: refundIdempotencyKey,
+    });
 
-    await tx
-      .update(payments)
-      .set({
-        refundedAmountCents: nextRefundedAmountCents,
-        status: isFullyRefunded ? 'refunded' : lockedPayment.status,
-      })
-      .where(eq(payments.orderId, orderId));
-
-    await tx
-      .update(orders)
-      .set({
-        status: isFullyRefunded ? 'refunded' : lockedOrder.status,
-        refundedAt: isFullyRefunded ? new Date() : lockedOrder.refundedAt,
-      })
-      .where(eq(orders.id, orderId));
-
-    if (isFullyRefunded) {
-      await tx
-        .update(tickets)
-        .set({
-          voidedAt: new Date(),
-          voidReason: reason ?? 'Refunded by admin',
-        })
-        .where(eq(tickets.orderId, orderId));
-    }
+    await syncRefundAggregate(tx, {
+      order: lockedOrder,
+      payment: lockedPayment,
+      ticketVoidReason: reason,
+    });
   });
 
   return getOrderDetailById(orderId);
+};
+
+export const reconcileOrderRefunds = async (orderId: string) => {
+  const { payment, order } = await getRefundContext(orderId);
+
+  if (!payment.providerPaymentIntentId) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');
+  }
+
+  let stripeRefundList: Stripe.ApiList<Stripe.Refund>;
+  try {
+    stripeRefundList = await stripe.refunds.list({
+      payment_intent: payment.providerPaymentIntentId,
+      limit: 100,
+    });
+  } catch (error) {
+    logger.error({ error, orderId }, 'Stripe refund reconciliation fetch failed');
+    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to fetch Stripe refunds for reconciliation');
+  }
+
+  const summary = await db.transaction(async (tx) => {
+    const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
+
+    if (!lockedOrder || !lockedPayment) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+    }
+
+    for (const refund of stripeRefundList.data) {
+      await upsertRefundRecord(tx, {
+        orderId,
+        paymentId: payment.id,
+        refund,
+      });
+    }
+
+    return syncRefundAggregate(tx, { order: lockedOrder, payment: lockedPayment });
+  });
+
+  const localRefunds = await db
+    .select({
+      providerRefundId: paymentRefunds.providerRefundId,
+      amountCents: paymentRefunds.amountCents,
+      currency: paymentRefunds.currency,
+      status: paymentRefunds.status,
+      reason: paymentRefunds.reason,
+      providerCreatedAt: paymentRefunds.providerCreatedAt,
+    })
+    .from(paymentRefunds)
+    .where(eq(paymentRefunds.orderId, orderId))
+    .orderBy(desc(paymentRefunds.providerCreatedAt), desc(paymentRefunds.createdAt));
+
+  return {
+    order: await getOrderDetailById(orderId),
+    summary: {
+      stripeRefundCount: stripeRefundList.data.length,
+      localRefundCount: localRefunds.length,
+      refundedAmountCents: summary.refundedAmountCents,
+      isFullyRefunded: summary.isFullyRefunded,
+      hasRefundDrift: summary.hasRefundDrift,
+    },
+    refunds: localRefunds,
+  };
 };
 
 export const listCustomers = async (filters: { cursor?: string; limit?: number }) => {

@@ -373,6 +373,36 @@ export const payments = pgTable(
   ],
 );
 
+export const paymentRefunds = pgTable(
+  'payment_refunds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    paymentId: uuid('payment_id')
+      .notNull()
+      .references(() => payments.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    providerRefundId: varchar('provider_refund_id', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }),
+    amountCents: integer('amount_cents').notNull(),
+    currency: varchar('currency', { length: 3 }).notNull().default('CAD'),
+    status: varchar('status', { length: 64 }).notNull(),
+    reason: varchar('reason', { length: 255 }),
+    providerCreatedAt: timestamp('provider_created_at', { withTimezone: true }),
+    rawResponse: jsonb('raw_response').$type<Record<string, unknown> | null>(),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    uniqueIndex('payment_refunds_provider_refund_id_unique').on(table.providerRefundId),
+    uniqueIndex('payment_refunds_idempotency_key_unique').on(table.idempotencyKey),
+    index('payment_refunds_payment_created_idx').on(table.paymentId, table.createdAt, table.id),
+    index('payment_refunds_order_created_idx').on(table.orderId, table.createdAt, table.id),
+    check('payment_refunds_amount_cents_check', sql`${table.amountCents} >= 0`),
+  ],
+);
+
 export const tickets = pgTable(
   'tickets',
   {
