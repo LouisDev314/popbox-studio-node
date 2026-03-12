@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { parseStripeCheckoutReservationTtlMs } from '../utils/checkout';
 
 const env = {
   port: Number(process.env.PORT) || 3000,
@@ -21,7 +22,9 @@ const env = {
   stripeShippingRateCents: Number(process.env.STRIPE_SHIPPING_RATE_CENTS) || 1500,
   stripeSuccessUrl: process.env.STRIPE_SUCCESS_URL || '',
   stripeCancelUrl: process.env.STRIPE_CANCEL_URL || '',
-  stripeCheckoutSessionReservationTtl: Number(process.env.STRIPE_CHECK_SESSION_RESERVATION_TTL) || 10 * 60 * 1000,
+  stripeCheckoutSessionReservationTtl: parseStripeCheckoutReservationTtlMs(
+    process.env.STRIPE_CHECK_SESSION_RESERVATION_TTL,
+  ),
 
   // SMTP
   resendApiKey: process.env.RESEND_API_KEY || '',

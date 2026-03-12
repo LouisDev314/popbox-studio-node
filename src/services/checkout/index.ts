@@ -21,6 +21,7 @@ import {
   normalizeItems,
   releaseReservationsForOrder,
 } from './helpers';
+import { getCheckoutSessionExpiry } from '../../utils/checkout';
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
@@ -83,8 +84,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   const normalizedItems = normalizeItems(input.items);
   const guestAccessToken = createGuestAccessToken();
   const guestAccessTokenHash = hashGuestAccessToken(guestAccessToken);
-  const expiresAt = new Date(Date.now() + getEnvConfig().stripeCheckoutSessionReservationTtl);
-  const stripeExpiresAt = Math.floor(expiresAt.getTime() / 1000);
+  const { expiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(getEnvConfig().stripeCheckoutSessionReservationTtl);
   const publicId = createPublicId('ord');
   const shippingCents = getEnvConfig().stripeShippingRateCents;
 

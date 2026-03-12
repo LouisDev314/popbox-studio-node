@@ -1,17 +1,16 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import { releaseReservationsForOrders } from '../services/checkout/helpers';
-import getEnvConfig from '../config/env';
+import { orders } from '../db/schema';
 
 const CLEANUP_BATCH_SIZE = 100;
-const CHECKOUT_RESERVATION_TTL_MS = getEnvConfig().stripeCheckoutSessionReservationTtl;
 
-const claimExpiredReservationOrderIds = async (limit: number) => {
+const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pending_payment' | 'expired') => {
   return await db.transaction(async (tx) => {
     const result = await tx.execute<{ orderId: string }>(sql`
       SELECT o.id AS "orderId"
       FROM orders AS o
-      WHERE o.status IN ('pending_payment', 'expired')
+      WHERE o.status = ${status}
         AND EXISTS (
         SELECT 1
         FROM inventory_reservations AS ir
@@ -25,39 +24,18 @@ const claimExpiredReservationOrderIds = async (limit: number) => {
     `);
     const orderIds = result.map((row) => row.orderId);
 
+    if (status === 'pending_payment' && orderIds.length > 0) {
+      await tx
+        .update(orders)
+        .set({
+          status: 'expired',
+        })
+        .where(sql`${orders.id} IN (${sql.join(orderIds.map((orderId) => sql`${orderId}`), sql`, `)})`);
+    }
+
     await releaseReservationsForOrders(tx, orderIds, 'expired');
 
     return orderIds;
-  });
-};
-
-const expirePendingOrdersBatch = async (limit: number) => {
-  return db.transaction(async (tx) => {
-    const expiredOrders = await tx.execute<{ orderId: string }>(sql`
-      WITH claimed_orders AS (
-        SELECT id
-        FROM orders
-        WHERE status = 'pending_payment'
-          AND created_at <= now() - (${CHECKOUT_RESERVATION_TTL_MS} * interval '1 millisecond')
-        ORDER BY created_at, id
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${limit}
-      ),
-      expired_orders AS (
-        UPDATE orders
-        SET status = 'expired'
-        WHERE id IN (SELECT id FROM claimed_orders)
-          AND status = 'pending_payment'
-        RETURNING id AS "orderId"
-      )
-      SELECT "orderId"
-      FROM expired_orders
-    `);
-    const orderIds = expiredOrders.map((row) => row.orderId);
-
-    await releaseReservationsForOrders(tx, orderIds, 'expired');
-
-    return orderIds.length;
   });
 };
 
@@ -65,7 +43,7 @@ export const cleanupExpiredReservations = async (): Promise<{ processedOrders: n
   let processedOrders = 0;
 
   while (true) {
-    const orderIds = await claimExpiredReservationOrderIds(CLEANUP_BATCH_SIZE);
+    const orderIds = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'expired');
 
     if (orderIds.length === 0) {
       break;
@@ -83,13 +61,13 @@ export const cleanupExpiredPendingOrders = async (): Promise<{ expiredOrders: nu
   let expiredOrders = 0;
 
   while (true) {
-    const batchExpiredOrders = await expirePendingOrdersBatch(CLEANUP_BATCH_SIZE);
+    const batchExpiredOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'pending_payment');
 
-    if (batchExpiredOrders === 0) {
+    if (batchExpiredOrders.length === 0) {
       break;
     }
 
-    expiredOrders += batchExpiredOrders;
+    expiredOrders += batchExpiredOrders.length;
   }
 
   return {
