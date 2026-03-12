@@ -8,21 +8,32 @@ const { resendApiKey, resendFromEmail } = getEnvConfig();
 
 const canSendEmail = resend && !!resendApiKey && !!resendFromEmail;
 
-const sendEmail = async (subject: string, html: string, to: string) => {
+const sendEmail = async (params: { emailType: string; subject: string; html: string; to: string }) => {
   if (!canSendEmail) {
-    logger.warn({ subject, to }, 'Skipping email send because Resend is not configured');
+    logger.warn({ emailType: params.emailType, subject: params.subject, to: params.to }, 'Skipping email send because Resend is not configured');
     return;
   }
 
-  const response = await resend.emails.send({
-    from: resendFromEmail,
-    to,
-    subject,
-    html,
-  });
+  try {
+    const response = await resend.emails.send({
+      from: resendFromEmail,
+      to: params.to,
+      subject: params.subject,
+      html: params.html,
+    });
 
-  if (response.error) {
-    logger.error({ error: response.error, subject, to }, 'Resend email send failed');
+    if (response.error) {
+      logger.error(
+        { error: response.error, emailType: params.emailType, subject: params.subject, to: params.to },
+        'Resend email send failed',
+      );
+      throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send transactional email');
+    }
+  } catch (error) {
+    logger.error(
+      { error, emailType: params.emailType, subject: params.subject, to: params.to },
+      'Unexpected email delivery failure',
+    );
     throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send transactional email');
   }
 };
@@ -35,9 +46,10 @@ export const sendOrderConfirmationEmail = async (params: {
 }) => {
   const displayName = params.firstName?.trim() || 'there';
 
-  await sendEmail(
-    `Order confirmed: ${params.orderPublicId}`,
-    `
+  await sendEmail({
+    emailType: 'order_confirmation',
+    subject: `Order confirmed: ${params.orderPublicId}`,
+    html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
         <h1 style="font-size: 22px;">Order confirmed</h1>
         <p>Hi ${displayName},</p>
@@ -47,8 +59,8 @@ export const sendOrderConfirmationEmail = async (params: {
         <p>All sales are final.</p>
       </div>
     `,
-    params.email,
-  );
+    to: params.email,
+  });
 };
 
 export const sendShipmentEmail = async (params: {
@@ -73,9 +85,10 @@ export const sendShipmentEmail = async (params: {
       `
       : '';
 
-  await sendEmail(
-    `Your order has shipped: ${params.orderPublicId}`,
-    `
+  await sendEmail({
+    emailType: 'shipment',
+    subject: `Your order has shipped: ${params.orderPublicId}`,
+    html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
         <h1 style="font-size: 22px;">Your order has shipped</h1>
         <p>Hi ${displayName},</p>
@@ -84,6 +97,6 @@ export const sendShipmentEmail = async (params: {
         <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>
     `,
-    params.email,
-  );
+    to: params.email,
+  });
 };

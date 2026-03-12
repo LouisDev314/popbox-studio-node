@@ -16,7 +16,7 @@ import { clampLimit } from '../../utils/limit';
 import { OrdersCursor } from '../../types/order';
 import { releaseReservationsForOrder } from '../checkout/helpers';
 
-const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
+const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['paid', 'packed', 'shipped', 'cancelled']);
 const NON_FAILED_REFUND_STATUSES = new Set(['pending', 'succeeded', 'requires_action']);
 
 type RefundContext = {
@@ -285,6 +285,10 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
 
     if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
       throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
+    }
+
+    if (nextStatus === 'paid' && order.status !== 'paid_needs_attention') {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only set orders to paid from paid_needs_attention');
     }
 
     if (nextStatus === 'packed' && order.status !== 'paid') {

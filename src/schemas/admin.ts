@@ -90,7 +90,7 @@ export const adminOrderParamsSchema = z.object({
 });
 
 export const orderStatusBodySchema = z.object({
-  status: z.enum([ORDER_STATUS.PACKED, ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED]),
+  status: z.enum([ORDER_STATUS.PAID, ORDER_STATUS.PACKED, ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED]),
 });
 
 export const dateTimeStringSchema = z

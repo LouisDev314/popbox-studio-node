@@ -291,7 +291,7 @@ Provide lightweight liveness and readiness endpoints for Render single-instance 
 Reduce accidental sensitive-data leakage and make non-fatal external failures easier to operate safely.
 
 ### Risk being fixed
-- Token-bearing query strings and custom headers are not specifically redacted today.
+- Token-bearing query strings and custom headers are now specifically redacted, but Stripe and email failure logs still need better operator context.
 - Stripe and Resend failures should stay non-fatal where business-safe and log enough context for operators.
 - `paid_needs_attention` is present but could be easier to inspect or act on with minimal additional support.
 
@@ -304,10 +304,10 @@ Reduce accidental sensitive-data leakage and make non-fatal external failures ea
 - `src/routes/v1/admin-router/index.ts`
 
 ### Implementation summary
-1. Redact sensitive query parameters and headers from request logging.
-2. Tighten non-fatal handling around Stripe and Resend failures.
+1. Keep the existing sensitive query/header redaction in place.
+2. Tighten non-fatal handling around Stripe and Resend failures with more actionable logs.
 3. Keep jobs and webhook processing idempotent and non-fatal.
-4. Improve `paid_needs_attention` operability if there is a safe small-scope path.
+4. Improve `paid_needs_attention` operability with a safe small-scope admin resolution path.
 
 ### Acceptance criteria
 - Logs do not expose guest tokens or similar sensitive values.
