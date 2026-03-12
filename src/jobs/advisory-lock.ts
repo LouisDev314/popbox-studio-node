@@ -1,5 +1,3 @@
-import { sql } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
 import { pg } from '../db';
 
 type AdvisoryLockResult = {
@@ -29,18 +27,17 @@ const toBigIntKey = (key: string): bigint => {
   return hash;
 };
 
-const createLockDb = (connection: ReservedConnection) => drizzle(connection);
-
 export const tryAcquireAdvisoryLock = async (key: string): Promise<AdvisoryLockHandle | null> => {
   const lockKey = toBigIntKey(key);
   const connection = await pg.reserve();
-  const lockDb = createLockDb(connection);
 
   try {
-    const result = await lockDb.execute<AdvisoryLockResult>(sql`select pg_try_advisory_lock(${lockKey}) as acquired`);
+    const result = await connection.unsafe<AdvisoryLockResult[]>('select pg_try_advisory_lock($1) as acquired', [
+      lockKey.toString(),
+    ]);
 
     if (!result[0]?.acquired) {
-      await connection.release();
+      connection.release();
       return null;
     }
 
@@ -49,23 +46,21 @@ export const tryAcquireAdvisoryLock = async (key: string): Promise<AdvisoryLockH
       lockKey,
     };
   } catch (error) {
-    await connection.release();
+    connection.release();
     throw error;
   }
 };
 
 export const releaseAdvisoryLock = async (handle: AdvisoryLockHandle): Promise<void> => {
-  const lockDb = createLockDb(handle.connection);
-
   try {
-    const result = await lockDb.execute<AdvisoryUnlockResult>(
-      sql`select pg_advisory_unlock(${handle.lockKey}) as released`,
-    );
+    const result = await handle.connection.unsafe<AdvisoryUnlockResult[]>('select pg_advisory_unlock($1) as released', [
+      handle.lockKey.toString(),
+    ]);
 
     if (!result[0]?.released) {
       throw new Error('Advisory lock was not held on the reserved connection');
     }
   } finally {
-    await handle.connection.release();
+    handle.connection.release();
   }
 };
