@@ -26,6 +26,7 @@ type RefundContext = {
 };
 
 const KUJI_ORDER_ACTION_LOCK_PREFIX = 'orders:kuji-action';
+const REVEALABLE_ORDER_STATUSES = new Set<OrderStatus>(['paid', 'packed', 'shipped']);
 
 const withOrderActionLock = async <T>(orderId: string, action: string, work: () => Promise<T>) => {
   const lockHandle = await tryAcquireAdvisoryLock(`${KUJI_ORDER_ACTION_LOCK_PREFIX}:${orderId}`);
@@ -39,6 +40,26 @@ const withOrderActionLock = async <T>(orderId: string, action: string, work: () 
   } finally {
     await releaseAdvisoryLock(lockHandle);
   }
+};
+
+const loadLockedOrder = async (
+  tx: Parameters<typeof db.transaction>[0] extends (tx: infer T) => Promise<unknown> ? T : never,
+  orderId: string,
+) => {
+  const result = await tx.execute<typeof orders.$inferSelect>(sql`
+    SELECT *
+    FROM orders
+    WHERE id = ${orderId}
+    FOR UPDATE
+  `);
+
+  const lockedOrder = result[0];
+
+  if (!lockedOrder) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+  }
+
+  return lockedOrder;
 };
 
 const buildRefundIdempotencyKey = (params: {
@@ -198,6 +219,16 @@ export const getGuestTickets = async (publicId: string) => {
 
 export const revealTicket = async (orderId: string, ticketId: string) => {
   return withOrderActionLock(orderId, 'ticket reveal', async () => {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+    }
+
+    if (!REVEALABLE_ORDER_STATUSES.has(order.status)) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
+    }
+
     const [ticket] = await db
       .select()
       .from(tickets)
@@ -225,6 +256,16 @@ export const revealTicket = async (orderId: string, ticketId: string) => {
 
 export const revealAllTickets = async (orderId: string) => {
   return withOrderActionLock(orderId, 'ticket reveal', async () => {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+    }
+
+    if (!REVEALABLE_ORDER_STATUSES.has(order.status)) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
+    }
+
     await db
       .update(tickets)
       .set({
@@ -298,41 +339,42 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
   }
 
   if (nextStatus === 'paid') {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Admins cannot manually normalize paid_needs_attention orders to paid');
+    throw new Exception(
+      HttpStatusCode.CONFLICT,
+      'Admins cannot manually normalize paid_needs_attention orders to paid',
+    );
   }
 
-  const [updated] = await db.transaction(async (tx) => {
-    const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  const [updated] = await withOrderActionLock(orderId, 'admin status update', async () =>
+    db.transaction(async (tx) => {
+      const order = await loadLockedOrder(tx, orderId);
 
-    if (!order) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
-    }
+      if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
+      }
 
-    if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
-    }
+      if (nextStatus === 'packed' && order.status !== 'paid') {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be packed');
+      }
 
-    if (nextStatus === 'packed' && order.status !== 'paid') {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be packed');
-    }
+      if (nextStatus === 'shipped' && order.status !== 'packed') {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Only packed orders can be marked shipped');
+      }
 
-    if (nextStatus === 'shipped' && order.status !== 'packed') {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Only packed orders can be marked shipped');
-    }
+      assertOrderStatusTransition(order.status, nextStatus);
 
-    assertOrderStatusTransition(order.status, nextStatus);
+      const updateValues: Partial<typeof orders.$inferInsert> = {
+        status: nextStatus,
+      };
 
-    const updateValues: Partial<typeof orders.$inferInsert> = {
-      status: nextStatus,
-    };
+      if (nextStatus === 'cancelled') {
+        await releaseReservationsForOrder(tx, orderId, 'released');
+        updateValues.cancelledAt = new Date();
+      }
 
-    if (nextStatus === 'cancelled') {
-      await releaseReservationsForOrder(tx, orderId, 'released');
-      updateValues.cancelledAt = new Date();
-    }
-
-    return tx.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
-  });
+      return tx.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
+    }),
+  );
 
   return updated;
 };
@@ -347,12 +389,6 @@ export const updateShipment = async (
     shippedAt?: string | null;
   },
 ) => {
-  const detail = await getOrderDetailById(orderId);
-
-  if (!['packed', 'shipped'].includes(detail.status)) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Order must be packed before shipment can be updated');
-  }
-
   const shipmentData = {
     carrierName: payload.carrierName ?? null,
     trackingNumber: payload.trackingNumber ?? null,
@@ -361,19 +397,37 @@ export const updateShipment = async (
     deliveredAt: payload.deliveredAt ? new Date(payload.deliveredAt) : null,
   };
 
-  const [existingShipment] = await db.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1);
-  if (existingShipment) {
-    await db.update(shipments).set(shipmentData).where(eq(shipments.orderId, orderId));
-  } else {
-    await db.insert(shipments).values({
-      orderId,
-      ...shipmentData,
-    });
-  }
+  await withOrderActionLock(orderId, 'shipment update', async () => {
+    await db.transaction(async (tx) => {
+      const order = await loadLockedOrder(tx, orderId);
 
-  if (detail.status !== 'shipped') {
-    await updateAdminOrderStatus(orderId, 'shipped');
-  }
+      if (!['packed', 'shipped'].includes(order.status)) {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Order must be packed before shipment can be updated');
+      }
+
+      const [existingShipment] = await tx.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1);
+      if (existingShipment) {
+        await tx.update(shipments).set(shipmentData).where(eq(shipments.orderId, orderId));
+      } else {
+        await tx.insert(shipments).values({
+          orderId,
+          ...shipmentData,
+        });
+      }
+
+      if (order.status !== 'shipped') {
+        assertOrderStatusTransition(order.status, 'shipped');
+        await tx
+          .update(orders)
+          .set({
+            status: 'shipped',
+          })
+          .where(eq(orders.id, orderId));
+      }
+    });
+  });
+
+  const detail = await getOrderDetailById(orderId);
 
   const [orderAccess] = await db
     .select({
@@ -460,55 +514,85 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
       throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to create Stripe refund');
     }
 
-    await db.transaction(async (tx) => {
-      const [lockedOrder] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-      const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
-      const lockedOrderTickets = await tx
-        .select({
-          id: tickets.id,
-          revealedAt: tickets.revealedAt,
-        })
-        .from(tickets)
-        .where(eq(tickets.orderId, orderId));
+    try {
+      await db.transaction(async (tx) => {
+        const lockedOrder = await loadLockedOrder(tx, orderId);
+        const [lockedPayment] = await tx.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
+        const lockedOrderTickets = await tx
+          .select({
+            id: tickets.id,
+            revealedAt: tickets.revealedAt,
+          })
+          .from(tickets)
+          .where(eq(tickets.orderId, orderId));
 
-      if (!lockedOrder || !lockedPayment) {
-        throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
-      }
+        if (!lockedPayment) {
+          throw new Exception(HttpStatusCode.NOT_FOUND, 'Order payment record not found');
+        }
 
-      if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(lockedOrder.status)) {
-        throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
-      }
+        if (!['paid', 'packed', 'shipped', 'paid_needs_attention'].includes(lockedOrder.status)) {
+          throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be refunded');
+        }
 
-      if (lockedOrderTickets.some((ticket) => ticket.revealedAt)) {
-        throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
-      }
+        if (lockedOrderTickets.some((ticket) => ticket.revealedAt)) {
+          throw new Exception(HttpStatusCode.CONFLICT, 'Kuji tickets cannot be refunded after reveal');
+        }
 
-      const lockedRefundableAmountCents = lockedPayment.amountCents - lockedPayment.refundedAmountCents;
+        const lockedRefundableAmountCents = lockedPayment.amountCents - lockedPayment.refundedAmountCents;
 
-      if (requestedRefundAmountCents > lockedRefundableAmountCents) {
-        throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
-      }
+        if (requestedRefundAmountCents > lockedRefundableAmountCents) {
+          throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
+        }
 
-      await upsertRefundRecord(tx, {
-        orderId,
-        paymentId: lockedPayment.id,
-        refund: stripeRefund,
-        idempotencyKey: refundIdempotencyKey,
+        await upsertRefundRecord(tx, {
+          orderId,
+          paymentId: lockedPayment.id,
+          refund: stripeRefund,
+          idempotencyKey: refundIdempotencyKey,
+        });
+
+        await syncRefundAggregate(tx, {
+          order: lockedOrder,
+          payment: lockedPayment,
+          ticketVoidReason: reason,
+        });
       });
+    } catch (error) {
+      logger.error(
+        { error, orderId, stripeRefundId: stripeRefund.id },
+        'Stripe refund succeeded but local refund persistence failed',
+      );
 
-      await syncRefundAggregate(tx, {
-        order: lockedOrder,
-        payment: lockedPayment,
-        ticketVoidReason: reason,
-      });
-    });
+      try {
+        await db.transaction(async (tx) => {
+          const lockedOrder = await loadLockedOrder(tx, orderId);
+
+          await tx
+            .update(orders)
+            .set({
+              status: 'paid_needs_attention',
+            })
+            .where(eq(orders.id, lockedOrder.id));
+        });
+      } catch (fallbackError) {
+        logger.error(
+          { error: fallbackError, orderId, stripeRefundId: stripeRefund.id },
+          'Failed to force order into manual attention after Stripe refund success',
+        );
+      }
+
+      throw new Exception(
+        HttpStatusCode.BAD_GATEWAY,
+        'Refund succeeded in Stripe but local reconciliation is required',
+      );
+    }
 
     return getOrderDetailById(orderId);
   });
 };
 
 export const reconcileOrderRefunds = async (orderId: string) => {
-  const { payment, order } = await getRefundContext(orderId);
+  const { payment } = await getRefundContext(orderId);
 
   if (!payment.providerPaymentIntentId) {
     throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');

@@ -11,7 +11,7 @@ healthRouter.get('/', async (_req, res) => {
       timestamp: Date.now(),
     });
   } catch {
-    return false;
+    return res.send_serviceUnavailable('Unhealthy');
   }
 });
 

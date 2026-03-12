@@ -49,7 +49,7 @@ const runJob = async <T>(definition: JobDefinition<T>) => {
   } catch (error) {
     logger.error(
       {
-        error,
+        err: error,
         job: name,
         durationMs: Date.now() - startedAt,
       },
