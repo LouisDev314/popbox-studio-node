@@ -46,7 +46,9 @@ const parseSignedToken = (token: string): GuestOrderSignedTokenPayload | null =>
   }
 
   try {
-    const payload = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8')) as GuestOrderSignedTokenPayload;
+    const payload = JSON.parse(
+      Buffer.from(payloadSegment, 'base64url').toString('utf8'),
+    ) as GuestOrderSignedTokenPayload;
 
     if (
       payload.v !== GUEST_ORDER_TOKEN_VERSION ||
@@ -90,11 +92,21 @@ const buildGuestOrderToken = (
 };
 
 export const createGuestOrderAccessToken = (publicId: string, guestAccessTokenHash: string) => {
-  return buildGuestOrderToken(GUEST_ORDER_ACCESS_TOKEN_KIND, publicId, guestAccessTokenHash, GUEST_ORDER_ACCESS_TOKEN_MAX_AGE_MS);
+  return buildGuestOrderToken(
+    GUEST_ORDER_ACCESS_TOKEN_KIND,
+    publicId,
+    guestAccessTokenHash,
+    GUEST_ORDER_ACCESS_TOKEN_MAX_AGE_MS,
+  );
 };
 
 export const createGuestOrderSessionToken = (publicId: string, guestAccessTokenHash: string) => {
-  return buildGuestOrderToken(GUEST_ORDER_SESSION_TOKEN_KIND, publicId, guestAccessTokenHash, GUEST_ORDER_SESSION_MAX_AGE_MS);
+  return buildGuestOrderToken(
+    GUEST_ORDER_SESSION_TOKEN_KIND,
+    publicId,
+    guestAccessTokenHash,
+    GUEST_ORDER_SESSION_MAX_AGE_MS,
+  );
 };
 
 const verifyGuestOrderToken = (
@@ -134,7 +146,7 @@ export const buildClientOrderUrl = (publicId: string) => {
 
 export const buildGuestOrderAccessUrl = (publicId: string, guestAccessTokenHash: string) => {
   const token = createGuestOrderAccessToken(publicId, guestAccessTokenHash);
-  return `${getEnvConfig().apiBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
+  return `${getEnvConfig().clientBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
 };
 
 export const getGuestOrderSessionCookieOptions = (publicId: string): CookieOptions => {

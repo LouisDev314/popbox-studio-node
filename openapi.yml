@@ -1,0 +1,2710 @@
+openapi: 3.1.0
+info:
+  title: Popbox Studio API
+  version: 1.0.0
+  description: >
+    HTTP API for the Popbox Studio e-commerce backend. All response contracts are
+    derived from the current implementation and Zod schemas in this repository.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+tags:
+  - name: Health
+  - name: Webhooks
+  - name: Home
+  - name: Collections
+  - name: Tags
+  - name: Products
+  - name: Search
+  - name: Orders
+  - name: Checkout
+  - name: Admin Products
+  - name: Admin Collections
+  - name: Admin Tags
+  - name: Admin Orders
+  - name: Admin Customers
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Readiness and database health check
+      description: |
+        Returns basic process uptime and verifies database connectivity.
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
+  /api/v1/webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook receiver
+      description: |
+        Receives Stripe webhook events and updates orders and payments accordingly.
+        Expects a raw JSON payload signed with Stripe's webhook secret.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Stripe event payload.
+              additionalProperties: true
+              # TODO: narrow schema if needed using Stripe's official OpenAPI spec
+      responses:
+        '200':
+          description: Webhook processed or safely ignored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StripeWebhookResult'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/home:
+    get:
+      tags: [Home]
+      summary: Get homepage product sections
+      description: |
+        Returns curated product sections for the storefront homepage, including
+        featured, trending, and preview items.
+      responses:
+        '200':
+          description: Homepage data retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HomepageData'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/collections:
+    get:
+      tags: [Collections]
+      summary: List active collections
+      description: Returns all active product collections ordered by sort order.
+      responses:
+        '200':
+          description: Collections retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CollectionSummary'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/tags:
+    get:
+      tags: [Tags]
+      summary: List tags
+      description: Returns all tags ordered by type and name.
+      responses:
+        '200':
+          description: Tags retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TagSummary'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/products:
+    get:
+      tags: [Products]
+      summary: List products
+      description: |
+        Returns a paginated list of active products with optional filters for
+        collection, tag, type, and sort order.
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of products to return (1–50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor returned by a previous response.
+          schema:
+            type: string
+        - name: collection
+          in: query
+          description: Collection slug to filter by.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: Tag slug to filter by.
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Product type to filter by.
+          schema:
+            type: string
+            enum: [standard, kuji]
+        - name: sort
+          in: query
+          description: Sort mode for results.
+          schema:
+            type: string
+            enum: [newest, price_asc, price_desc, name_asc, name_desc]
+      responses:
+        '200':
+          description: Products retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductListPage'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/products/{slug}:
+    get:
+      tags: [Products]
+      summary: Get product by slug
+      description: Returns full product details for an active product identified by slug.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          description: Product slug.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Product'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/search:
+    get:
+      tags: [Search]
+      summary: Search products
+      description: Full-text search across active products.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query (minimum 2 characters).
+          schema:
+            type: string
+            minLength: 2
+        - name: limit
+          in: query
+          description: Maximum number of results (1–50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Search results retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductListPage'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/search/autocomplete:
+    get:
+      tags: [Search]
+      summary: Autocomplete product names
+      description: Returns lightweight product suggestions for autocomplete.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query (minimum 2 characters).
+          schema:
+            type: string
+            minLength: 2
+        - name: limit
+          in: query
+          description: Maximum number of suggestions (1–10).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+      responses:
+        '200':
+          description: Autocomplete suggestions retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductSuggestions'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/orders/{publicId}/access:
+    get:
+      tags: [Orders]
+      summary: Exchange guest order access token
+      description: |
+        Validates a guest order access token provided as a query parameter, header,
+        or existing session cookie, then redirects to the client order URL.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          description: Public order ID.
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: false
+          description: One-time guest order access token.
+          schema:
+            type: string
+        - name: x-order-token
+          in: header
+          required: false
+          description: One-time guest order access token (alternative to query param).
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirects to client order URL on success
+          headers:
+            Location:
+              description: Client order URL.
+              schema:
+                type: string
+                format: uri
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/orders/{publicId}:
+    get:
+      tags: [Orders]
+      summary: Get guest order
+      description: |
+        Returns a guest-safe view of an order. Requires a valid guest order
+        session cookie established via the access endpoint.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          description: Public order ID.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GuestOrderDetail'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/orders/{publicId}/tickets:
+    get:
+      tags: [Orders]
+      summary: Get guest tickets summary
+      description: |
+        Returns all tickets for a guest order along with derived counts of
+        revealed and unrevealed tickets.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          description: Public order ID.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order tickets retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GuestTicketView'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/orders/{publicId}/tickets/{ticketId}/reveal:
+    post:
+      tags: [Orders]
+      summary: Reveal a single ticket
+      description: Reveals a single kuji ticket for an eligible guest order.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          description: Public order ID.
+          schema:
+            type: string
+        - name: ticketId
+          in: path
+          required: true
+          description: Ticket UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ticket revealed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderTicket'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/orders/{publicId}/tickets/reveal-all:
+    post:
+      tags: [Orders]
+      summary: Reveal all tickets
+      description: Reveals all unrevealed tickets for an eligible guest order.
+      parameters:
+        - name: publicId
+          in: path
+          required: true
+          description: Public order ID.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: All tickets revealed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GuestTicketView'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/checkout/session:
+    post:
+      tags: [Checkout]
+      summary: Create checkout session
+      description: |
+        Creates an order, reserves inventory, and initializes a Stripe Checkout
+        session. Requires an `Idempotency-Key` header to safely retry requests.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Idempotency key for safely retrying checkout session creation.
+            Must be a non-empty string up to 255 characters.
+          schema:
+            type: string
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '201':
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CheckoutSession'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/checkout/success:
+    get:
+      tags: [Checkout]
+      summary: Get checkout success details
+      description: |
+        Confirms a Stripe Checkout session has been paid and returns order
+        details and guest access links.
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          description: Stripe Checkout session ID.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Checkout session verified
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CheckoutSuccess'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products:
+    get:
+      tags: [Admin Products]
+      summary: List products (admin)
+      description: |
+        Returns a paginated admin view of products. When a status filter is
+        provided, this uses the same cursor semantics as the public product list.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Product status to filter by.
+          schema:
+            type: string
+            enum: [draft, active, archived]
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results (1–50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Admin products retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductListPage'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Products]
+      summary: Create product
+      description: Creates a new product and initial inventory record.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminProductCreate'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}:
+    patch:
+      tags: [Admin Products]
+      summary: Update product
+      description: Updates core product attributes and tags.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminProductUpdate'
+      responses:
+        '200':
+          description: Product updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/images:
+    post:
+      tags: [Admin Products]
+      summary: Upload product images
+      description: |
+        Uploads one or more product images to storage and creates corresponding
+        image records.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                altTexts:
+                  description: Optional alt text values, parallel to uploaded files.
+                  type: array
+                  items:
+                    type: string
+                    nullable: true
+      responses:
+        '201':
+          description: Product images uploaded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          images:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ProductImage'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/images/reorder:
+    patch:
+      tags: [Admin Products]
+      summary: Reorder product images
+      description: Updates the display order for a product's images.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageReorder'
+      responses:
+        '200':
+          description: Product images reordered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProductImage'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/images/{imageId}:
+    delete:
+      tags: [Admin Products]
+      summary: Delete product image
+      description: Removes a product image from storage and the database.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: imageId
+          in: path
+          required: true
+          description: Product image UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Product image deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            format: uuid
+                          deleted:
+                            type: boolean
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/inventory:
+    patch:
+      tags: [Admin Products]
+      summary: Update standard product inventory
+      description: Updates on-hand and low-stock threshold for standard products.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryUpdate'
+      responses:
+        '200':
+          description: Inventory updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductInventory'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/kuji-prizes:
+    get:
+      tags: [Admin Products]
+      summary: List kuji prizes
+      description: Lists all kuji prizes for a kuji product.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Kuji prizes retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/KujiPrize'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Products]
+      summary: Create kuji prize
+      description: Creates a new kuji prize for a kuji product.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KujiPrizeCreate'
+      responses:
+        '201':
+          description: Kuji prize created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KujiPrize'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/kuji-prizes/{prizeId}:
+    patch:
+      tags: [Admin Products]
+      summary: Update kuji prize
+      description: Updates a kuji prize and re-synchronizes kuji inventory.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: prizeId
+          in: path
+          required: true
+          description: Kuji prize UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KujiPrizeUpdate'
+      responses:
+        '200':
+          description: Kuji prize updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KujiPrize'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Admin Products]
+      summary: Delete kuji prize
+      description: Deletes a kuji prize and re-synchronizes kuji inventory.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+        - name: prizeId
+          in: path
+          required: true
+          description: Kuji prize UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Kuji prize deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            format: uuid
+                          deleted:
+                            type: boolean
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/collections:
+    get:
+      tags: [Admin Collections]
+      summary: List collections (admin)
+      description: Returns all collections, including inactive ones.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Collections retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Collection'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Collections]
+      summary: Create collection
+      description: Creates a new collection.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionCreate'
+      responses:
+        '201':
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/collections/{id}:
+    patch:
+      tags: [Admin Collections]
+      summary: Update collection
+      description: Updates an existing collection.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Collection UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionUpdate'
+      responses:
+        '200':
+          description: Collection updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/tags:
+    get:
+      tags: [Admin Tags]
+      summary: List tags (admin)
+      description: Returns all tags.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Tags retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Tag'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Tags]
+      summary: Create tag
+      description: Creates a new tag.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagCreate'
+      responses:
+        '201':
+          description: Tag created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Tag'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/tags/{id}:
+    patch:
+      tags: [Admin Tags]
+      summary: Update tag
+      description: Updates an existing tag.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Tag UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TagUpdate'
+      responses:
+        '200':
+          description: Tag updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Tag'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders:
+    get:
+      tags: [Admin Orders]
+      summary: List orders (admin)
+      description: Returns a paginated list of orders with customer summary.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by order status.
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results (1–50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Orders retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdminOrderListPage'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders/{id}:
+    get:
+      tags: [Admin Orders]
+      summary: Get order (admin)
+      description: Returns full order detail view for admins.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders/{id}/status:
+    patch:
+      tags: [Admin Orders]
+      summary: Update order status
+      description: |
+        Updates an order's status, enforcing allowed transitions and inventory rules.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  $ref: '#/components/schemas/OrderStatus'
+              required: [status]
+      responses:
+        '200':
+          description: Order status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders/{id}/shipment:
+    patch:
+      tags: [Admin Orders]
+      summary: Update shipment
+      description: |
+        Creates or updates shipment details and, if necessary, advances the
+        order status to `shipped` and sends a shipment email.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShipmentUpdate'
+      responses:
+        '200':
+          description: Shipment updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders/{id}/refund:
+    post:
+      tags: [Admin Orders]
+      summary: Refund order
+      description: |
+        Creates a Stripe refund for the given order and synchronizes local
+        refund state. Only orders in paid-like states can be refunded.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: Order refunded or refund registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderDetail'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/orders/{id}/refund/reconcile:
+    post:
+      tags: [Admin Orders]
+      summary: Reconcile refunds with Stripe
+      description: |
+        Reconciles local refund records with Stripe for the given order and
+        updates aggregate refund state.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Refunds reconciled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RefundReconciliation'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/customers:
+    get:
+      tags: [Admin Customers]
+      summary: List customers (admin)
+      description: Returns a paginated list of customers with basic stats.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results (1–50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Customers retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdminCustomerListPage'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Supabase access token for an authenticated admin user. Token is validated
+        against the Supabase JWKS and the associated user must exist with
+        role `admin`.
+  schemas:
+    ApiResponse:
+      type: object
+      description: Standard response envelope used by all JSON responses.
+      properties:
+        code:
+          type: integer
+          description: HTTP status code.
+          minimum: 100
+          maximum: 599
+        success:
+          type: boolean
+          description: Indicates whether the request was successful.
+        message:
+          type: string
+          description: Human-readable message.
+        requestId:
+          type: string
+          description: Per-request correlation identifier.
+        data:
+          description: Response payload for successful responses.
+        errors:
+          description: Error payload for unsuccessful responses.
+      additionalProperties: false
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          required: [code, success, message]
+          properties:
+            success:
+              type: boolean
+              enum: [false]
+            errors:
+              description: Error details; may include validation data.
+              type: object
+              additionalProperties: true
+    RateLimitErrorBody:
+      type: object
+      description: Rate limit error body returned by the rate limiter.
+      properties:
+        ok:
+          type: boolean
+        error:
+          type: string
+      required: [ok, error]
+      additionalProperties: false
+    HealthStatus:
+      type: object
+      properties:
+        uptime:
+          type: number
+          format: float
+          description: Process uptime in seconds.
+        timestamp:
+          type: integer
+          format: int64
+          description: Milliseconds since UNIX epoch.
+      required: [uptime, timestamp]
+    StripeWebhookResult:
+      type: object
+      properties:
+        received:
+          type: boolean
+        duplicate:
+          type: boolean
+      required: [received, duplicate]
+    CollectionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+      required: [id, name, slug, sortOrder, isActive]
+    TagSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        tagType:
+          type: string
+      required: [id, name, slug, tagType]
+    ProductCollection:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+      required: [id, name, slug]
+    ProductImage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        storageKey:
+          type: string
+        altText:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        url:
+          type: string
+          format: uri
+      required: [id, storageKey, sortOrder, url]
+    ProductInventory:
+      type: object
+      properties:
+        onHand:
+          type: integer
+        reserved:
+          type: integer
+        available:
+          type: integer
+        lowStockThreshold:
+          type: integer
+      required: [onHand, reserved, available, lowStockThreshold]
+    ProductTag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        tagType:
+          type: string
+      required: [id, name, slug, tagType]
+    KujiPrize:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        prizeCode:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        initialQuantity:
+          type: integer
+        remainingQuantity:
+          type: integer
+        sortOrder:
+          type: integer
+      required: [id, prizeCode, name, initialQuantity, remainingQuantity, sortOrder]
+    ProductCard:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        productType:
+          type: string
+          enum: [standard, kuji]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        collection:
+          allOf:
+            - $ref: '#/components/schemas/ProductCollection'
+          nullable: true
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductImage'
+        inventory:
+          allOf:
+            - $ref: '#/components/schemas/ProductInventory'
+          nullable: true
+      required:
+        - id
+        - name
+        - slug
+        - productType
+        - status
+        - priceCents
+        - currency
+        - images
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        productType:
+          type: string
+          enum: [standard, kuji]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        sku:
+          type: string
+          nullable: true
+        collection:
+          allOf:
+            - $ref: '#/components/schemas/ProductCollection'
+          nullable: true
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductImage'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductTag'
+        inventory:
+          allOf:
+            - $ref: '#/components/schemas/ProductInventory'
+          nullable: true
+        kujiPrizes:
+          type: array
+          items:
+            $ref: '#/components/schemas/KujiPrize'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - slug
+        - productType
+        - status
+        - priceCents
+        - currency
+        - images
+        - tags
+        - kujiPrizes
+        - createdAt
+        - updatedAt
+    ProductListPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCard'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items, nextCursor]
+    ProductSuggestion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        thumbnailUrl:
+          type: string
+          format: uri
+          nullable: true
+        priceCents:
+          type: integer
+        currency:
+          type: string
+      required: [id, name, slug, priceCents, currency]
+    ProductSuggestions:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductSuggestion'
+      required: [items]
+    HomepageData:
+      type: object
+      properties:
+        featured:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCard'
+        trendingNow:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCard'
+        allProductsPreview:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCard'
+      required: [featured, trendingNow, allProductsPreview]
+    Address:
+      type: object
+      properties:
+        fullName:
+          type: string
+        line1:
+          type: string
+        line2:
+          type: string
+          nullable: true
+        city:
+          type: string
+        province:
+          type: string
+        postalCode:
+          type: string
+        countryCode:
+          type: string
+          minLength: 2
+          maxLength: 2
+        phone:
+          type: string
+          nullable: true
+      required:
+        - fullName
+        - line1
+        - city
+        - province
+        - postalCode
+        - countryCode
+    CheckoutItem:
+      type: object
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+      required: [productId, quantity]
+    CheckoutRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+          nullable: true
+        lastName:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CheckoutItem'
+        shippingAddress:
+          $ref: '#/components/schemas/Address'
+        billingAddress:
+          allOf:
+            - $ref: '#/components/schemas/Address'
+          nullable: true
+        billingSameAsShipping:
+          type: boolean
+      required:
+        - email
+        - items
+        - shippingAddress
+    CheckoutSession:
+      type: object
+      properties:
+        checkoutUrl:
+          type: string
+          format: uri
+        sessionId:
+          type: string
+        publicId:
+          type: string
+        orderId:
+          type: string
+      required: [checkoutUrl, sessionId, publicId, orderId]
+    OrderStatus:
+      type: string
+      enum:
+        - pending_payment
+        - paid
+        - packed
+        - shipped
+        - cancelled
+        - refunded
+        - paid_needs_attention
+        - expired
+    OrderTicket:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ticketNumber:
+          type: string
+        revealedAt:
+          type: string
+          format: date-time
+          nullable: true
+        voidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        voidReason:
+          type: string
+          nullable: true
+        prize:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            description:
+              type: string
+              nullable: true
+            imageUrl:
+              type: string
+              format: uri
+              nullable: true
+            prizeCode:
+              type: string
+          required: [id, name, prizeCode]
+        kujiProduct:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            slug:
+              type: string
+          required: [id, name, slug]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - ticketNumber
+        - kujiProduct
+        - createdAt
+    OrderItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        productName:
+          type: string
+        productType:
+          type: string
+        unitPriceCents:
+          type: integer
+        quantity:
+          type: integer
+        lineTotalCents:
+          type: integer
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+      required:
+        - id
+        - productId
+        - productName
+        - productType
+        - unitPriceCents
+        - quantity
+        - lineTotalCents
+    Shipment:
+      type: object
+      properties:
+        carrierName:
+          type: string
+          nullable: true
+        trackingNumber:
+          type: string
+          nullable: true
+        trackingUrl:
+          type: string
+          format: uri
+          nullable: true
+        shippedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deliveredAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [carrierName, trackingNumber, trackingUrl, shippedAt, deliveredAt]
+    OrderCustomer:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+          nullable: true
+        lastName:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+      required: [id, email]
+    OrderDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        publicId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        currency:
+          type: string
+        subtotalCents:
+          type: integer
+        taxCents:
+          type: integer
+        shippingCents:
+          type: integer
+        totalCents:
+          type: integer
+        placedAt:
+          type: string
+          format: date-time
+          nullable: true
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+        refundedAt:
+          type: string
+          format: date-time
+          nullable: true
+        shippingAddress:
+          type: object
+          additionalProperties: true
+        billingAddress:
+          type: object
+          additionalProperties: true
+          nullable: true
+        customer:
+          $ref: '#/components/schemas/OrderCustomer'
+        shipment:
+          allOf:
+            - $ref: '#/components/schemas/Shipment'
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderTicket'
+      required:
+        - id
+        - publicId
+        - status
+        - currency
+        - subtotalCents
+        - taxCents
+        - shippingCents
+        - totalCents
+        - shippingAddress
+        - customer
+        - items
+        - tickets
+    GuestOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderDetail'
+        - type: object
+          description: >
+            Guest-safe order view; ticket prizes may be null until revealed.
+    GuestTicketView:
+      type: object
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderTicket'
+        revealed:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderTicket'
+        unrevealed:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderTicket'
+        counts:
+          type: object
+          properties:
+            total:
+              type: integer
+            revealed:
+              type: integer
+            unrevealed:
+              type: integer
+          required: [total, revealed, unrevealed]
+      required: [tickets, revealed, unrevealed, counts]
+    CheckoutSuccess:
+      type: object
+      properties:
+        publicId:
+          type: string
+        orderUrl:
+          type: string
+        clientOrderUrl:
+          type: string
+        needsAttention:
+          type: boolean
+        order:
+          $ref: '#/components/schemas/OrderDetail'
+      required: [publicId, orderUrl, clientOrderUrl, needsAttention, order]
+    AdminOrderSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        publicId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        totalCents:
+          type: integer
+        currency:
+          type: string
+        placedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        customer:
+          $ref: '#/components/schemas/OrderCustomer'
+      required:
+        - id
+        - publicId
+        - status
+        - totalCents
+        - currency
+        - createdAt
+        - customer
+    AdminOrderListPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOrderSummary'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items, nextCursor]
+    AdminCustomer:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+          nullable: true
+        lastName:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        orderCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - orderCount
+        - createdAt
+    AdminCustomerListPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminCustomer'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items, nextCursor]
+    Collection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionSummary'
+        - type: object
+          description: Full collection record used by admin APIs.
+    CollectionCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+      required: [name]
+    CollectionUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isActive:
+          type: boolean
+    Tag:
+      allOf:
+        - $ref: '#/components/schemas/TagSummary'
+        - type: object
+          description: Full tag record used by admin APIs.
+    TagCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        tagType:
+          type: string
+      required: [name, tagType]
+    TagUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        tagType:
+          type: string
+    AdminProductCreate:
+      type: object
+      properties:
+        collectionId:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        productType:
+          type: string
+          enum: [standard, kuji]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        priceCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          default: CAD
+        sku:
+          type: string
+          nullable: true
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        lowStockThreshold:
+          type: integer
+          minimum: 0
+        onHand:
+          type: integer
+          minimum: 0
+      required:
+        - name
+        - productType
+        - status
+        - priceCents
+    AdminProductUpdate:
+      type: object
+      properties:
+        collectionId:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        productType:
+          type: string
+          enum: [standard, kuji]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        sku:
+          type: string
+          nullable: true
+        tagIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        lowStockThreshold:
+          type: integer
+          minimum: 0
+    ImageReorder:
+      type: object
+      properties:
+        imageIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+      required: [imageIds]
+    InventoryUpdate:
+      type: object
+      properties:
+        onHand:
+          type: integer
+          minimum: 0
+        lowStockThreshold:
+          type: integer
+          minimum: 0
+    KujiPrizeCreate:
+      type: object
+      properties:
+        prizeCode:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        initialQuantity:
+          type: integer
+          minimum: 0
+        remainingQuantity:
+          type: integer
+          minimum: 0
+        sortOrder:
+          type: integer
+          minimum: 0
+      required:
+        - prizeCode
+        - name
+        - initialQuantity
+    KujiPrizeUpdate:
+      type: object
+      properties:
+        prizeCode:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        initialQuantity:
+          type: integer
+          minimum: 0
+        remainingQuantity:
+          type: integer
+          minimum: 0
+        sortOrder:
+          type: integer
+          minimum: 0
+    ShipmentUpdate:
+      type: object
+      properties:
+        carrierName:
+          type: string
+          nullable: true
+        trackingNumber:
+          type: string
+          nullable: true
+        trackingUrl:
+          type: string
+          format: uri
+          nullable: true
+        shippedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deliveredAt:
+          type: string
+          format: date-time
+          nullable: true
+    RefundRequest:
+      type: object
+      properties:
+        amountCents:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          nullable: true
+    RefundReconciliation:
+      type: object
+      properties:
+        order:
+          $ref: '#/components/schemas/OrderDetail'
+        summary:
+          type: object
+          properties:
+            stripeRefundCount:
+              type: integer
+            localRefundCount:
+              type: integer
+            refundedAmountCents:
+              type: integer
+            isFullyRefunded:
+              type: boolean
+            hasRefundDrift:
+              type: boolean
+          required:
+            - stripeRefundCount
+            - localRefundCount
+            - refundedAmountCents
+            - isFullyRefunded
+            - hasRefundDrift
+        refunds:
+          type: array
+          items:
+            type: object
+            properties:
+              providerRefundId:
+                type: string
+              amountCents:
+                type: integer
+              currency:
+                type: string
+              status:
+                type: string
+              reason:
+                type: string
+                nullable: true
+              providerCreatedAt:
+                type: string
+                format: date-time
+            required:
+              - providerRefundId
+              - amountCents
+              - currency
+              - status
+              - providerCreatedAt
+      required: [order, summary, refunds]
+  responses:
+    BadRequestError:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnauthorizedError:
+      description: Authentication failed or was not provided
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ForbiddenError:
+      description: Authenticated user does not have permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ConflictError:
+      description: Request conflicts with current resource state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntityError:
+      description: Unprocessable entity
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimitError:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorBody'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadGatewayError:
+      description: Upstream provider error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailableError:
+      description: Service temporarily unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+

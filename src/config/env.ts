@@ -8,7 +8,6 @@ type EnvConfig = Readonly<{
   corsOrigin: string;
   clientBaseUrl: string;
   adminBaseUrl: string;
-  apiBaseUrl: string;
   databaseUrl: string;
   supabaseUrl: string;
   supabasePublicKey: string;
@@ -186,9 +185,6 @@ const createEnvConfig = (): EnvConfig => {
           trimTrailingSlash: true,
         })
       : `${clientBaseUrl}/admin`,
-    apiBaseUrl: parseRequiredHttpUrl('API_BASE_URL', process.env.API_BASE_URL, errors, {
-      trimTrailingSlash: true,
-    }),
 
     databaseUrl: parseRequiredPostgresUrl('DATABASE_URL', process.env.DATABASE_URL, errors),
     supabaseUrl: parseRequiredHttpUrl('SUPABASE_URL', process.env.SUPABASE_URL, errors, {
@@ -196,11 +192,7 @@ const createEnvConfig = (): EnvConfig => {
     }),
     supabasePublicKey: readRequiredString('SUPABASE_PUBLIC_KEY', process.env.SUPABASE_PUBLIC_KEY, errors),
     supabaseSecretKey: readRequiredString('SUPABASE_SECRET_KEY', process.env.SUPABASE_SECRET_KEY, errors),
-    supabaseStorageBucket: readRequiredString(
-      'SUPABASE_STORAGE_BUCKET',
-      process.env.SUPABASE_STORAGE_BUCKET,
-      errors,
-    ),
+    supabaseStorageBucket: readRequiredString('SUPABASE_STORAGE_BUCKET', process.env.SUPABASE_STORAGE_BUCKET, errors),
 
     stripeSecretKey: readRequiredString('STRIPE_SECRET_KEY', process.env.STRIPE_SECRET_KEY, errors),
     stripeWebhookSecret: readRequiredString('STRIPE_WEBHOOK_SECRET', process.env.STRIPE_WEBHOOK_SECRET, errors),
