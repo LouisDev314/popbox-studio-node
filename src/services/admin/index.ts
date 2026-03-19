@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
+import { DbClient } from '../../types/checkout';
 import { collections, kujiPrizes, productImages, productInventory, products, tags } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
@@ -21,6 +22,59 @@ import { mapProductImage, rollbackUploadedProductImages, validateProductImageFil
 type CursorPayload = {
   createdAt: string;
   id: string;
+};
+
+const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
+  if (onHand < reserved) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Inventory onHand cannot be lower than reserved inventory');
+  }
+};
+
+const assertKujiPrizeQuantitiesAreValid = (initialQuantity: number, remainingQuantity: number) => {
+  if (remainingQuantity > initialQuantity) {
+    throw new Exception(
+      HttpStatusCode.CONFLICT,
+      'Kuji prize remainingQuantity cannot be greater than initialQuantity',
+    );
+  }
+};
+
+const syncKujiInventoryWithinTx = async (tx: DbClient, productId: string) => {
+  const [sumRow] = await tx
+    .select({
+      remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
+    })
+    .from(kujiPrizes)
+    .where(eq(kujiPrizes.productId, productId));
+
+  const totalRemaining = sumRow?.remaining ?? 0;
+  const inventoryResult = await tx.execute<{ onHand: number; reserved: number }>(sql`
+    SELECT on_hand AS "onHand", reserved
+    FROM product_inventory
+    WHERE product_id = ${productId}
+    FOR UPDATE
+  `);
+  const existingInventory = inventoryResult[0];
+
+  if (existingInventory) {
+    assertInventoryNotBelowReserved(totalRemaining, Number(existingInventory.reserved));
+
+    await tx
+      .update(productInventory)
+      .set({
+        onHand: totalRemaining,
+      })
+      .where(eq(productInventory.productId, productId));
+
+    return;
+  }
+
+  await tx.insert(productInventory).values({
+    productId,
+    onHand: totalRemaining,
+    reserved: 0,
+    lowStockThreshold: 0,
+  });
 };
 
 export const listAdminProducts = async (filters: {
@@ -448,14 +502,34 @@ export const updateStandardInventory = async (
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Inventory record not found');
   }
 
-  const [updated] = await db
-    .update(productInventory)
-    .set({
-      onHand: payload.onHand ?? existingInventory.onHand,
-      lowStockThreshold: payload.lowStockThreshold ?? existingInventory.lowStockThreshold,
-    })
-    .where(eq(productInventory.productId, productId))
-    .returning();
+  const [updated] = await db.transaction(async (tx) => {
+    const inventoryResult = await tx.execute<{ onHand: number; reserved: number; lowStockThreshold: number }>(sql`
+      SELECT
+        on_hand AS "onHand",
+        reserved,
+        low_stock_threshold AS "lowStockThreshold"
+      FROM product_inventory
+      WHERE product_id = ${productId}
+      FOR UPDATE
+    `);
+    const lockedInventory = inventoryResult[0];
+
+    if (!lockedInventory) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Inventory record not found');
+    }
+
+    const nextOnHand = payload.onHand ?? Number(lockedInventory.onHand);
+    assertInventoryNotBelowReserved(nextOnHand, Number(lockedInventory.reserved));
+
+    return tx
+      .update(productInventory)
+      .set({
+        onHand: nextOnHand,
+        lowStockThreshold: payload.lowStockThreshold ?? Number(lockedInventory.lowStockThreshold),
+      })
+      .where(eq(productInventory.productId, productId))
+      .returning();
+  });
 
   return updated;
 };
@@ -491,21 +565,28 @@ export const createKujiPrize = async (
     throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Only kuji products can define kuji prizes');
   }
 
-  const [prize] = await db
-    .insert(kujiPrizes)
-    .values({
-      productId,
-      prizeCode: payload.prizeCode,
-      name: payload.name,
-      description: payload.description ?? null,
-      imageUrl: payload.imageUrl ?? null,
-      initialQuantity: payload.initialQuantity,
-      remainingQuantity: payload.remainingQuantity ?? payload.initialQuantity,
-      sortOrder: payload.sortOrder ?? 0,
-    })
-    .returning();
+  const remainingQuantity = payload.remainingQuantity ?? payload.initialQuantity;
+  assertKujiPrizeQuantitiesAreValid(payload.initialQuantity, remainingQuantity);
 
-  await syncKujiInventory(productId);
+  const [prize] = await db.transaction(async (tx) => {
+    const [createdPrize] = await tx
+      .insert(kujiPrizes)
+      .values({
+        productId,
+        prizeCode: payload.prizeCode,
+        name: payload.name,
+        description: payload.description ?? null,
+        imageUrl: payload.imageUrl ?? null,
+        initialQuantity: payload.initialQuantity,
+        remainingQuantity,
+        sortOrder: payload.sortOrder ?? 0,
+      })
+      .returning();
+
+    await syncKujiInventoryWithinTx(tx, productId);
+    return [createdPrize];
+  });
+
   return prize;
 };
 
@@ -523,37 +604,50 @@ export const updateKujiPrize = async (
   }>,
 ) => {
   await assertProductExists(productId);
-  const [existing] = await db
-    .select()
-    .from(kujiPrizes)
-    .where(and(eq(kujiPrizes.id, prizeId), eq(kujiPrizes.productId, productId)))
-    .limit(1);
+  const [updated] = await db.transaction(async (tx) => {
+    const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
+      SELECT *
+      FROM kuji_prizes
+      WHERE id = ${prizeId}
+        AND product_id = ${productId}
+      FOR UPDATE
+    `);
+    const existing = prizeResult[0];
 
-  if (!existing) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
-  }
+    if (!existing) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
+    }
 
-  const [updated] = await db
-    .update(kujiPrizes)
-    .set({
-      prizeCode: payload.prizeCode ?? existing.prizeCode,
-      name: payload.name ?? existing.name,
-      description: payload.description === undefined ? existing.description : payload.description,
-      imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
-      initialQuantity: payload.initialQuantity ?? existing.initialQuantity,
-      remainingQuantity: payload.remainingQuantity ?? existing.remainingQuantity,
-      sortOrder: payload.sortOrder ?? existing.sortOrder,
-    })
-    .where(eq(kujiPrizes.id, prizeId))
-    .returning();
+    const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
+    const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
+    assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
 
-  await syncKujiInventory(productId);
+    const [nextPrize] = await tx
+      .update(kujiPrizes)
+      .set({
+        prizeCode: payload.prizeCode ?? existing.prizeCode,
+        name: payload.name ?? existing.name,
+        description: payload.description === undefined ? existing.description : payload.description,
+        imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
+        initialQuantity: nextInitialQuantity,
+        remainingQuantity: nextRemainingQuantity,
+        sortOrder: payload.sortOrder ?? existing.sortOrder,
+      })
+      .where(eq(kujiPrizes.id, prizeId))
+      .returning();
+
+    await syncKujiInventoryWithinTx(tx, productId);
+    return [nextPrize];
+  });
+
   return updated;
 };
 
 export const deleteKujiPrize = async (productId: string, prizeId: string) => {
-  await db.delete(kujiPrizes).where(and(eq(kujiPrizes.id, prizeId), eq(kujiPrizes.productId, productId)));
-  await syncKujiInventory(productId);
+  await db.transaction(async (tx) => {
+    await tx.delete(kujiPrizes).where(and(eq(kujiPrizes.id, prizeId), eq(kujiPrizes.productId, productId)));
+    await syncKujiInventoryWithinTx(tx, productId);
+  });
 
   return {
     id: prizeId,

@@ -1,16 +1,9 @@
-import {
-  AddressInput,
-  CheckoutItemInput,
-  CreateCheckoutSessionInput,
-  DbClient,
-  LockedProductRow,
-} from '../../types/checkout';
+import { CheckoutItemInput, CreateCheckoutSessionInput, DbClient, LockedProductRow } from '../../types/checkout';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
-import getEnvConfig from '../../config/env';
 import { db } from '../../db';
+import stripe from '../../integrations/stripe';
 import {
-  addresses,
   customers,
   inventoryReservations,
   kujiPrizes,
@@ -24,8 +17,9 @@ import { and, eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import logger from '../../utils/logger';
 import { getOrderDetailById } from '../orders/helpers';
-import { randomInt } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
+import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { sendOrderConfirmationEmail } from '../notifications';
 
 class NeedsAttentionError extends Error {
@@ -35,7 +29,224 @@ class NeedsAttentionError extends Error {
   }
 }
 
+class LatePaymentNeedsAttentionError extends NeedsAttentionError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LatePaymentNeedsAttentionError';
+  }
+}
+
+type FinalizedCheckoutAmounts = {
+  currency: string;
+  subtotalCents: number;
+  shippingCents: number;
+  taxCents: number;
+  discountCents: number;
+  totalCents: number;
+};
+
+type FinalizedCheckoutSnapshots = {
+  customerDetailsJson: Record<string, unknown>;
+  shippingAddressJson: Record<string, unknown> | null;
+  billingAddressJson: Record<string, unknown> | null;
+};
+
+type ExpireStripeCheckoutSessionResult =
+  | {
+      outcome: 'expired';
+      status: Stripe.Checkout.Session.Status | null;
+    }
+  | {
+      outcome: 'noop';
+      reason: 'not_open' | 'not_found';
+      status: Stripe.Checkout.Session.Status | null;
+    }
+  | {
+      outcome: 'error';
+      reason: 'stripe_error';
+      status: Stripe.Checkout.Session.Status | null;
+    };
+
+const getStripeErrorCode = (error: unknown) => {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : null;
+};
+
+const splitFullName = (fullName: string | null) => {
+  const normalized = fullName?.trim() || '';
+
+  if (!normalized) {
+    return {
+      firstName: null,
+      lastName: null,
+    };
+  }
+
+  const [firstName, ...remaining] = normalized.split(/\s+/);
+
+  return {
+    firstName: firstName || null,
+    lastName: remaining.length ? remaining.join(' ') : null,
+  };
+};
+
+const normalizeStripeCurrency = (currency: string | null | undefined) => currency?.trim().toUpperCase() || '';
+
+const getCollectedShippingDetails = (session: Stripe.Checkout.Session) =>
+  session.collected_information?.shipping_details ?? null;
+
+const isCompleteAddressSnapshot = (snapshot: Record<string, unknown> | null) => {
+  if (!snapshot) {
+    return false;
+  }
+
+  return ['fullName', 'line1', 'city', 'province', 'postalCode', 'countryCode'].every((field) => {
+    const value = snapshot[field];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+};
+
+const buildAddressSnapshot = (params: {
+  source: 'stripe_shipping_details' | 'stripe_customer_details';
+  fullName: string | null | undefined;
+  phone: string | null | undefined;
+  email?: string | null | undefined;
+  address: Stripe.Address | null | undefined;
+}) => {
+  const address = params.address;
+
+  if (!address) {
+    return null;
+  }
+
+  return {
+    fullName: params.fullName?.trim() || null,
+    line1: address.line1?.trim() || null,
+    line2: address.line2?.trim() || null,
+    city: address.city?.trim() || null,
+    province: address.state?.trim() || null,
+    postalCode: address.postal_code?.trim() || null,
+    countryCode: address.country?.trim().toUpperCase() || null,
+    phone: params.phone?.trim() || null,
+    email: params.email?.trim().toLowerCase() || null,
+    source: params.source,
+  } satisfies Record<string, unknown>;
+};
+
+const buildFinalizedCheckoutAmounts = (session: Stripe.Checkout.Session): FinalizedCheckoutAmounts => ({
+  currency: normalizeStripeCurrency(session.currency),
+  subtotalCents: session.amount_subtotal ?? 0,
+  shippingCents: session.total_details?.amount_shipping ?? 0,
+  taxCents: session.total_details?.amount_tax ?? 0,
+  discountCents: session.total_details?.amount_discount ?? 0,
+  totalCents: session.amount_total ?? 0,
+});
+
+const buildFinalizedCheckoutSnapshots = (session: Stripe.Checkout.Session): FinalizedCheckoutSnapshots => {
+  const shippingDetails = getCollectedShippingDetails(session);
+  const fullName = session.customer_details?.name?.trim() || shippingDetails?.name?.trim() || null;
+  const { firstName, lastName } = splitFullName(fullName);
+  const email =
+    session.customer_details?.email?.trim().toLowerCase() || session.customer_email?.trim().toLowerCase() || null;
+  const phone = session.customer_details?.phone?.trim() || null;
+
+  return {
+    customerDetailsJson: {
+      email,
+      fullName,
+      firstName,
+      lastName,
+      phone,
+      source: 'stripe_customer_details',
+    },
+    shippingAddressJson: buildAddressSnapshot({
+      source: 'stripe_shipping_details',
+      fullName: shippingDetails?.name ?? fullName,
+      phone,
+      email,
+      address: shippingDetails?.address,
+    }),
+    billingAddressJson: buildAddressSnapshot({
+      source: 'stripe_customer_details',
+      fullName,
+      phone,
+      email,
+      address: session.customer_details?.address,
+    }),
+  };
+};
+
+const assertFinalizedCheckoutSessionMatchesOrder = (
+  lockedOrder: {
+    stripeCheckoutSessionId: string | null;
+    currency: string;
+    subtotalCents: number;
+    shippingCents: number;
+  },
+  session: Stripe.Checkout.Session,
+  amounts: FinalizedCheckoutAmounts,
+  snapshots: FinalizedCheckoutSnapshots,
+) => {
+  if (session.payment_status !== 'paid') {
+    throw new NeedsAttentionError(`Stripe Checkout Session ${session.id} is not in a paid state`);
+  }
+
+  if (lockedOrder.stripeCheckoutSessionId && lockedOrder.stripeCheckoutSessionId !== session.id) {
+    throw new NeedsAttentionError('Stripe Checkout Session id does not match the order record');
+  }
+
+  if (normalizeStripeCurrency(lockedOrder.currency) !== 'CAD' || amounts.currency !== 'CAD') {
+    throw new NeedsAttentionError('Stripe Checkout currency does not match the CAD-only order policy');
+  }
+
+  if (amounts.subtotalCents !== lockedOrder.subtotalCents) {
+    throw new NeedsAttentionError('Stripe Checkout subtotal does not match the server-side order subtotal');
+  }
+
+  if (amounts.shippingCents !== lockedOrder.shippingCents) {
+    throw new NeedsAttentionError('Stripe Checkout shipping does not match the server-side order shipping');
+  }
+
+  if (amounts.discountCents !== 0) {
+    throw new NeedsAttentionError('Stripe Checkout applied an unexpected discount');
+  }
+
+  if (amounts.totalCents !== amounts.subtotalCents + amounts.shippingCents + amounts.taxCents) {
+    throw new NeedsAttentionError('Stripe Checkout total does not reconcile with subtotal, shipping, and tax');
+  }
+
+  if (!isCompleteAddressSnapshot(snapshots.shippingAddressJson)) {
+    throw new NeedsAttentionError('Stripe shipping details are incomplete');
+  }
+
+  if (!isCompleteAddressSnapshot(snapshots.billingAddressJson)) {
+    throw new NeedsAttentionError('Stripe billing details are incomplete');
+  }
+
+  if ((snapshots.shippingAddressJson?.countryCode as string | undefined)?.toUpperCase() !== 'CA') {
+    throw new NeedsAttentionError('Stripe shipping details are outside Canada');
+  }
+
+  if (typeof snapshots.customerDetailsJson.email !== 'string' || !snapshots.customerDetailsJson.email) {
+    throw new NeedsAttentionError('Stripe customer email is missing');
+  }
+};
+
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
+
+const readSnapshotString = (snapshot: Record<string, unknown>, field: string) => {
+  const value = snapshot[field];
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length ? normalized : null;
+};
+
+const createPlaceholderCustomerEmail = () => `checkout+${randomUUID()}@placeholder.popbox.local`;
 
 export const normalizeItems = (items: CheckoutItemInput[]) => {
   const map = new Map<string, number>();
@@ -44,17 +255,9 @@ export const normalizeItems = (items: CheckoutItemInput[]) => {
     map.set(item.productId, (map.get(item.productId) ?? 0) + item.quantity);
   }
 
-  return Array.from(map.entries()).map(([productId, quantity]) => ({ productId, quantity }));
-};
-
-export const assertCanadianAddress = (address: AddressInput) => {
-  if (address.countryCode.trim().toUpperCase() !== 'CA') {
-    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Shipping is only available in Canada');
-  }
-};
-
-export const buildOrderUrl = (publicId: string, token: string) => {
-  return `${getEnvConfig().clientBaseUrl}/orders/${publicId}?token=${encodeURIComponent(token)}`;
+  return Array.from(map.entries())
+    .sort(([leftProductId], [rightProductId]) => leftProductId.localeCompare(rightProductId))
+    .map(([productId, quantity]) => ({ productId, quantity }));
 };
 
 export const lockProductForCheckout = async (
@@ -73,9 +276,9 @@ export const lockProductForCheckout = async (
       p.currency,
       pi.on_hand AS "onHand",
       pi.reserved
-    FROM products p
-    JOIN product_inventory pi ON pi.product_id = p.id
-    WHERE p.id = ${productId}
+      FROM products p
+      JOIN product_inventory pi ON pi.product_id = p.id
+      WHERE p.id = ${productId}
     FOR UPDATE
   `);
 
@@ -83,34 +286,32 @@ export const lockProductForCheckout = async (
 };
 
 export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckoutSessionInput) => {
-  const email = normalizeEmail(input.email);
-  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, email)).limit(1);
+  if (input.email) {
+    const email = normalizeEmail(input.email);
+    const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, email)).limit(1);
 
-  if (existingCustomer) {
-    const [updated] = await tx
-      .update(customers)
-      .set({
-        firstName: input.firstName ?? existingCustomer.firstName,
-        lastName: input.lastName ?? existingCustomer.lastName,
-        phone: input.phone ?? input.shippingAddress.phone ?? existingCustomer.phone,
-      })
-      .where(eq(customers.id, existingCustomer.id))
-      .returning();
-
-    if (!updated) {
-      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+    if (existingCustomer) {
+      return existingCustomer;
     }
 
-    return updated;
+    const [created] = await tx
+      .insert(customers)
+      .values({
+        email,
+      })
+      .returning();
+
+    if (!created) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create customer');
+    }
+
+    return created;
   }
 
   const [created] = await tx
     .insert(customers)
     .values({
-      email,
-      firstName: input.firstName ?? null,
-      lastName: input.lastName ?? null,
-      phone: input.phone ?? input.shippingAddress.phone ?? null,
+      email: createPlaceholderCustomerEmail(),
     })
     .returning();
 
@@ -121,18 +322,64 @@ export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckout
   return created;
 };
 
-export const insertAddresses = async (tx: DbClient, customerId: string, input: CreateCheckoutSessionInput) => {
-  await tx.insert(addresses).values({
-    customerId,
-    ...input.shippingAddress,
-  });
+export const reconcileCheckoutCustomer = async (
+  tx: DbClient,
+  currentCustomerId: string,
+  finalizedSnapshots: FinalizedCheckoutSnapshots,
+) => {
+  const email = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'email');
 
-  if (input.billingAddress && !input.billingSameAsShipping) {
-    await tx.insert(addresses).values({
-      customerId,
-      ...input.billingAddress,
-    });
+  if (!email) {
+    throw new NeedsAttentionError('Stripe customer email is missing');
   }
+
+  const firstName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'firstName');
+  const lastName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'lastName');
+  const phone = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'phone');
+
+  const [currentCustomer] = await tx.select().from(customers).where(eq(customers.id, currentCustomerId)).limit(1);
+
+  if (!currentCustomer) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Customer not found for checkout order');
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, normalizedEmail)).limit(1);
+
+  if (existingCustomer && existingCustomer.id !== currentCustomer.id) {
+    const [updatedExistingCustomer] = await tx
+      .update(customers)
+      .set({
+        firstName: firstName ?? existingCustomer.firstName,
+        lastName: lastName ?? existingCustomer.lastName,
+        phone: phone ?? existingCustomer.phone,
+      })
+      .where(eq(customers.id, existingCustomer.id))
+      .returning();
+
+    if (!updatedExistingCustomer) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+    }
+
+    return updatedExistingCustomer.id;
+  }
+
+  const [updatedCustomer] = await tx
+    .update(customers)
+    .set({
+      email: normalizedEmail,
+      firstName: firstName ?? currentCustomer.firstName,
+      lastName: lastName ?? currentCustomer.lastName,
+      phone: phone ?? currentCustomer.phone,
+    })
+    .where(eq(customers.id, currentCustomer.id))
+    .returning();
+
+  if (!updatedCustomer) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+  }
+
+  return updatedCustomer.id;
 };
 
 export const releaseReservationsForOrder = async (
@@ -173,11 +420,18 @@ export const releaseReservationsForOrders = async (
         AND status = 'active'
       GROUP BY product_id
     ),
+    locked_inventory AS (
+      SELECT pi.product_id, inventory_deltas.quantity
+      FROM product_inventory AS pi
+      INNER JOIN inventory_deltas ON inventory_deltas.product_id = pi.product_id
+      ORDER BY pi.product_id
+      FOR UPDATE
+    ),
     updated_inventory AS (
       UPDATE product_inventory AS pi
-      SET reserved = GREATEST(pi.reserved - inventory_deltas.quantity, 0)
-      FROM inventory_deltas
-      WHERE pi.product_id = inventory_deltas.product_id
+      SET reserved = GREATEST(pi.reserved - locked_inventory.quantity, 0)
+      FROM locked_inventory
+      WHERE pi.product_id = locked_inventory.product_id
       RETURNING pi.product_id
     )
     UPDATE inventory_reservations AS ir
@@ -189,16 +443,78 @@ export const releaseReservationsForOrders = async (
 
 export const ensurePaymentSessionMetadata = (session: Stripe.Checkout.Session) => {
   const orderId = session.metadata?.orderId;
-  const guestAccessToken = session.metadata?.guestAccessToken;
 
-  if (!orderId || !guestAccessToken) {
+  if (!orderId) {
     throw new Exception(HttpStatusCode.BAD_REQUEST, 'Stripe session metadata is incomplete');
   }
 
   return {
     orderId,
-    guestAccessToken,
   };
+};
+
+export const expireStripeCheckoutSessionIfOpen = async (
+  sessionId: string,
+): Promise<ExpireStripeCheckoutSessionResult> => {
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.status !== 'open') {
+      return {
+        outcome: 'noop',
+        reason: 'not_open',
+        status: session.status,
+      };
+    }
+
+    const expiredSession = await stripe.checkout.sessions.expire(sessionId);
+
+    return {
+      outcome: 'expired',
+      status: expiredSession.status,
+    };
+  } catch (error) {
+    if (getStripeErrorCode(error) === 'resource_missing') {
+      return {
+        outcome: 'noop',
+        reason: 'not_found',
+        status: null,
+      };
+    }
+
+    try {
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+      if (session.status !== 'open') {
+        return {
+          outcome: 'noop',
+          reason: 'not_open',
+          status: session.status,
+        };
+      }
+    } catch (retryError) {
+      if (getStripeErrorCode(retryError) === 'resource_missing') {
+        return {
+          outcome: 'noop',
+          reason: 'not_found',
+          status: null,
+        };
+      }
+
+      logger.warn(
+        { error: retryError, sessionId },
+        'Stripe Checkout Session status could not be rechecked after local order expiration',
+      );
+    }
+
+    logger.error({ error, sessionId }, 'Failed to expire Stripe Checkout Session after local order expiration');
+
+    return {
+      outcome: 'error',
+      reason: 'stripe_error',
+      status: null,
+    };
+  }
 };
 
 export const allocateKujiTickets = async (tx: DbClient, orderId: string, customerId: string) => {
@@ -292,11 +608,27 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
     throw new NeedsAttentionError('No active reservations were available for conversion');
   }
 
-  for (const reservation of activeReservations) {
+  const currentTime = Date.now();
+  if (activeReservations.some((reservation) => reservation.expiresAt.getTime() <= currentTime)) {
+    throw new LatePaymentNeedsAttentionError('Late payment received after reservation expiration');
+  }
+
+  const reservationsInLockOrder = [...activeReservations].sort((leftReservation, rightReservation) => {
+    const productComparison = leftReservation.productId.localeCompare(rightReservation.productId);
+
+    if (productComparison !== 0) {
+      return productComparison;
+    }
+
+    return leftReservation.id.localeCompare(rightReservation.id);
+  });
+
+  for (const reservation of reservationsInLockOrder) {
     const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number }>`
       SELECT on_hand AS "onHand", reserved
       FROM product_inventory
       WHERE product_id = ${reservation.productId}
+      ORDER BY product_id
       FOR UPDATE
     `);
 
@@ -328,18 +660,34 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
     .where(and(eq(inventoryReservations.orderId, orderId), eq(inventoryReservations.status, 'active')));
 };
 
-export const markOrderPaidNeedsAttention = async (tx: DbClient, orderId: string, session: Stripe.Checkout.Session) => {
-  await releaseReservationsForOrder(tx, orderId, 'released');
+export const markOrderPaidNeedsAttention = async (
+  tx: DbClient,
+  orderId: string,
+  currentCustomerId: string,
+  session: Stripe.Checkout.Session,
+  finalizedSnapshots: FinalizedCheckoutSnapshots,
+  finalizedAmounts: FinalizedCheckoutAmounts,
+  reservationStatus: 'released' | 'expired' = 'released',
+) => {
+  const finalizedCustomerId = await reconcileCheckoutCustomer(tx, currentCustomerId, finalizedSnapshots);
+
+  await releaseReservationsForOrder(tx, orderId, reservationStatus);
 
   await tx
     .update(orders)
     .set({
+      customerId: finalizedCustomerId,
       status: 'paid_needs_attention',
+      currency: finalizedAmounts.currency || 'CAD',
+      stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      subtotalCents: session.amount_subtotal ?? 0,
-      taxCents: session.total_details?.amount_tax ?? 0,
-      shippingCents: session.total_details?.amount_shipping ?? 0,
-      totalCents: session.amount_total ?? 0,
+      customerDetailsJson: finalizedSnapshots.customerDetailsJson,
+      shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
+      billingAddressJson: finalizedSnapshots.billingAddressJson,
+      subtotalCents: finalizedAmounts.subtotalCents,
+      taxCents: finalizedAmounts.taxCents,
+      shippingCents: finalizedAmounts.shippingCents,
+      totalCents: finalizedAmounts.totalCents,
       paidAt: new Date(),
       placedAt: new Date(),
     })
@@ -350,8 +698,8 @@ export const markOrderPaidNeedsAttention = async (tx: DbClient, orderId: string,
     .set({
       providerCheckoutSessionId: session.id,
       providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-      amountCents: session.amount_total ?? 0,
-      currency: (session.currency ?? 'cad').toUpperCase(),
+      amountCents: finalizedAmounts.totalCents,
+      currency: finalizedAmounts.currency || 'CAD',
       status: 'paid',
       rawResponse: session as unknown as Record<string, unknown>,
     })
@@ -359,27 +707,35 @@ export const markOrderPaidNeedsAttention = async (tx: DbClient, orderId: string,
 };
 
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
-  const { orderId, guestAccessToken } = ensurePaymentSessionMetadata(session);
+  const { orderId } = ensurePaymentSessionMetadata(session);
+  const finalizedAmounts = buildFinalizedCheckoutAmounts(session);
+  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
   let orderPublicId = '';
-  let subtotalCents = 0;
-  let totalCents = 0;
+  let orderGuestAccessTokenHash = '';
+  let orderCustomerId = '';
 
   try {
     const finalizeResult = await db.transaction(async (tx) => {
       const lockedOrderResult = await tx.execute<{
         publicId: string;
         customerId: string;
+        guestAccessTokenHash: string | null;
+        stripeCheckoutSessionId: string | null;
         status: (typeof orders.$inferSelect)['status'];
+        currency: string;
         subtotalCents: number;
-        totalCents: number;
+        shippingCents: number;
       }>(sql`
         SELECT
           id,
           public_id AS "publicId",
           customer_id AS "customerId",
+          guest_access_token_hash AS "guestAccessTokenHash",
+          stripe_checkout_session_id AS "stripeCheckoutSessionId",
           status,
+          currency,
           subtotal_cents AS "subtotalCents",
-          total_cents AS "totalCents"
+          shipping_cents AS "shippingCents"
         FROM orders
         WHERE id = ${orderId}
         FOR UPDATE
@@ -391,8 +747,8 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       }
 
       orderPublicId = lockedOrder.publicId;
-      subtotalCents = Number(lockedOrder.subtotalCents);
-      totalCents = Number(lockedOrder.totalCents);
+      orderGuestAccessTokenHash = lockedOrder.guestAccessTokenHash ?? '';
+      orderCustomerId = lockedOrder.customerId;
 
       if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
         return {
@@ -402,22 +758,46 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         };
       }
 
+      if (lockedOrder.status === 'expired') {
+        throw new LatePaymentNeedsAttentionError('Late payment received after order expiration');
+      }
+
       if (lockedOrder.status !== 'pending_payment') {
         throw new NeedsAttentionError(`Order is ${lockedOrder.status} and can no longer be finalized`);
       }
 
+      assertFinalizedCheckoutSessionMatchesOrder(
+        {
+          stripeCheckoutSessionId: lockedOrder.stripeCheckoutSessionId,
+          currency: lockedOrder.currency,
+          subtotalCents: Number(lockedOrder.subtotalCents),
+          shippingCents: Number(lockedOrder.shippingCents),
+        },
+        session,
+        finalizedAmounts,
+        finalizedSnapshots,
+      );
+
+      const finalizedCustomerId = await reconcileCheckoutCustomer(tx, lockedOrder.customerId, finalizedSnapshots);
+
       await convertReservations(tx, orderId);
-      await allocateKujiTickets(tx, orderId, lockedOrder.customerId);
+      await allocateKujiTickets(tx, orderId, finalizedCustomerId);
 
       await tx
         .update(orders)
         .set({
+          customerId: finalizedCustomerId,
           status: 'paid',
+          currency: finalizedAmounts.currency,
+          stripeCheckoutSessionId: session.id,
           stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          subtotalCents: session.amount_subtotal ?? subtotalCents,
-          taxCents: session.total_details?.amount_tax ?? 0,
-          shippingCents: session.total_details?.amount_shipping ?? 0,
-          totalCents: session.amount_total ?? totalCents,
+          customerDetailsJson: finalizedSnapshots.customerDetailsJson,
+          shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
+          billingAddressJson: finalizedSnapshots.billingAddressJson,
+          subtotalCents: finalizedAmounts.subtotalCents,
+          taxCents: finalizedAmounts.taxCents,
+          shippingCents: finalizedAmounts.shippingCents,
+          totalCents: finalizedAmounts.totalCents,
           paidAt: new Date(),
           placedAt: new Date(),
         })
@@ -428,8 +808,8 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         .set({
           providerCheckoutSessionId: session.id,
           providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-          amountCents: session.amount_total ?? totalCents,
-          currency: (session.currency ?? 'cad').toUpperCase(),
+          amountCents: finalizedAmounts.totalCents,
+          currency: finalizedAmounts.currency,
           status: 'paid',
           rawResponse: session as unknown as Record<string, unknown>,
         })
@@ -443,25 +823,45 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
+      const orderUrl = buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash);
+
       return {
         orderId,
         publicId: finalizeResult.publicId,
-        guestAccessToken,
+        orderUrl,
         needsAttention: finalizeResult.needsAttention,
         alreadyFinalized: true,
       };
     }
   } catch (error) {
     if (error instanceof NeedsAttentionError) {
-      logger.warn({ orderId, reason: error.message }, 'Order payment finalized with manual attention required');
+      const isLatePayment = error instanceof LatePaymentNeedsAttentionError;
+
+      logger.warn(
+        {
+          orderId,
+          reason: error.message,
+          latePayment: isLatePayment,
+        },
+        'Order payment finalized with manual attention required',
+      );
+
       await db.transaction(async (tx) => {
-        await markOrderPaidNeedsAttention(tx, orderId, session);
+        await markOrderPaidNeedsAttention(
+          tx,
+          orderId,
+          orderCustomerId,
+          session,
+          finalizedSnapshots,
+          finalizedAmounts,
+          isLatePayment ? 'expired' : 'released',
+        );
       });
 
       return {
         orderId,
         publicId: orderPublicId,
-        guestAccessToken,
+        orderUrl: buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash),
         needsAttention: true,
         alreadyFinalized: false,
       };
@@ -471,7 +871,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   }
 
   const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildOrderUrl(detail.publicId, guestAccessToken);
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, orderGuestAccessTokenHash);
 
   try {
     await sendOrderConfirmationEmail({
@@ -487,7 +887,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   return {
     orderId,
     publicId: orderPublicId,
-    guestAccessToken,
+    orderUrl,
     needsAttention: false,
     alreadyFinalized: false,
   };

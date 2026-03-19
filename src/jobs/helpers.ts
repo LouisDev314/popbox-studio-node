@@ -1,15 +1,19 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db';
-import { releaseReservationsForOrders } from '../services/checkout/helpers';
+import { expireStripeCheckoutSessionIfOpen, releaseReservationsForOrders } from '../services/checkout/helpers';
+import { orders } from '../db/schema';
+import logger from '../utils/logger';
 
 const CLEANUP_BATCH_SIZE = 100;
 
-const claimExpiredReservationOrderIds = async (limit: number) => {
+const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pending_payment' | 'expired') => {
   return await db.transaction(async (tx) => {
-    const result = await tx.execute<{ orderId: string }>(sql`
+    const result = await tx.execute<{ orderId: string; stripeCheckoutSessionId: string | null }>(sql`
       SELECT o.id AS "orderId"
+        , o.stripe_checkout_session_id AS "stripeCheckoutSessionId"
       FROM orders AS o
-      WHERE EXISTS (
+      WHERE o.status = ${status}
+        AND EXISTS (
         SELECT 1
         FROM inventory_reservations AS ir
         WHERE ir.order_id = o.id
@@ -20,41 +24,24 @@ const claimExpiredReservationOrderIds = async (limit: number) => {
       FOR UPDATE OF o SKIP LOCKED
       LIMIT ${limit}
     `);
-    const orderIds = result.map((row) => row.orderId);
+    const claimedOrders = result.map((row) => ({
+      orderId: row.orderId,
+      stripeCheckoutSessionId: row.stripeCheckoutSessionId,
+    }));
+    const orderIds = claimedOrders.map((row) => row.orderId);
+
+    if (status === 'pending_payment' && orderIds.length > 0) {
+      await tx
+        .update(orders)
+        .set({
+          status: 'expired',
+        })
+        .where(sql`${orders.id} IN (${sql.join(orderIds.map((orderId) => sql`${orderId}`), sql`, `)})`);
+    }
 
     await releaseReservationsForOrders(tx, orderIds, 'expired');
 
-    return orderIds;
-  });
-};
-
-const expirePendingOrdersBatch = async (limit: number) => {
-  return db.transaction(async (tx) => {
-    const expiredOrders = await tx.execute<{ orderId: string }>(sql`
-      WITH claimed_orders AS (
-        SELECT id
-        FROM orders
-        WHERE status = 'pending_payment'
-          AND created_at <= now() - interval '10 minutes'
-        ORDER BY created_at, id
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${limit}
-      ),
-      expired_orders AS (
-        UPDATE orders
-        SET status = 'expired'
-        WHERE id IN (SELECT id FROM claimed_orders)
-          AND status = 'pending_payment'
-        RETURNING id AS "orderId"
-      )
-      SELECT "orderId"
-      FROM expired_orders
-    `);
-    const orderIds = expiredOrders.map((row) => row.orderId);
-
-    await releaseReservationsForOrders(tx, orderIds, 'expired');
-
-    return orderIds.length;
+    return claimedOrders;
   });
 };
 
@@ -62,13 +49,13 @@ export const cleanupExpiredReservations = async (): Promise<{ processedOrders: n
   let processedOrders = 0;
 
   while (true) {
-    const orderIds = await claimExpiredReservationOrderIds(CLEANUP_BATCH_SIZE);
+    const claimedOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'expired');
 
-    if (orderIds.length === 0) {
+    if (claimedOrders.length === 0) {
       break;
     }
 
-    processedOrders += orderIds.length;
+    processedOrders += claimedOrders.length;
   }
 
   return {
@@ -76,20 +63,56 @@ export const cleanupExpiredReservations = async (): Promise<{ processedOrders: n
   };
 };
 
-export const cleanupExpiredPendingOrders = async (): Promise<{ expiredOrders: number }> => {
+export const cleanupExpiredPendingOrders = async (): Promise<{
+  expiredOrders: number;
+  stripeSessionsExpired: number;
+  stripeSessionExpireFailures: number;
+}> => {
   let expiredOrders = 0;
+  let stripeSessionsExpired = 0;
+  let stripeSessionExpireFailures = 0;
 
   while (true) {
-    const batchExpiredOrders = await expirePendingOrdersBatch(CLEANUP_BATCH_SIZE);
+    const batchExpiredOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'pending_payment');
 
-    if (batchExpiredOrders === 0) {
+    if (batchExpiredOrders.length === 0) {
       break;
     }
 
-    expiredOrders += batchExpiredOrders;
+    expiredOrders += batchExpiredOrders.length;
+
+    for (const expiredOrder of batchExpiredOrders) {
+      if (!expiredOrder.stripeCheckoutSessionId) {
+        continue;
+      }
+
+      const expireResult = await expireStripeCheckoutSessionIfOpen(expiredOrder.stripeCheckoutSessionId);
+
+      if (expireResult.outcome === 'expired') {
+        stripeSessionsExpired += 1;
+        continue;
+      }
+
+      if (expireResult.outcome === 'error') {
+        stripeSessionExpireFailures += 1;
+        continue;
+      }
+
+      logger.info(
+        {
+          orderId: expiredOrder.orderId,
+          stripeCheckoutSessionId: expiredOrder.stripeCheckoutSessionId,
+          reason: expireResult.reason,
+          status: expireResult.status,
+        },
+        'Stripe Checkout Session did not need proactive expiration after local order expiration',
+      );
+    }
   }
 
   return {
     expiredOrders,
+    stripeSessionsExpired,
+    stripeSessionExpireFailures,
   };
 };

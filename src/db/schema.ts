@@ -240,6 +240,8 @@ export const orders = pgTable(
     totalCents: integer('total_cents').notNull().default(0),
     stripeCheckoutSessionId: varchar('stripe_checkout_session_id', { length: 255 }),
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
+    checkoutIdempotencyKey: varchar('checkout_idempotency_key', { length: 255 }),
+    customerDetailsJson: jsonb('customer_details_json').$type<Record<string, unknown> | null>(),
     shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, unknown>>().notNull(),
     billingAddressJson: jsonb('billing_address_json').$type<Record<string, unknown> | null>(),
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
@@ -253,6 +255,7 @@ export const orders = pgTable(
   (table) => [
     uniqueIndex('orders_public_id_unique').on(table.publicId),
     uniqueIndex('orders_stripe_checkout_session_unique').on(table.stripeCheckoutSessionId),
+    uniqueIndex('orders_checkout_idempotency_key_unique').on(table.checkoutIdempotencyKey),
     index('orders_customer_created_idx').on(table.customerId, table.createdAt, table.id),
     index('orders_status_created_idx').on(table.status, table.createdAt, table.id),
     index('orders_placed_at_idx').on(table.placedAt, table.id),
@@ -353,6 +356,7 @@ export const payments = pgTable(
     providerPaymentIntentId: varchar('provider_payment_intent_id', { length: 255 }),
     providerCheckoutSessionId: varchar('provider_checkout_session_id', { length: 255 }),
     amountCents: integer('amount_cents').notNull(),
+    refundedAmountCents: integer('refunded_amount_cents').notNull().default(0),
     currency: varchar('currency', { length: 3 }).notNull().default('CAD'),
     status: paymentStatusEnum('status').notNull().default('pending'),
     rawResponse: jsonb('raw_response').$type<Record<string, unknown> | null>(),
@@ -364,6 +368,38 @@ export const payments = pgTable(
     uniqueIndex('payments_provider_payment_intent_unique').on(table.providerPaymentIntentId),
     uniqueIndex('payments_provider_checkout_session_unique').on(table.providerCheckoutSessionId),
     check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
+    check('payments_refunded_amount_cents_check', sql`${table.refundedAmountCents} >= 0`),
+    check('payments_refunded_amount_not_exceed_amount_check', sql`${table.refundedAmountCents} <= ${table.amountCents}`),
+  ],
+);
+
+export const paymentRefunds = pgTable(
+  'payment_refunds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    paymentId: uuid('payment_id')
+      .notNull()
+      .references(() => payments.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    providerRefundId: varchar('provider_refund_id', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }),
+    amountCents: integer('amount_cents').notNull(),
+    currency: varchar('currency', { length: 3 }).notNull().default('CAD'),
+    status: varchar('status', { length: 64 }).notNull(),
+    reason: varchar('reason', { length: 255 }),
+    providerCreatedAt: timestamp('provider_created_at', { withTimezone: true }),
+    rawResponse: jsonb('raw_response').$type<Record<string, unknown> | null>(),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    uniqueIndex('payment_refunds_provider_refund_id_unique').on(table.providerRefundId),
+    uniqueIndex('payment_refunds_idempotency_key_unique').on(table.idempotencyKey),
+    index('payment_refunds_payment_created_idx').on(table.paymentId, table.createdAt, table.id),
+    index('payment_refunds_order_created_idx').on(table.orderId, table.createdAt, table.id),
+    check('payment_refunds_amount_cents_check', sql`${table.amountCents} >= 0`),
   ],
 );
 

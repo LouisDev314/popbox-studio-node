@@ -7,6 +7,21 @@ import { db } from '../../db';
 import { orders, stripeWebhookEvents } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { finalizeCheckoutSession, releaseReservationsForOrder } from '../checkout/helpers';
+import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
+import logger from '../../utils/logger';
+
+const getWebhookOrderContext = (event: Stripe.Event) => {
+  const eventObject = event.data.object as {
+    id?: string;
+    metadata?: Record<string, string | undefined>;
+  };
+
+  return {
+    stripeObjectId: typeof eventObject?.id === 'string' ? eventObject.id : null,
+    orderId: eventObject?.metadata?.orderId ?? null,
+    orderPublicId: eventObject?.metadata?.orderPublicId ?? null,
+  };
+};
 
 export const handleStripeWebhook = async (signature: string | string[] | undefined, rawBody: Buffer) => {
   if (!signature || Array.isArray(signature)) {
@@ -20,29 +35,60 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
     throw new Exception(HttpStatusCode.BAD_REQUEST, 'Invalid Stripe signature');
   }
 
-  const existing = await db
-    .select()
-    .from(stripeWebhookEvents)
-    .where(eq(stripeWebhookEvents.stripeEventId, event.id))
-    .limit(1);
+  const webhookOrderContext = getWebhookOrderContext(event);
+  const lockHandle = await tryAcquireAdvisoryLock(`stripe:webhook:${event.id}`);
 
-  if (existing[0]?.status === 'processed') {
+  if (!lockHandle) {
+    logger.info(
+      {
+        stripeEventId: event.id,
+        eventType: event.type,
+        ...webhookOrderContext,
+      },
+      'Skipping Stripe webhook because another worker is already processing it',
+    );
+
     return {
       received: true,
       duplicate: true,
     };
   }
 
-  if (!existing[0]) {
-    await db.insert(stripeWebhookEvents).values({
-      stripeEventId: event.id,
-      eventType: event.type,
-      status: 'received',
-      payload: event as unknown as Record<string, unknown>,
-    });
-  }
-
   try {
+    await db
+      .insert(stripeWebhookEvents)
+      .values({
+        stripeEventId: event.id,
+        eventType: event.type,
+        status: 'received',
+        payload: event as unknown as Record<string, unknown>,
+      })
+      .onConflictDoNothing({
+        target: stripeWebhookEvents.stripeEventId,
+      });
+
+    const existing = await db
+      .select()
+      .from(stripeWebhookEvents)
+      .where(eq(stripeWebhookEvents.stripeEventId, event.id))
+      .limit(1);
+
+    if (existing[0]?.status === 'processed') {
+      logger.info(
+        {
+          stripeEventId: event.id,
+          eventType: event.type,
+          ...webhookOrderContext,
+        },
+        'Ignoring already-processed Stripe webhook delivery',
+      );
+
+      return {
+        received: true,
+        duplicate: true,
+      };
+    }
+
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       await finalizeCheckoutSession(event.data.object as Stripe.Checkout.Session);
     }
@@ -78,14 +124,45 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
       duplicate: false,
     };
   } catch (error) {
-    await db
-      .update(stripeWebhookEvents)
-      .set({
-        status: 'failed',
-        errorMessage: error instanceof Error ? error.message : 'Unknown webhook error',
-      })
-      .where(eq(stripeWebhookEvents.stripeEventId, event.id));
+    try {
+      const updateResult = await db
+        .update(stripeWebhookEvents)
+        .set({
+          status: 'failed',
+          processedAt: null,
+          errorMessage: error instanceof Error ? error.message : 'Unknown webhook error',
+        })
+        .where(eq(stripeWebhookEvents.stripeEventId, event.id))
+        .returning({
+          stripeEventId: stripeWebhookEvents.stripeEventId,
+        });
 
+      if (updateResult.length === 0) {
+        logger.error(
+          { stripeEventId: event.id, eventType: event.type, ...webhookOrderContext },
+          'Stripe webhook failed before a failure state could be persisted',
+        );
+      }
+    } catch (updateError) {
+      logger.error(
+        { error: updateError, stripeEventId: event.id, eventType: event.type, ...webhookOrderContext },
+        'Failed to persist Stripe webhook failure state',
+      );
+    }
+
+    logger.error(
+      { error, stripeEventId: event.id, eventType: event.type, ...webhookOrderContext },
+      'Stripe webhook processing failed',
+    );
     throw error;
+  } finally {
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error(
+        { error: unlockError, stripeEventId: event.id, eventType: event.type, ...webhookOrderContext },
+        'Failed to release Stripe webhook advisory lock',
+      );
+    }
   }
 };

@@ -5,12 +5,22 @@ import { db } from '../../db';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 
+const readCustomerSnapshotField = (
+  snapshot: Record<string, unknown> | null | undefined,
+  field: 'email' | 'firstName' | 'lastName' | 'phone',
+) => {
+  const value = snapshot?.[field];
+  return typeof value === 'string' ? value : null;
+};
+
 const mapOrderDetail = (
   row: OrderRecordRow,
   itemRows: Array<typeof orderItems.$inferSelect>,
   shipmentRow: typeof shipments.$inferSelect | undefined,
   ticketRows: OrderTicketView[],
 ): OrderDetailView => {
+  const customerSnapshot = row.order.customerDetailsJson ?? null;
+
   return {
     id: row.order.id,
     publicId: row.order.publicId,
@@ -28,10 +38,10 @@ const mapOrderDetail = (
     billingAddress: row.order.billingAddressJson ?? null,
     customer: {
       id: row.customer.id,
-      email: row.customer.email,
-      firstName: row.customer.firstName,
-      lastName: row.customer.lastName,
-      phone: row.customer.phone,
+      email: readCustomerSnapshotField(customerSnapshot, 'email') ?? row.customer.email,
+      firstName: readCustomerSnapshotField(customerSnapshot, 'firstName') ?? row.customer.firstName,
+      lastName: readCustomerSnapshotField(customerSnapshot, 'lastName') ?? row.customer.lastName,
+      phone: readCustomerSnapshotField(customerSnapshot, 'phone') ?? row.customer.phone,
     },
     shipment: shipmentRow
       ? {

@@ -1,12 +1,20 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import requireGuestOrderAccess from '../../../middleware/guest-order-access';
+import requireGuestOrderAccess, { exchangeGuestOrderAccess } from '../../../middleware/guest-order-access';
 import validateParams from '../../../middleware/request-param-validation';
+import validateQuery from '../../../middleware/request-query-validation';
 import { getGuestOrder, getGuestTickets, revealAllTickets, revealTicket } from '../../../services/orders';
 import { readValidatedParams } from '../../../utils/validated-request';
-import { publicOrderParamsSchema, revealTicketParamsSchema } from '../../../schemas/order';
+import { orderAccessQuerySchema, publicOrderParamsSchema, revealTicketParamsSchema } from '../../../schemas/order';
 
 const ordersRouter: Router = Router();
+
+ordersRouter.get(
+  '/:publicId/access',
+  validateParams(publicOrderParamsSchema, 'order public id'),
+  validateQuery(orderAccessQuerySchema, 'order access query'),
+  exchangeGuestOrderAccess,
+);
 
 ordersRouter.get(
   '/:publicId',
