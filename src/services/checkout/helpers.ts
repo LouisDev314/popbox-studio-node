@@ -1,9 +1,4 @@
-import {
-  CheckoutItemInput,
-  CreateCheckoutSessionInput,
-  DbClient,
-  LockedProductRow,
-} from '../../types/checkout';
+import { CheckoutItemInput, CreateCheckoutSessionInput, DbClient, LockedProductRow } from '../../types/checkout';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { db } from '../../db';
@@ -271,11 +266,19 @@ export const lockProductForCheckout = async (
 ): Promise<LockedProductRow | undefined> => {
   const result = await tx.execute(sql<LockedProductRow>`
     SELECT
-      pi.product_id AS "productId",
+      p.id AS "productId",
+      p.name,
+      p.slug,
+      p.description,
+      p.product_type AS "productType",
+      p.status,
+      p.price_cents AS "priceCents",
+      p.currency,
       pi.on_hand AS "onHand",
       pi.reserved
-    FROM product_inventory pi
-    WHERE pi.product_id = ${productId}
+      FROM products p
+      JOIN product_inventory pi ON pi.product_id = p.id
+      WHERE p.id = ${productId}
     FOR UPDATE
   `);
 
