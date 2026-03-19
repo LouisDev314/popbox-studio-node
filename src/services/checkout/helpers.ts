@@ -100,7 +100,8 @@ const splitFullName = (fullName: string | null) => {
 
 const normalizeStripeCurrency = (currency: string | null | undefined) => currency?.trim().toUpperCase() || '';
 
-const getCollectedShippingDetails = (session: Stripe.Checkout.Session) => session.collected_information?.shipping_details ?? null;
+const getCollectedShippingDetails = (session: Stripe.Checkout.Session) =>
+  session.collected_information?.shipping_details ?? null;
 
 const isCompleteAddressSnapshot = (snapshot: Record<string, unknown> | null) => {
   if (!snapshot) {
@@ -153,7 +154,8 @@ const buildFinalizedCheckoutSnapshots = (session: Stripe.Checkout.Session): Fina
   const shippingDetails = getCollectedShippingDetails(session);
   const fullName = session.customer_details?.name?.trim() || shippingDetails?.name?.trim() || null;
   const { firstName, lastName } = splitFullName(fullName);
-  const email = session.customer_details?.email?.trim().toLowerCase() || session.customer_email?.trim().toLowerCase() || null;
+  const email =
+    session.customer_details?.email?.trim().toLowerCase() || session.customer_email?.trim().toLowerCase() || null;
   const phone = session.customer_details?.phone?.trim() || null;
 
   return {
@@ -264,19 +266,11 @@ export const lockProductForCheckout = async (
 ): Promise<LockedProductRow | undefined> => {
   const result = await tx.execute(sql<LockedProductRow>`
     SELECT
-      p.id AS "productId",
-      p.name,
-      p.slug,
-      p.description,
-      p.product_type AS "productType",
-      p.status,
-      p.price_cents AS "priceCents",
-      p.currency,
+      pi.product_id AS "productId",
       pi.on_hand AS "onHand",
       pi.reserved
-    FROM products p
-    JOIN product_inventory pi ON pi.product_id = p.id
-    WHERE p.id = ${productId}
+    FROM product_inventory pi
+    WHERE pi.product_id = ${productId}
     FOR UPDATE
   `);
 
