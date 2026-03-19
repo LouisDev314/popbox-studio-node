@@ -12,10 +12,7 @@ export const addressSchema = z.object({
 });
 
 export const checkoutBodySchema = z.object({
-  email: z.email(),
-  firstName: z.string().optional().nullable(),
-  lastName: z.string().optional().nullable(),
-  phone: z.string().optional().nullable(),
+  email: z.email().optional(),
   items: z
     .array(
       z.object({
@@ -24,9 +21,6 @@ export const checkoutBodySchema = z.object({
       }),
     )
     .min(1),
-  shippingAddress: addressSchema,
-  billingAddress: addressSchema.optional().nullable(),
-  billingSameAsShipping: z.boolean().optional(),
 });
 
 export const successQuerySchema = z.object({

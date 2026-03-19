@@ -1,5 +1,4 @@
 import {
-  AddressInput,
   CheckoutItemInput,
   CreateCheckoutSessionInput,
   DbClient,
@@ -10,7 +9,6 @@ import HttpStatusCode from '../../constants/http-status-code';
 import { db } from '../../db';
 import stripe from '../../integrations/stripe';
 import {
-  addresses,
   customers,
   inventoryReservations,
   kujiPrizes,
@@ -24,7 +22,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import logger from '../../utils/logger';
 import { getOrderDetailById } from '../orders/helpers';
-import { randomInt } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { sendOrderConfirmationEmail } from '../notifications';
@@ -242,6 +240,19 @@ const assertFinalizedCheckoutSessionMatchesOrder = (
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
+const readSnapshotString = (snapshot: Record<string, unknown>, field: string) => {
+  const value = snapshot[field];
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length ? normalized : null;
+};
+
+const createPlaceholderCustomerEmail = () => `checkout+${randomUUID()}@placeholder.popbox.local`;
+
 export const normalizeItems = (items: CheckoutItemInput[]) => {
   const map = new Map<string, number>();
 
@@ -252,12 +263,6 @@ export const normalizeItems = (items: CheckoutItemInput[]) => {
   return Array.from(map.entries())
     .sort(([leftProductId], [rightProductId]) => leftProductId.localeCompare(rightProductId))
     .map(([productId, quantity]) => ({ productId, quantity }));
-};
-
-export const assertCanadianAddress = (address: AddressInput) => {
-  if (address.countryCode.trim().toUpperCase() !== 'CA') {
-    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Shipping is only available in Canada');
-  }
 };
 
 export const lockProductForCheckout = async (
@@ -278,34 +283,32 @@ export const lockProductForCheckout = async (
 };
 
 export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckoutSessionInput) => {
-  const email = normalizeEmail(input.email);
-  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, email)).limit(1);
+  if (input.email) {
+    const email = normalizeEmail(input.email);
+    const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, email)).limit(1);
 
-  if (existingCustomer) {
-    const [updated] = await tx
-      .update(customers)
-      .set({
-        firstName: input.firstName ?? existingCustomer.firstName,
-        lastName: input.lastName ?? existingCustomer.lastName,
-        phone: input.phone ?? input.shippingAddress.phone ?? existingCustomer.phone,
-      })
-      .where(eq(customers.id, existingCustomer.id))
-      .returning();
-
-    if (!updated) {
-      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+    if (existingCustomer) {
+      return existingCustomer;
     }
 
-    return updated;
+    const [created] = await tx
+      .insert(customers)
+      .values({
+        email,
+      })
+      .returning();
+
+    if (!created) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create customer');
+    }
+
+    return created;
   }
 
   const [created] = await tx
     .insert(customers)
     .values({
-      email,
-      firstName: input.firstName ?? null,
-      lastName: input.lastName ?? null,
-      phone: input.phone ?? input.shippingAddress.phone ?? null,
+      email: createPlaceholderCustomerEmail(),
     })
     .returning();
 
@@ -316,18 +319,64 @@ export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckout
   return created;
 };
 
-export const insertAddresses = async (tx: DbClient, customerId: string, input: CreateCheckoutSessionInput) => {
-  await tx.insert(addresses).values({
-    customerId,
-    ...input.shippingAddress,
-  });
+export const reconcileCheckoutCustomer = async (
+  tx: DbClient,
+  currentCustomerId: string,
+  finalizedSnapshots: FinalizedCheckoutSnapshots,
+) => {
+  const email = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'email');
 
-  if (input.billingAddress && !input.billingSameAsShipping) {
-    await tx.insert(addresses).values({
-      customerId,
-      ...input.billingAddress,
-    });
+  if (!email) {
+    throw new NeedsAttentionError('Stripe customer email is missing');
   }
+
+  const firstName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'firstName');
+  const lastName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'lastName');
+  const phone = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'phone');
+
+  const [currentCustomer] = await tx.select().from(customers).where(eq(customers.id, currentCustomerId)).limit(1);
+
+  if (!currentCustomer) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Customer not found for checkout order');
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, normalizedEmail)).limit(1);
+
+  if (existingCustomer && existingCustomer.id !== currentCustomer.id) {
+    const [updatedExistingCustomer] = await tx
+      .update(customers)
+      .set({
+        firstName: firstName ?? existingCustomer.firstName,
+        lastName: lastName ?? existingCustomer.lastName,
+        phone: phone ?? existingCustomer.phone,
+      })
+      .where(eq(customers.id, existingCustomer.id))
+      .returning();
+
+    if (!updatedExistingCustomer) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+    }
+
+    return updatedExistingCustomer.id;
+  }
+
+  const [updatedCustomer] = await tx
+    .update(customers)
+    .set({
+      email: normalizedEmail,
+      firstName: firstName ?? currentCustomer.firstName,
+      lastName: lastName ?? currentCustomer.lastName,
+      phone: phone ?? currentCustomer.phone,
+    })
+    .where(eq(customers.id, currentCustomer.id))
+    .returning();
+
+  if (!updatedCustomer) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+  }
+
+  return updatedCustomer.id;
 };
 
 export const releaseReservationsForOrder = async (
@@ -611,16 +660,20 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
 export const markOrderPaidNeedsAttention = async (
   tx: DbClient,
   orderId: string,
+  currentCustomerId: string,
   session: Stripe.Checkout.Session,
   finalizedSnapshots: FinalizedCheckoutSnapshots,
   finalizedAmounts: FinalizedCheckoutAmounts,
   reservationStatus: 'released' | 'expired' = 'released',
 ) => {
+  const finalizedCustomerId = await reconcileCheckoutCustomer(tx, currentCustomerId, finalizedSnapshots);
+
   await releaseReservationsForOrder(tx, orderId, reservationStatus);
 
   await tx
     .update(orders)
     .set({
+      customerId: finalizedCustomerId,
       status: 'paid_needs_attention',
       currency: finalizedAmounts.currency || 'CAD',
       stripeCheckoutSessionId: session.id,
@@ -656,6 +709,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
   let orderPublicId = '';
   let orderGuestAccessTokenHash = '';
+  let orderCustomerId = '';
 
   try {
     const finalizeResult = await db.transaction(async (tx) => {
@@ -691,6 +745,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
 
       orderPublicId = lockedOrder.publicId;
       orderGuestAccessTokenHash = lockedOrder.guestAccessTokenHash ?? '';
+      orderCustomerId = lockedOrder.customerId;
 
       if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
         return {
@@ -720,12 +775,15 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         finalizedSnapshots,
       );
 
+      const finalizedCustomerId = await reconcileCheckoutCustomer(tx, lockedOrder.customerId, finalizedSnapshots);
+
       await convertReservations(tx, orderId);
-      await allocateKujiTickets(tx, orderId, lockedOrder.customerId);
+      await allocateKujiTickets(tx, orderId, finalizedCustomerId);
 
       await tx
         .update(orders)
         .set({
+          customerId: finalizedCustomerId,
           status: 'paid',
           currency: finalizedAmounts.currency,
           stripeCheckoutSessionId: session.id,
@@ -789,6 +847,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         await markOrderPaidNeedsAttention(
           tx,
           orderId,
+          orderCustomerId,
           session,
           finalizedSnapshots,
           finalizedAmounts,

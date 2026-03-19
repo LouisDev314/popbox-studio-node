@@ -12,10 +12,8 @@ import { getOrderDetailById } from '../orders/helpers';
 import { CreateCheckoutSessionInput, LockedProductRow } from '../../types/checkout';
 import { buildClientOrderUrl, buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import {
-  assertCanadianAddress,
   createOrUpdateCustomer,
   ensurePaymentSessionMetadata,
-  insertAddresses,
   lockProductForCheckout,
   normalizeEmail,
   normalizeItems,
@@ -76,11 +74,6 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
     throw new Exception(HttpStatusCode.BAD_REQUEST, 'At least one cart item is required');
   }
 
-  assertCanadianAddress(input.shippingAddress);
-  if (input.billingAddress && !input.billingSameAsShipping) {
-    assertCanadianAddress(input.billingAddress);
-  }
-
   const normalizedItems = normalizeItems(input.items);
   const guestAccessTokenHash = hashGuestAccessToken(createGuestAccessToken());
   const { expiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(getEnvConfig().stripeCheckoutSessionReservationTtl);
@@ -93,7 +86,6 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   try {
     ({ createdOrder, orderProducts } = await db.transaction(async (tx) => {
       const currentCustomer = await createOrUpdateCustomer(tx, input);
-      await insertAddresses(tx, currentCustomer.id, input);
 
       const lockedProducts: Array<LockedProductRow & { quantity: number }> = [];
       let runningSubtotal = 0;
@@ -136,10 +128,8 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
           shippingCents,
           totalCents: runningSubtotal + shippingCents,
           checkoutIdempotencyKey: idempotencyKey,
-          shippingAddressJson: input.shippingAddress as unknown as Record<string, unknown>,
-          billingAddressJson: input.billingSameAsShipping
-            ? (input.shippingAddress as unknown as Record<string, unknown>)
-            : ((input.billingAddress as unknown as Record<string, unknown> | null) ?? null),
+          shippingAddressJson: {},
+          billingAddressJson: null,
           guestAccessTokenHash,
         })
         .returning();
@@ -210,6 +200,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   }
 
   try {
+    const customerEmail = input.email ? normalizeEmail(input.email) : undefined;
     const session = await stripe.checkout.sessions.create(
       {
         mode: 'payment',
@@ -219,7 +210,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
           enabled: true,
         },
         billing_address_collection: 'required',
-        customer_email: normalizeEmail(input.email),
+        ...(customerEmail ? { customer_email: customerEmail } : {}),
         shipping_address_collection: {
           allowed_countries: ['CA'],
         },
