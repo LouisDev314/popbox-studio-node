@@ -339,6 +339,7 @@ export const getCheckoutSuccess = async (sessionId: string) => {
 
   return {
     publicId: detail.publicId,
+    guestAccessTokenHash: order.guestAccessTokenHash,
     orderUrl,
     clientOrderUrl,
     needsAttention: detail.status === 'paid_needs_attention',

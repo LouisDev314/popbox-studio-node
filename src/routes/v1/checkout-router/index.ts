@@ -4,6 +4,7 @@ import validateBody from '../../../middleware/request-body-validation';
 import validateQuery from '../../../middleware/request-query-validation';
 import { checkoutLimiter } from '../../../middleware/rate-limit';
 import { createCheckoutSession, getCheckoutSuccess } from '../../../services/checkout';
+import { setGuestOrderSessionCookie } from '../../../utils/guest-order-access';
 import { readValidatedBody, readValidatedQuery } from '../../../utils/validated-request';
 import { checkoutBodySchema, successQuerySchema } from '../../../schemas/checkout';
 
@@ -33,7 +34,10 @@ checkoutRouter.post(
 checkoutRouter.get('/success', validateQuery(successQuerySchema, 'checkout success query'), async (req, res) => {
   const query = readValidatedQuery<z.infer<typeof successQuerySchema>>(req);
   const result = await getCheckoutSuccess(query.session_id);
-  return res.send_ok('Checkout session verified', result);
+  const { guestAccessTokenHash, ...responseBody } = result;
+
+  setGuestOrderSessionCookie(res, result.publicId, guestAccessTokenHash);
+  return res.send_ok('Checkout session verified', responseBody);
 });
 
 export default checkoutRouter;
