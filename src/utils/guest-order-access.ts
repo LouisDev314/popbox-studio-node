@@ -50,13 +50,7 @@ const parseSignedToken = (token: string): GuestOrderSignedTokenPayload | null =>
       Buffer.from(payloadSegment, 'base64url').toString('utf8'),
     ) as GuestOrderSignedTokenPayload;
 
-    if (
-      payload.v !== GUEST_ORDER_TOKEN_VERSION ||
-      typeof payload.publicId !== 'string' ||
-      typeof payload.guestAccessTokenHash !== 'string' ||
-      typeof payload.iat !== 'number' ||
-      typeof payload.exp !== 'number'
-    ) {
+    if (payload.v !== GUEST_ORDER_TOKEN_VERSION) {
       return null;
     }
 

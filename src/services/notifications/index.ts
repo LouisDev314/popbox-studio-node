@@ -10,13 +10,16 @@ const canSendEmail = resend && !!resendApiKey && !!resendFromEmail;
 
 const sendEmail = async (params: { emailType: string; subject: string; html: string; to: string }) => {
   if (!canSendEmail) {
-    logger.warn({ emailType: params.emailType, subject: params.subject, to: params.to }, 'Skipping email send because Resend is not configured');
+    logger.warn(
+      { emailType: params.emailType, subject: params.subject, to: params.to },
+      'Skipping email send because Resend is not configured',
+    );
     return;
   }
 
   try {
     const response = await resend.emails.send({
-      from: resendFromEmail,
+      from: `PopBox Studio <${resendFromEmail}>`,
       to: params.to,
       subject: params.subject,
       html: params.html,
@@ -51,12 +54,42 @@ export const sendOrderConfirmationEmail = async (params: {
     subject: `Order confirmed: ${params.orderPublicId}`,
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h1 style="font-size: 22px;">Order confirmed</h1>
+        <h1 style="font-size: 22px;">🎉 Your order is confirmed!</h1>
+    
         <p>Hi ${displayName},</p>
-        <p>Thanks for your order. You can view your order details and kuji tickets using the secure link below.</p>
-        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
-        <p>Order reference: <strong>${params.orderPublicId}</strong></p>
-        <p>All sales are final.</p>
+    
+        <p>
+          Thank you for your order — your PopBox journey begins now.
+        </p>
+    
+        <p>
+          You can view your order details and access your tickets using the secure link below:
+        </p>
+    
+        <p>
+          <a href="${params.orderUrl}" 
+             style="display: inline-block; background: #F9A8D4; color: #000000; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: 600;">
+            View order & tickets
+          </a>
+        </p>
+    
+        <p>
+          <strong>Order reference:</strong> ${params.orderPublicId}
+        </p>
+    
+        <p>
+          We’ll keep you updated as your order progresses.
+        </p>
+    
+        <hr style="margin: 24px 0; border: none; border-top: 1px solid #E5E7EB;" />
+    
+        <p style="font-size: 14px; color: #6B7280;">
+          This is a secure, private link. You can use it anytime to access your order.
+        </p>
+    
+        <p style="font-size: 14px; color: #6B7280;">
+          All sales are final.
+        </p>
       </div>
     `,
     to: params.email,
