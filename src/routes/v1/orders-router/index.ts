@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import requireGuestOrderAccess, { exchangeGuestOrderAccess } from '../../../middleware/guest-order-access';
+import { requireGuestOrderAccess, exchangeGuestOrderAccess } from '../../../middleware/guest-order-access';
 import validateParams from '../../../middleware/request-param-validation';
 import validateQuery from '../../../middleware/request-query-validation';
 import { getGuestOrder, getGuestTickets, revealAllTickets, revealTicket } from '../../../services/orders';

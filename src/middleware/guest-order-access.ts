@@ -81,7 +81,7 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
   }
 };
 
-const requireGuestOrderAccess: RequestHandler = async (req, res, next) => {
+export const requireGuestOrderAccess: RequestHandler = async (req, res, next) => {
   const publicId = typeof req.params.publicId === 'string' ? req.params.publicId : '';
   const sessionToken = readCookieValue(req.headers.cookie, GUEST_ORDER_SESSION_COOKIE_NAME);
 
@@ -103,5 +103,3 @@ const requireGuestOrderAccess: RequestHandler = async (req, res, next) => {
   clearGuestOrderSessionCookie(res, publicId);
   return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid order access session'));
 };
-
-export default requireGuestOrderAccess;

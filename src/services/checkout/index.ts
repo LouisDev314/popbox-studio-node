@@ -77,7 +77,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   const normalizedItems = normalizeItems(input.items);
   const guestAccessTokenHash = hashGuestAccessToken(createGuestAccessToken());
   const { expiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(getEnvConfig().stripeCheckoutSessionReservationTtl);
-  const publicId = createPublicId('ord');
+  const publicId = createPublicId('pbs');
   const shippingCents = getEnvConfig().stripeShippingRateCents;
 
   let createdOrder: typeof orders.$inferSelect;
