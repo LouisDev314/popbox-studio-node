@@ -140,7 +140,7 @@ export const buildClientOrderUrl = (publicId: string) => {
 
 export const buildGuestOrderAccessUrl = (publicId: string, guestAccessTokenHash: string) => {
   const token = createGuestOrderAccessToken(publicId, guestAccessTokenHash);
-  return `${getEnvConfig().clientBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
+  return `${getEnvConfig().appBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
 };
 
 export const getGuestOrderSessionCookieOptions = (publicId: string): CookieOptions => {
