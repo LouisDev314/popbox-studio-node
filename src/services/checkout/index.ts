@@ -319,7 +319,7 @@ export const getCheckoutSuccess = async (sessionId: string) => {
   const detail = await getOrderDetailById(orderId);
 
   if (!['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(detail.status)) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Order payment is still awaiting webhook finalization');
+    throw new Exception(HttpStatusCode.ACCEPTED, 'Order payment is still awaiting webhook finalization');
   }
 
   const [order] = await db

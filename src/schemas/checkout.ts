@@ -4,7 +4,7 @@ export const checkoutBodySchema = z.object({
   items: z
     .array(
       z.object({
-        // productId: z.uuid(),
+        // FIXME: productId: z.uuid(),
         productId: z.string(),
         quantity: z.coerce.number().int().min(1).max(20),
       }),
