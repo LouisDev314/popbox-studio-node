@@ -89,10 +89,7 @@ const verifyGuestOrderToken = (token: string, expectedKind: GuestOrderTokenKind,
     return false;
   }
 
-  return (
-    payload.kind === expectedKind &&
-    payload.publicId === publicId
-  );
+  return payload.kind === expectedKind && payload.publicId === publicId;
 };
 
 export const verifyGuestOrderAccessToken = (token: string, publicId: string) => {
@@ -124,7 +121,7 @@ export const getGuestOrderSessionCookieOptions = (publicId: string): CookieOptio
     sameSite: isProd ? 'none' : 'lax',
     secure: isProd,
     maxAge: GUEST_ORDER_SESSION_MAX_AGE_MS,
-    path: `/api/v1/orders/${publicId}`,
+    path: '/',
   };
 };
 
