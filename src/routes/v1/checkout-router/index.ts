@@ -34,10 +34,9 @@ checkoutRouter.post(
 checkoutRouter.get('/success', validateQuery(successQuerySchema, 'checkout success query'), async (req, res) => {
   const query = readValidatedQuery<z.infer<typeof successQuerySchema>>(req);
   const result = await getCheckoutSuccess(query.session_id);
-  const { guestAccessTokenHash, ...responseBody } = result;
 
-  setGuestOrderSessionCookie(res, result.publicId, guestAccessTokenHash);
-  return res.send_ok('Checkout session verified', responseBody);
+  setGuestOrderSessionCookie(res, result.publicId);
+  return res.send_ok('Checkout session verified', result);
 });
 
 export default checkoutRouter;

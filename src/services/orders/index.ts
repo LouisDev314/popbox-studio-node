@@ -424,20 +424,7 @@ export const updateShipment = async (
   });
 
   const detail = await getOrderDetailById(orderId);
-
-  const [orderAccess] = await db
-    .select({
-      guestAccessTokenHash: orders.guestAccessTokenHash,
-    })
-    .from(orders)
-    .where(eq(orders.id, orderId))
-    .limit(1);
-
-  if (!orderAccess?.guestAccessTokenHash) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Order access link is unavailable');
-  }
-
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, orderAccess.guestAccessTokenHash);
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
   try {
     await sendShipmentEmail({
       email: detail.customer.email,

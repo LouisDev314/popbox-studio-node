@@ -322,24 +322,11 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     throw new Exception(HttpStatusCode.ACCEPTED, 'Order payment is still awaiting webhook finalization');
   }
 
-  const [order] = await db
-    .select({
-      guestAccessTokenHash: orders.guestAccessTokenHash,
-    })
-    .from(orders)
-    .where(eq(orders.id, orderId))
-    .limit(1);
-
-  if (!order?.guestAccessTokenHash) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Order access link is unavailable');
-  }
-
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, order.guestAccessTokenHash);
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
   const clientOrderUrl = buildClientOrderUrl(detail.publicId);
 
   return {
     publicId: detail.publicId,
-    guestAccessTokenHash: order.guestAccessTokenHash,
     orderUrl,
     clientOrderUrl,
     needsAttention: detail.status === 'paid_needs_attention',

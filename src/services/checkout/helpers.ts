@@ -711,7 +711,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   const finalizedAmounts = buildFinalizedCheckoutAmounts(session);
   const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
   let orderPublicId = '';
-  let orderGuestAccessTokenHash = '';
   let orderCustomerId = '';
 
   try {
@@ -719,7 +718,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       const lockedOrderResult = await tx.execute<{
         publicId: string;
         customerId: string;
-        guestAccessTokenHash: string | null;
         stripeCheckoutSessionId: string | null;
         status: (typeof orders.$inferSelect)['status'];
         currency: string;
@@ -730,7 +728,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           id,
           public_id AS "publicId",
           customer_id AS "customerId",
-          guest_access_token_hash AS "guestAccessTokenHash",
           stripe_checkout_session_id AS "stripeCheckoutSessionId",
           status,
           currency,
@@ -747,7 +744,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       }
 
       orderPublicId = lockedOrder.publicId;
-      orderGuestAccessTokenHash = lockedOrder.guestAccessTokenHash ?? '';
       orderCustomerId = lockedOrder.customerId;
 
       if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
@@ -823,7 +819,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
-      const orderUrl = buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash);
+      const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
         orderId,
@@ -861,7 +857,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       return {
         orderId,
         publicId: orderPublicId,
-        orderUrl: buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash),
+        orderUrl: buildGuestOrderAccessUrl(orderPublicId),
         needsAttention: true,
         alreadyFinalized: false,
       };
@@ -871,7 +867,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   }
 
   const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, orderGuestAccessTokenHash);
+  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
 
   try {
     await sendOrderConfirmationEmail({

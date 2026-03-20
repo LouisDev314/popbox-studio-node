@@ -30,20 +30,17 @@ const loadGuestOrderAccessRecord = async (publicId: string) => {
     .where(eq(orders.publicId, publicId))
     .limit(1);
 
-  if (!order?.guestAccessTokenHash) {
+  if (!order) {
     throw new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid order access token');
   }
 
-  return {
-    ...order,
-    guestAccessTokenHash: order.guestAccessTokenHash,
-  };
+  return order;
 };
 
-const hasValidPresentedToken = (params: { presentedToken: string; publicId: string; guestAccessTokenHash: string }) => {
+const hasValidPresentedToken = (params: { presentedToken: string; publicId: string; guestAccessTokenHash: string | null }) => {
   return (
-    verifyGuestOrderAccessToken(params.presentedToken, params.publicId, params.guestAccessTokenHash) ||
-    verifyLegacyGuestOrderAccessToken(params.presentedToken, params.guestAccessTokenHash)
+    verifyGuestOrderAccessToken(params.presentedToken, params.publicId) ||
+    (!!params.guestAccessTokenHash && verifyLegacyGuestOrderAccessToken(params.presentedToken, params.guestAccessTokenHash))
   );
 };
 
@@ -61,7 +58,7 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
   try {
     const order = await loadGuestOrderAccessRecord(publicId);
 
-    if (sessionToken && verifyGuestOrderSessionToken(sessionToken, publicId, order.guestAccessTokenHash)) {
+    if (sessionToken && verifyGuestOrderSessionToken(sessionToken, publicId)) {
       return res.redirect(302, buildClientOrderUrl(publicId));
     }
 
@@ -76,7 +73,7 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
       return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid order access token'));
     }
 
-    setGuestOrderSessionCookie(res, publicId, order.guestAccessTokenHash);
+    setGuestOrderSessionCookie(res, publicId);
     return res.redirect(302, buildClientOrderUrl(publicId));
   } catch (error) {
     return next(error);
@@ -87,7 +84,6 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
 export const requireGuestOrderAccess: RequestHandler = async (req, res, next) => {
   const publicId = typeof req.params.publicId === 'string' ? req.params.publicId : '';
   const sessionToken = readCookieValue(req.headers.cookie, GUEST_ORDER_SESSION_COOKIE_NAME);
-  console.log('header:', req.headers);
 
   if (!publicId || !sessionToken) {
     return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Valid order access token is required'));
@@ -95,7 +91,7 @@ export const requireGuestOrderAccess: RequestHandler = async (req, res, next) =>
 
   const order = await loadGuestOrderAccessRecord(publicId);
 
-  if (verifyGuestOrderSessionToken(sessionToken, publicId, order.guestAccessTokenHash)) {
+  if (verifyGuestOrderSessionToken(sessionToken, publicId)) {
     req.orderAccess = {
       orderId: order.id,
       publicId: order.publicId,
