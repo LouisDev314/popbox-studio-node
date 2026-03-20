@@ -217,17 +217,21 @@ export const getGuestTickets = async (publicId: string) => {
   return getGuestTicketView(publicId);
 };
 
+const findTicketOrderStatus = async (orderId: string) => {
+  const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1);
+
+  if (!order) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+  }
+
+  if (!REVEALABLE_ORDER_STATUSES.has(order.status)) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
+  }
+};
+
 export const revealTicket = async (orderId: string, ticketId: string) => {
   return withOrderActionLock(orderId, 'ticket reveal', async () => {
-    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1);
-
-    if (!order) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
-    }
-
-    if (!REVEALABLE_ORDER_STATUSES.has(order.status)) {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
-    }
+    await findTicketOrderStatus(orderId);
 
     const [ticket] = await db
       .select()
@@ -256,15 +260,7 @@ export const revealTicket = async (orderId: string, ticketId: string) => {
 
 export const revealAllTickets = async (orderId: string) => {
   return withOrderActionLock(orderId, 'ticket reveal', async () => {
-    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1);
-
-    if (!order) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
-    }
-
-    if (!REVEALABLE_ORDER_STATUSES.has(order.status)) {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
-    }
+    await findTicketOrderStatus(orderId);
 
     await db
       .update(tickets)

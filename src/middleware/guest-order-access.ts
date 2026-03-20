@@ -53,7 +53,9 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
   const sessionToken = readCookieValue(req.headers.cookie, GUEST_ORDER_SESSION_COOKIE_NAME);
 
   if (!publicId || (!presentedToken && !sessionToken)) {
-    return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Valid order access token is required'));
+    return next(
+      new Exception(HttpStatusCode.UNAUTHORIZED, 'Valid order access token is required to exchange order access'),
+    );
   }
 
   try {
@@ -81,9 +83,11 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
   }
 };
 
+// Same browser access
 export const requireGuestOrderAccess: RequestHandler = async (req, res, next) => {
   const publicId = typeof req.params.publicId === 'string' ? req.params.publicId : '';
   const sessionToken = readCookieValue(req.headers.cookie, GUEST_ORDER_SESSION_COOKIE_NAME);
+  console.log('header:', req.headers);
 
   if (!publicId || !sessionToken) {
     return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Valid order access token is required'));

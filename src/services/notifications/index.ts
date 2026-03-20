@@ -68,7 +68,7 @@ export const sendOrderConfirmationEmail = async (params: {
     
         <p>
           <a href="${params.orderUrl}" 
-             style="display: inline-block; background: #F9A8D4; color: #000000; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: 600;">
+             style="display: inline-block; background: #F8A5D1; color: #000000; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: 600;">
             View order & tickets
           </a>
         </p>
