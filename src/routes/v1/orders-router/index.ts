@@ -19,7 +19,7 @@ ordersRouter.get(
 ordersRouter.get(
   '/:publicId',
   validateParams(publicOrderParamsSchema, 'order public id'),
-  // requireGuestOrderAccess,
+  requireGuestOrderAccess,
   async (req, res) => {
     const params = readValidatedParams<z.infer<typeof publicOrderParamsSchema>>(req);
     const result = await getGuestOrder(params.publicId);
