@@ -110,7 +110,7 @@ export const buildClientOrderUrl = (publicId: string) => {
 
 export const buildGuestOrderAccessUrl = (publicId: string) => {
   const token = createGuestOrderAccessToken(publicId);
-  return `${getEnvConfig().appBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
+  return `${getEnvConfig().clientBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
 };
 
 export const getGuestOrderSessionCookieOptions = (): CookieOptions => {
@@ -118,7 +118,8 @@ export const getGuestOrderSessionCookieOptions = (): CookieOptions => {
 
   return {
     httpOnly: true,
-    sameSite: isProd ? 'none' : 'lax',
+    // using rewrites on Next.js frontend -> same site
+    sameSite: 'lax',
     secure: isProd,
     maxAge: GUEST_ORDER_SESSION_MAX_AGE_MS,
     path: '/',
