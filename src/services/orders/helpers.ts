@@ -1,9 +1,24 @@
-import { customers, kujiPrizes, orderItems, orders, products, shipments, tickets } from '../../db/schema';
+import {
+  customers,
+  kujiPrizes,
+  orderItems,
+  orders,
+  productImages,
+  products,
+  shipments,
+  tickets,
+} from '../../db/schema';
 import { and, asc, eq } from 'drizzle-orm';
 import { OrderDetailView, OrderRecordRow, OrderTicketView } from '../../types/order';
 import { db } from '../../db';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
+import { buildImageUrl } from '../../utils/product';
+
+type OrderItemWithImageRow = {
+  item: typeof orderItems.$inferSelect;
+  image: typeof productImages.$inferSelect | null;
+};
 
 const readCustomerSnapshotField = (
   snapshot: Record<string, unknown> | null | undefined,
@@ -13,9 +28,14 @@ const readCustomerSnapshotField = (
   return typeof value === 'string' ? value : null;
 };
 
+const resolveImage = (image: typeof productImages.$inferSelect | null, fallbackAltText: string) => ({
+  imageUrl: image?.storageKey ? buildImageUrl(image.storageKey) : null,
+  imageAltText: image?.altText ?? fallbackAltText,
+});
+
 const mapOrderDetail = (
   row: OrderRecordRow,
-  itemRows: Array<typeof orderItems.$inferSelect>,
+  itemRows: OrderItemWithImageRow[],
   shipmentRow: typeof shipments.$inferSelect | undefined,
   ticketRows: OrderTicketView[],
 ): OrderDetailView => {
@@ -52,16 +72,22 @@ const mapOrderDetail = (
           deliveredAt: shipmentRow.deliveredAt,
         }
       : null,
-    items: itemRows.map((item) => ({
-      id: item.id,
-      productId: item.productId,
-      productName: item.productName,
-      productType: item.productType,
-      unitPriceCents: item.unitPriceCents,
-      quantity: item.quantity,
-      lineTotalCents: item.lineTotalCents,
-      metadata: item.metadata ?? null,
-    })),
+    items: itemRows.map((itemRow) => {
+      const image = resolveImage(itemRow.image, itemRow.item.productName);
+
+      return {
+        id: itemRow.item.id,
+        productId: itemRow.item.productId,
+        productName: itemRow.item.productName,
+        productType: itemRow.item.productType,
+        unitPriceCents: itemRow.item.unitPriceCents,
+        quantity: itemRow.item.quantity,
+        lineTotalCents: itemRow.item.lineTotalCents,
+        metadata: itemRow.item.metadata ?? null,
+        imageUrl: image.imageUrl,
+        imageAltText: image.imageAltText,
+      };
+    }),
     tickets: ticketRows,
   };
 };
@@ -87,44 +113,59 @@ const loadOrderRecord = async (whereClause: ReturnType<typeof and> | ReturnType<
 const loadOrderChildren = async (orderId: string) => {
   const [itemRows, shipmentRow, ticketJoinRows] = await Promise.all([
     db
-      .select()
+      .select({
+        item: orderItems,
+        image: productImages,
+      })
       .from(orderItems)
+      .innerJoin(products, eq(products.id, orderItems.productId))
+      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.sortOrder, 0)))
       .where(eq(orderItems.orderId, orderId))
       .orderBy(asc(orderItems.createdAt), asc(orderItems.id)),
+
     db.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1),
+
     db
       .select({
         ticket: tickets,
         prize: kujiPrizes,
         product: products,
+        image: productImages,
       })
       .from(tickets)
       .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
       .innerJoin(products, eq(products.id, tickets.kujiProductId))
+      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.sortOrder, 0)))
       .where(eq(tickets.orderId, orderId))
       .orderBy(asc(tickets.createdAt), asc(tickets.id)),
   ]);
 
-  const ticketRows: OrderTicketView[] = ticketJoinRows.map((row) => ({
-    id: row.ticket.id,
-    ticketNumber: row.ticket.ticketNumber,
-    revealedAt: row.ticket.revealedAt,
-    voidedAt: row.ticket.voidedAt,
-    voidReason: row.ticket.voidReason,
-    prize: {
-      id: row.prize.id,
-      name: row.prize.name,
-      description: row.prize.description,
-      imageUrl: row.prize.imageUrl,
-      prizeCode: row.prize.prizeCode,
-    },
-    kujiProduct: {
-      id: row.product.id,
-      name: row.product.name,
-      slug: row.product.slug,
-    },
-    createdAt: row.ticket.createdAt,
-  }));
+  const ticketRows: OrderTicketView[] = ticketJoinRows.map((row) => {
+    const image = resolveImage(row.image, row.product.name);
+
+    return {
+      id: row.ticket.id,
+      ticketNumber: row.ticket.ticketNumber,
+      revealedAt: row.ticket.revealedAt,
+      voidedAt: row.ticket.voidedAt,
+      voidReason: row.ticket.voidReason,
+      prize: {
+        id: row.prize.id,
+        name: row.prize.name,
+        description: row.prize.description,
+        imageUrl: row.prize.imageUrl,
+        prizeCode: row.prize.prizeCode,
+      },
+      kujiProduct: {
+        id: row.product.id,
+        name: row.product.name,
+        slug: row.product.slug,
+        imageUrl: image.imageUrl,
+        imageAltText: image.imageAltText,
+      },
+      createdAt: row.ticket.createdAt,
+    };
+  });
 
   return {
     itemRows,
@@ -139,7 +180,7 @@ export const getOrderDetailById = async (orderId: string) => {
   return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);
 };
 
-export const getOrderDetailByPublicId = async (publicId: string) => {
+const getOrderDetailByPublicId = async (publicId: string) => {
   const row = await loadOrderRecord(eq(orders.publicId, publicId));
   const children = await loadOrderChildren(row.order.id);
   return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);

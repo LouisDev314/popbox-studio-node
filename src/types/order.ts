@@ -22,6 +22,8 @@ export type OrderTicketView = {
     id: string;
     name: string;
     slug: string;
+    imageUrl: string | null;
+    imageAltText: string | null;
   };
   createdAt: Date;
 };
@@ -64,6 +66,8 @@ export type OrderDetailView = {
     quantity: number;
     lineTotalCents: number;
     metadata: Record<string, unknown> | null;
+    imageUrl: string | null;
+    imageAltText: string | null;
   }>;
   tickets: OrderTicketView[];
 };
