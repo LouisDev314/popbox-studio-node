@@ -37,10 +37,15 @@ const loadGuestOrderAccessRecord = async (publicId: string) => {
   return order;
 };
 
-const hasValidPresentedToken = (params: { presentedToken: string; publicId: string; guestAccessTokenHash: string | null }) => {
+const hasValidPresentedToken = (params: {
+  presentedToken: string;
+  publicId: string;
+  guestAccessTokenHash: string | null;
+}) => {
   return (
     verifyGuestOrderAccessToken(params.presentedToken, params.publicId) ||
-    (!!params.guestAccessTokenHash && verifyLegacyGuestOrderAccessToken(params.presentedToken, params.guestAccessTokenHash))
+    (!!params.guestAccessTokenHash &&
+      verifyLegacyGuestOrderAccessToken(params.presentedToken, params.guestAccessTokenHash))
   );
 };
 
@@ -67,7 +72,7 @@ export const exchangeGuestOrderAccess: RequestHandler = async (req, res, next) =
       !hasValidPresentedToken({ presentedToken, publicId, guestAccessTokenHash: order.guestAccessTokenHash })
     ) {
       if (sessionToken) {
-        clearGuestOrderSessionCookie(res, publicId);
+        clearGuestOrderSessionCookie(res);
       }
 
       return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid order access token'));
@@ -100,6 +105,6 @@ export const requireGuestOrderAccess: RequestHandler = async (req, res, next) =>
     return next();
   }
 
-  clearGuestOrderSessionCookie(res, publicId);
+  clearGuestOrderSessionCookie(res);
   return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid order access session'));
 };

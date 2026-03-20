@@ -113,7 +113,7 @@ export const buildGuestOrderAccessUrl = (publicId: string) => {
   return `${getEnvConfig().appBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
 };
 
-export const getGuestOrderSessionCookieOptions = (publicId: string): CookieOptions => {
+export const getGuestOrderSessionCookieOptions = (): CookieOptions => {
   const isProd = getEnvConfig().nodeEnv === 'production';
 
   return {
@@ -129,12 +129,12 @@ export const setGuestOrderSessionCookie = (res: Response, publicId: string) => {
   res.cookie(
     GUEST_ORDER_SESSION_COOKIE_NAME,
     createGuestOrderSessionToken(publicId),
-    getGuestOrderSessionCookieOptions(publicId),
+    getGuestOrderSessionCookieOptions(),
   );
 };
 
-export const clearGuestOrderSessionCookie = (res: Response, publicId: string) => {
-  res.clearCookie(GUEST_ORDER_SESSION_COOKIE_NAME, getGuestOrderSessionCookieOptions(publicId));
+export const clearGuestOrderSessionCookie = (res: Response) => {
+  res.clearCookie(GUEST_ORDER_SESSION_COOKIE_NAME, getGuestOrderSessionCookieOptions());
 };
 
 export const readCookieValue = (cookieHeader: string | undefined, cookieName: string) => {
