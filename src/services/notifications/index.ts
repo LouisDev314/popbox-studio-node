@@ -74,7 +74,7 @@ export const sendOrderConfirmationEmail = async (params: {
         </p>
     
         <p>
-          <strong>Order reference:</strong> ${params.orderPublicId}
+          <strong>Order Number:</strong> ${params.orderPublicId}
         </p>
     
         <p>
