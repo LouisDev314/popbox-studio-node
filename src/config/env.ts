@@ -7,7 +7,6 @@ type EnvConfig = Readonly<{
   logLevel: string;
   corsOrigin: string;
   clientBaseUrl: string;
-  appBaseUrl: string;
   adminBaseUrl: string;
   databaseUrl: string;
   supabaseUrl: string;
@@ -172,9 +171,6 @@ const createEnvConfig = (): EnvConfig => {
   const clientBaseUrl = parseRequiredHttpUrl('CLIENT_BASE_URL', process.env.CLIENT_BASE_URL, errors, {
     trimTrailingSlash: true,
   });
-  const appBaseUrl = parseRequiredHttpUrl('APP_BASE_URL', process.env.APP_BASE_URL, errors, {
-    trimTrailingSlash: true,
-  });
 
   const envConfig = {
     port,
@@ -184,7 +180,6 @@ const createEnvConfig = (): EnvConfig => {
       trimTrailingSlash: true,
     }),
     clientBaseUrl,
-    appBaseUrl,
     adminBaseUrl: process.env.ADMIN_BASE_URL?.trim()
       ? parseRequiredHttpUrl('ADMIN_BASE_URL', process.env.ADMIN_BASE_URL, errors, {
           trimTrailingSlash: true,
