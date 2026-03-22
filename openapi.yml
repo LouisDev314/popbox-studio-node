@@ -646,6 +646,44 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products/{id}:
+    get:
+      tags: [Admin Products]
+      summary: Get product detail (admin)
+      description: |
+        Returns the full editable product detail for the admin product edit page,
+        including description, tags, images, inventory, and collection data.
+        Unlike the public product detail route, this does not restrict results
+        to active products.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Admin product retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     patch:
       tags: [Admin Products]
       summary: Update product
@@ -2707,4 +2745,3 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-

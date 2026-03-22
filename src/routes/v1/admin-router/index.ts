@@ -11,6 +11,7 @@ import {
   createTag,
   deleteKujiPrize,
   deleteProductImage,
+  getAdminProduct,
   listAdminCollections,
   listAdminProducts,
   listAdminTags,
@@ -70,6 +71,12 @@ adminRouter.get('/products', validateQuery(productListQuerySchema, 'admin produc
   const query = readValidatedQuery<Parameters<typeof listAdminProducts>[0]>(req);
   const result = await listAdminProducts(query);
   return res.send_ok('Admin products retrieved', result);
+});
+
+adminRouter.get('/products/:id', validateParams(productIdParamsSchema, 'product id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+  const result = await getAdminProduct(params.id);
+  return res.send_ok('Admin product retrieved', result);
 });
 
 adminRouter.post('/products', validateBody(productBodySchema, 'admin product creation'), async (req, res) => {

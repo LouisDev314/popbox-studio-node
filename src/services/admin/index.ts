@@ -7,7 +7,7 @@ import { collections, kujiPrizes, productImages, productInventory, products, tag
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
-import { listProducts } from '../product';
+import { getProductById, listProducts } from '../product';
 import { clampLimit } from '../../utils/limit';
 import {
   assertProductExists,
@@ -201,6 +201,10 @@ export const createProduct = async (payload: {
   return product;
 };
 
+export const getAdminProduct = async (productId: string) => {
+  return getProductById(productId);
+};
+
 export const updateProduct = async (
   productId: string,
   payload: Partial<{
@@ -351,11 +355,13 @@ export const reorderProductImages = async (productId: string, imageIds: string[]
     ),
   );
 
-  return db
+  const reorderedImages = await db
     .select()
     .from(productImages)
     .where(eq(productImages.productId, productId))
     .orderBy(asc(productImages.sortOrder), asc(productImages.id));
+
+  return reorderedImages.map(mapProductImage);
 };
 
 export const deleteProductImage = async (productId: string, imageId: string) => {

@@ -350,6 +350,17 @@ export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) 
   };
 };
 
+export const getProductById = async (productId: string) => {
+  const [row] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+
+  if (!row) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Product not found');
+  }
+
+  const relations = await loadProductRelations([row.id]);
+  return mapProduct(row, relations);
+};
+
 export const getProductBySlug = async (slug: string) => {
   const [row] = await db
     .select()
