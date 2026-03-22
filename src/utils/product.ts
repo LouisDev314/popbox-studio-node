@@ -7,7 +7,7 @@ import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
 
 export const buildStoragePath = (productId: string, fileName: string) => {
-  return `products/${productId}/${Date.now()}-${slugify(fileName) || 'image'}`;
+  return `products/${productId}/${slugify(fileName) || 'image'}`;
 };
 
 // Supabase storage
