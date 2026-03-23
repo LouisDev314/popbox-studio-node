@@ -39,12 +39,19 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
 }
 
 const ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX = 'orders:confirmation-email';
-const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
+export const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
   'paid',
   'packed',
   'shipped',
   'refunded',
 ]);
+
+type SendOrderConfirmationEmailForOrderOptions = {
+  force?: boolean;
+  failOnIneligible?: boolean;
+  failOnLockUnavailable?: boolean;
+  trigger?: 'checkout_finalize' | 'admin_resend';
+};
 
 type FinalizedCheckoutAmounts = {
   currency: string;
@@ -893,11 +900,32 @@ const buildEmailErrorMessage = (error: unknown) => {
   return 'Unknown order confirmation email error';
 };
 
-const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
+const getOrderConfirmationRecipientEmail = (email: string) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail || isPlaceholderCustomerEmail(normalizedEmail)) {
+    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Order does not have a deliverable customer email');
+  }
+
+  return normalizedEmail;
+};
+
+export const sendOrderConfirmationEmailForOrder = async (
+  orderId: string,
+  options: SendOrderConfirmationEmailForOrderOptions = {},
+) => {
   const lockHandle = await tryAcquireAdvisoryLock(`${ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX}:${orderId}`);
+  const trigger = options.trigger ?? 'checkout_finalize';
 
   if (!lockHandle) {
-    logger.info({ orderId }, 'Skipping order confirmation email because another worker is already sending it');
+    if (options.failOnLockUnavailable) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Order confirmation email is already being sent. Retry shortly.');
+    }
+
+    logger.info(
+      { orderId, trigger },
+      'Skipping order confirmation email because another worker is already sending it',
+    );
     return;
   }
 
@@ -917,12 +945,13 @@ const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
       throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for confirmation email');
     }
 
-    if (order.confirmationEmailSentAt) {
+    if (order.confirmationEmailSentAt && !options.force) {
       logger.info(
         {
           orderId,
           publicId: order.publicId,
           confirmationEmailSentAt: order.confirmationEmailSentAt,
+          trigger,
         },
         'Skipping order confirmation email because it was already sent',
       );
@@ -930,11 +959,20 @@ const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
     }
 
     if (!ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES.has(order.status)) {
+      // Only orders that have completed real checkout semantics should emit or resend the secure access email.
+      if (options.failOnIneligible) {
+        throw new Exception(
+          HttpStatusCode.CONFLICT,
+          'Order confirmation email is only available for paid, fulfilled, or refunded orders',
+        );
+      }
+
       logger.info(
         {
           orderId,
           publicId: order.publicId,
           status: order.status,
+          trigger,
         },
         'Skipping order confirmation email because the order is not in an emailable state',
       );
@@ -942,18 +980,21 @@ const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
     }
 
     const detail = await getOrderDetailById(orderId);
+    const email = getOrderConfirmationRecipientEmail(detail.customer.email);
 
     await sendOrderConfirmationEmail({
-      email: detail.customer.email,
+      email,
       firstName: detail.customer.firstName,
       orderPublicId: detail.publicId,
       orderUrl: buildGuestOrderAccessUrl(detail.publicId),
     });
 
+    const confirmationEmailSentAt = new Date();
+
     await db
       .update(orders)
       .set({
-        confirmationEmailSentAt: new Date(),
+        confirmationEmailSentAt,
         confirmationEmailError: null,
       })
       .where(eq(orders.id, orderId));
@@ -962,10 +1003,21 @@ const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
       {
         orderId,
         publicId: detail.publicId,
-        email: detail.customer.email,
+        email,
+        confirmationEmailSentAt,
+        force: options.force ?? false,
+        trigger,
       },
       'Order confirmation email sent',
     );
+
+    return {
+      id: detail.id,
+      publicId: detail.publicId,
+      status: detail.status,
+      email,
+      confirmationEmailSentAt,
+    };
   } catch (error) {
     const emailErrorMessage = buildEmailErrorMessage(error);
 
@@ -976,7 +1028,7 @@ const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
       })
       .where(eq(orders.id, orderId));
 
-    logger.error({ error, orderId, emailErrorMessage }, 'Order confirmation email send failed');
+    logger.error({ error, orderId, emailErrorMessage, force: options.force ?? false, trigger }, 'Order confirmation email send failed');
     throw error;
   } finally {
     try {
@@ -1102,7 +1154,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
-      await sendOrderConfirmationEmailIfNeeded(orderId);
+      await sendOrderConfirmationEmailForOrder(orderId);
       const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
@@ -1149,7 +1201,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     throw error;
   }
 
-  await sendOrderConfirmationEmailIfNeeded(orderId);
+  await sendOrderConfirmationEmailForOrder(orderId);
 
   const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 

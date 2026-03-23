@@ -29,6 +29,7 @@ import {
   getAdminOrder,
   listAdminOrders,
   listCustomers,
+  resendAdminOrderConfirmation,
   reconcileOrderRefunds,
   refundOrder,
   updateAdminOrderStatus,
@@ -38,6 +39,7 @@ import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../.
 import {
   adminOrderParamsSchema,
   adminOrderQuerySchema,
+  adminOrderResendParamsSchema,
   collectionBodySchema,
   collectionParamsSchema,
   collectionPatchBodySchema,
@@ -264,6 +266,16 @@ adminRouter.get('/orders/:id', validateParams(adminOrderParamsSchema, 'order id'
   const result = await getAdminOrder(params.id);
   return res.send_ok('Order retrieved', result);
 });
+
+adminRouter.post(
+  '/orders/:orderId/resend-confirmation',
+  validateParams(adminOrderResendParamsSchema, 'order id'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof adminOrderResendParamsSchema>>(req);
+    const result = await resendAdminOrderConfirmation(params.orderId, req.authUser?.id);
+    return res.send_ok('Order confirmation email resent', result);
+  },
+);
 
 adminRouter.patch(
   '/orders/:id/status',

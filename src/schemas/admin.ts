@@ -89,6 +89,10 @@ export const adminOrderParamsSchema = z.object({
   id: z.uuid(),
 });
 
+export const adminOrderResendParamsSchema = z.object({
+  orderId: z.uuid(),
+});
+
 export const orderStatusBodySchema = z.object({
   status: z.enum([ORDER_STATUS.PACKED, ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED]),
 });

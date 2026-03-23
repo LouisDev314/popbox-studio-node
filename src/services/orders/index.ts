@@ -14,7 +14,7 @@ import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './hel
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
 import { OrdersCursor } from '../../types/order';
-import { releaseReservationsForOrder } from '../checkout/helpers';
+import { releaseReservationsForOrder, sendOrderConfirmationEmailForOrder } from '../checkout/helpers';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
 const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
@@ -328,6 +328,33 @@ export const listAdminOrders = async (filters: { status?: OrderStatus; cursor?: 
 
 export const getAdminOrder = async (orderId: string) => {
   return getOrderDetailById(orderId);
+};
+
+export const resendAdminOrderConfirmation = async (orderId: string, adminUserId?: string) => {
+  const result = await sendOrderConfirmationEmailForOrder(orderId, {
+    force: true,
+    failOnIneligible: true,
+    failOnLockUnavailable: true,
+    trigger: 'admin_resend',
+  });
+
+  if (!result) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Order confirmation resend completed without a result');
+  }
+
+  logger.info(
+    {
+      adminUserId: adminUserId ?? null,
+      orderId: result.id,
+      publicId: result.publicId,
+      status: result.status,
+      email: result.email,
+      confirmationEmailSentAt: result.confirmationEmailSentAt,
+    },
+    'Admin resent order confirmation email',
+  );
+
+  return result;
 };
 
 export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
