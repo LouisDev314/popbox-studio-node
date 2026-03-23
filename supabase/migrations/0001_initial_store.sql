@@ -427,6 +427,88 @@ RETURN NEW;
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.sync_kuji_inventory_on_hand_for_product(p_product_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+v_is_kuji boolean;
+  v_on_hand integer;
+BEGIN
+  IF p_product_id IS NULL THEN
+    RETURN;
+END IF;
+
+SELECT EXISTS (
+    SELECT 1
+    FROM public.products p
+    WHERE p.id = p_product_id
+      AND p.product_type = 'kuji'
+)
+INTO v_is_kuji;
+
+IF NOT COALESCE(v_is_kuji, false) THEN
+    RETURN;
+END IF;
+
+SELECT COALESCE(SUM(kp.remaining_quantity), 0)
+INTO v_on_hand
+FROM public.kuji_prizes kp
+WHERE kp.product_id = p_product_id
+  AND UPPER(BTRIM(kp.prize_code)) <> 'LO';
+
+INSERT INTO public.product_inventory (
+    product_id,
+    on_hand,
+    reserved,
+    low_stock_threshold,
+    created_at,
+    updated_at
+)
+VALUES (
+           p_product_id,
+           v_on_hand,
+           0,
+           0,
+           now(),
+           now()
+       )
+    ON CONFLICT (product_id)
+  DO UPDATE
+             SET
+                 on_hand = EXCLUDED.on_hand,
+             updated_at = CASE
+             WHEN public.product_inventory.on_hand IS DISTINCT FROM EXCLUDED.on_hand
+             THEN now()
+             ELSE public.product_inventory.updated_at
+END;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.trg_sync_kuji_inventory_on_hand()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    PERFORM public.sync_kuji_inventory_on_hand_for_product(NEW.product_id);
+RETURN NEW;
+ELSIF TG_OP = 'UPDATE' THEN
+    IF OLD.product_id IS DISTINCT FROM NEW.product_id THEN
+      PERFORM public.sync_kuji_inventory_on_hand_for_product(OLD.product_id);
+END IF;
+
+    PERFORM public.sync_kuji_inventory_on_hand_for_product(NEW.product_id);
+RETURN NEW;
+ELSIF TG_OP = 'DELETE' THEN
+    PERFORM public.sync_kuji_inventory_on_hand_for_product(OLD.product_id);
+RETURN OLD;
+END IF;
+
+RETURN NULL;
+END;
+$$;
+
 -- ============================================================================
 -- UPDATED_AT TRIGGERS
 -- ============================================================================
@@ -540,6 +622,16 @@ CREATE TRIGGER auth_users_sync_public_users_trg
     EXECUTE FUNCTION public.sync_auth_user_to_public_users();
 
 -- ============================================================================
+-- KUJI INVENTORY SYNC TRIGGER
+-- ============================================================================
+
+CREATE TRIGGER kuji_prizes_sync_inventory_on_hand
+    AFTER INSERT OR UPDATE OF product_id, prize_code, remaining_quantity OR DELETE
+                    ON public.kuji_prizes
+                        FOR EACH ROW
+                        EXECUTE FUNCTION public.trg_sync_kuji_inventory_on_hand();
+
+-- ============================================================================
 -- BACKFILL / INITIALIZE
 -- ============================================================================
 
@@ -554,3 +646,41 @@ DO UPDATE
 
 SELECT public.refresh_product_search_vector(id)
 FROM public.products;
+
+INSERT INTO public.product_inventory (
+    product_id,
+    on_hand,
+    reserved,
+    low_stock_threshold,
+    created_at,
+    updated_at
+)
+SELECT
+    p.id AS product_id,
+    COALESCE(
+            SUM(
+                    CASE
+                        WHEN UPPER(BTRIM(kp.prize_code)) <> 'LO' THEN kp.remaining_quantity
+                        ELSE 0
+                        END
+            ),
+            0
+    ) AS on_hand,
+    0 AS reserved,
+    0 AS low_stock_threshold,
+    now() AS created_at,
+    now() AS updated_at
+FROM public.products p
+         LEFT JOIN public.kuji_prizes kp
+                   ON kp.product_id = p.id
+WHERE p.product_type = 'kuji'
+GROUP BY p.id
+    ON CONFLICT (product_id)
+DO UPDATE
+           SET
+               on_hand = EXCLUDED.on_hand,
+           updated_at = CASE
+           WHEN public.product_inventory.on_hand IS DISTINCT FROM EXCLUDED.on_hand
+           THEN now()
+           ELSE public.product_inventory.updated_at
+END;

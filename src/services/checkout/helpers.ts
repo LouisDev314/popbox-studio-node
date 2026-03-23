@@ -36,6 +36,8 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
   }
 }
 
+const LAST_ONE_PRIZE_CODE = 'LO';
+
 type FinalizedCheckoutAmounts = {
   currency: string;
   subtotalCents: number;
@@ -664,13 +666,13 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
     const prizeResult = await tx.execute(
       sql<{
         id: string;
+        prizeCode: string;
         remainingQuantity: number;
         productId: string;
       }>`
-        SELECT id, remaining_quantity AS "remainingQuantity", product_id AS "productId"
+        SELECT id, prize_code AS "prizeCode", remaining_quantity AS "remainingQuantity", product_id AS "productId"
         FROM kuji_prizes
         WHERE product_id = ${item.productId}
-          AND remaining_quantity > 0
         ORDER BY sort_order ASC, id ASC
         FOR UPDATE
       `,
@@ -678,24 +680,36 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
     const prizePool = prizeResult.map((row) => ({
       id: String(row.id),
+      prizeCode: String(row.prizeCode),
       remainingQuantity: Number(row.remainingQuantity),
       productId: String(row.productId),
     }));
-    const totalRemaining = prizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
+    const normalPrizePool = prizePool.filter((prize) => prize.prizeCode !== LAST_ONE_PRIZE_CODE);
+    const totalRemaining = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
 
     if (totalRemaining < item.quantity) {
       throw new NeedsAttentionError(`Insufficient kuji prize inventory for product ${item.productId}`);
     }
 
+    const shouldAwardLastOne = totalRemaining === item.quantity;
+    const lastOnePrize = shouldAwardLastOne
+      ? prizePool.find((prize) => prize.prizeCode === LAST_ONE_PRIZE_CODE)
+      : undefined;
+
+    if (shouldAwardLastOne && (!lastOnePrize || lastOnePrize.remainingQuantity <= 0)) {
+      throw new NeedsAttentionError(`LO prize inventory is inconsistent for product ${item.productId}`);
+    }
+
     const selectedPrizeCounts = new Map<string, number>();
+    const ticketPrizeIds: string[] = [];
 
     for (let drawIndex = 0; drawIndex < item.quantity; drawIndex += 1) {
-      const currentTotal = prizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
+      const currentTotal = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
       const roll = randomInt(currentTotal) + 1;
       let cumulative = 0;
-      let selectedPrize = prizePool[0];
+      let selectedPrize = normalPrizePool[0];
 
-      for (const prize of prizePool) {
+      for (const prize of normalPrizePool) {
         cumulative += prize.remainingQuantity;
 
         if (roll <= cumulative) {
@@ -710,13 +724,25 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
       selectedPrize.remainingQuantity -= 1;
       selectedPrizeCounts.set(selectedPrize.id, (selectedPrizeCounts.get(selectedPrize.id) ?? 0) + 1);
+      ticketPrizeIds.push(selectedPrize.id);
+    }
 
+    if (shouldAwardLastOne && lastOnePrize) {
+      lastOnePrize.remainingQuantity -= 1;
+      selectedPrizeCounts.set(lastOnePrize.id, (selectedPrizeCounts.get(lastOnePrize.id) ?? 0) + 1);
+
+      // The existing ticket model stores a single prize per ticket, so the last
+      // ticket in the order becomes the LO-winning ticket when the sellable pool is exhausted.
+      ticketPrizeIds[ticketPrizeIds.length - 1] = lastOnePrize.id;
+    }
+
+    for (const kujiPrizeId of ticketPrizeIds) {
       await tx.insert(tickets).values({
         orderId,
         orderItemId: item.id,
         customerId,
         kujiProductId: item.productId,
-        kujiPrizeId: selectedPrize.id,
+        kujiPrizeId,
         ticketNumber: createTicketNumber(),
       });
     }
@@ -761,12 +787,17 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
   });
 
   for (const reservation of reservationsInLockOrder) {
-    const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number }>`
-      SELECT on_hand AS "onHand", reserved
-      FROM product_inventory
-      WHERE product_id = ${reservation.productId}
+    const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number; productType: 'standard' | 'kuji' }>`
+      SELECT
+        pi.on_hand AS "onHand",
+        pi.reserved,
+        p.product_type AS "productType"
+      FROM product_inventory AS pi
+      INNER JOIN products AS p
+        ON p.id = pi.product_id
+      WHERE pi.product_id = ${reservation.productId}
       ORDER BY product_id
-      FOR UPDATE
+      FOR UPDATE OF pi
     `);
 
     const inventoryRow = inventoryResult[0];
@@ -774,17 +805,28 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
       ? {
           onHand: Number(inventoryRow.onHand),
           reserved: Number(inventoryRow.reserved),
+          productType: inventoryRow.productType,
         }
       : undefined;
-    if (!inventory || inventory.reserved < reservation.quantity || inventory.onHand < reservation.quantity) {
+    if (!inventory || inventory.reserved < reservation.quantity) {
+      throw new NeedsAttentionError(`Inventory could not be finalized for product ${reservation.productId}`);
+    }
+
+    if (inventory.productType !== 'kuji' && inventory.onHand < reservation.quantity) {
       throw new NeedsAttentionError(`Inventory could not be finalized for product ${reservation.productId}`);
     }
 
     await tx
       .update(productInventory)
       .set({
-        onHand: sql`${productInventory.onHand} - ${reservation.quantity}`,
-        reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+        ...(inventory.productType === 'kuji'
+          ? {
+              reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+            }
+          : {
+              onHand: sql`${productInventory.onHand} - ${reservation.quantity}`,
+              reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+            }),
       })
       .where(eq(productInventory.productId, reservation.productId));
   }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
@@ -13,9 +13,9 @@ import {
   assertProductExists,
   buildStoragePath,
   buildImageUrl,
+  ensureKujiInventoryRecord,
   ensureUniqueSlug,
   replaceProductTags,
-  syncKujiInventory,
   throwStorageFailure,
 } from '../../utils/product';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
@@ -40,13 +40,15 @@ const assertKujiPrizeQuantitiesAreValid = (initialQuantity: number, remainingQua
   }
 };
 
-const syncKujiInventoryWithinTx = async (tx: DbClient, productId: string) => {
+const LAST_ONE_PRIZE_CODE = 'LO';
+
+const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string) => {
   const [sumRow] = await tx
     .select({
       remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
     })
     .from(kujiPrizes)
-    .where(eq(kujiPrizes.productId, productId));
+    .where(and(eq(kujiPrizes.productId, productId), ne(kujiPrizes.prizeCode, LAST_ONE_PRIZE_CODE)));
 
   const totalRemaining = sumRow?.remaining ?? 0;
   const inventoryResult = await tx.execute<{ onHand: number; reserved: number }>(sql`
@@ -59,20 +61,12 @@ const syncKujiInventoryWithinTx = async (tx: DbClient, productId: string) => {
 
   if (existingInventory) {
     assertInventoryNotBelowReserved(totalRemaining, Number(existingInventory.reserved));
-
-    await tx
-      .update(productInventory)
-      .set({
-        onHand: totalRemaining,
-      })
-      .where(eq(productInventory.productId, productId));
-
     return;
   }
 
   await tx.insert(productInventory).values({
     productId,
-    onHand: totalRemaining,
+    onHand: 0,
     reserved: 0,
     lowStockThreshold: 0,
   });
@@ -254,7 +248,7 @@ export const updateProduct = async (
   }
 
   if ((payload.productType ?? existingProduct.productType) === 'kuji') {
-    await syncKujiInventory(productId);
+    await ensureKujiInventoryRecord(productId);
   }
 
   return updated;
@@ -615,7 +609,7 @@ export const createKujiPrize = async (
       })
       .returning();
 
-    await syncKujiInventoryWithinTx(tx, productId);
+    await ensureKujiInventoryStateWithinTx(tx, productId);
     return [createdPrize];
   });
 
@@ -668,7 +662,7 @@ export const updateKujiPrize = async (
       .where(eq(kujiPrizes.id, prizeId))
       .returning();
 
-    await syncKujiInventoryWithinTx(tx, productId);
+    await ensureKujiInventoryStateWithinTx(tx, productId);
     return [nextPrize];
   });
 
@@ -678,7 +672,7 @@ export const updateKujiPrize = async (
 export const deleteKujiPrize = async (productId: string, prizeId: string) => {
   await db.transaction(async (tx) => {
     await tx.delete(kujiPrizes).where(and(eq(kujiPrizes.id, prizeId), eq(kujiPrizes.productId, productId)));
-    await syncKujiInventoryWithinTx(tx, productId);
+    await ensureKujiInventoryStateWithinTx(tx, productId);
   });
 
   return {
