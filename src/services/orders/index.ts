@@ -304,6 +304,7 @@ export const listAdminOrders = async (filters: { status?: OrderStatus; cursor?: 
       id: row.order.id,
       publicId: row.order.publicId,
       status: row.order.status,
+      includesLastOnePrize: row.order.includesLastOnePrize,
       totalCents: row.order.totalCents,
       currency: row.order.currency,
       placedAt: row.order.placedAt,

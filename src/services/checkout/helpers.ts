@@ -670,6 +670,8 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
     .from(orderItems)
     .where(and(eq(orderItems.orderId, orderId), eq(orderItems.productType, 'kuji')));
 
+  let includesLastOnePrize = false;
+
   for (const item of kujiItems) {
     const prizeResult = await tx.execute(
       sql<{
@@ -699,13 +701,8 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       throw new NeedsAttentionError(`Insufficient kuji prize inventory for product ${item.productId}`);
     }
 
-    const shouldAwardLastOne = totalRemaining === item.quantity;
-    const lastOnePrize = shouldAwardLastOne
-      ? prizePool.find((prize) => isLastOnePrizeCode(prize.prizeCode))
-      : undefined;
-
-    if (shouldAwardLastOne && (!lastOnePrize || lastOnePrize.remainingQuantity <= 0)) {
-      throw new NeedsAttentionError(`LO prize inventory is inconsistent for product ${item.productId}`);
+    if (totalRemaining === item.quantity && prizePool.some((prize) => isLastOnePrizeCode(prize.prizeCode))) {
+      includesLastOnePrize = true;
     }
 
     const selectedPrizeCounts = new Map<string, number>();
@@ -735,15 +732,6 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       ticketPrizeIds.push(selectedPrize.id);
     }
 
-    if (shouldAwardLastOne && lastOnePrize) {
-      lastOnePrize.remainingQuantity -= 1;
-      selectedPrizeCounts.set(lastOnePrize.id, (selectedPrizeCounts.get(lastOnePrize.id) ?? 0) + 1);
-
-      // The existing ticket model stores a single prize per ticket, so the last
-      // ticket in the order becomes the LO-winning ticket when the sellable pool is exhausted.
-      ticketPrizeIds[ticketPrizeIds.length - 1] = lastOnePrize.id;
-    }
-
     for (const kujiPrizeId of ticketPrizeIds) {
       await tx.insert(tickets).values({
         orderId,
@@ -767,6 +755,10 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
         .where(eq(kujiPrizes.id, prize.id));
     }
   }
+
+  return {
+    includesLastOnePrize,
+  };
 };
 
 export const convertReservations = async (tx: DbClient, orderId: string) => {
@@ -864,6 +856,7 @@ export const markOrderPaidNeedsAttention = async (
     .set({
       customerId: finalizedCustomerId,
       status: 'paid_needs_attention',
+      includesLastOnePrize: false,
       currency: finalizedAmounts.currency || 'CAD',
       stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
@@ -1064,13 +1057,14 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       const finalizedCustomerId = await reconcileOrderCustomerFromCheckout(tx, orderId, finalizedSnapshots);
 
       await convertReservations(tx, orderId);
-      await allocateKujiTickets(tx, orderId, finalizedCustomerId);
+      const kujiAllocation = await allocateKujiTickets(tx, orderId, finalizedCustomerId);
 
       await tx
         .update(orders)
         .set({
           customerId: finalizedCustomerId,
           status: 'paid',
+          includesLastOnePrize: kujiAllocation.includesLastOnePrize,
           currency: finalizedAmounts.currency,
           stripeCheckoutSessionId: hydratedSession.id,
           stripePaymentIntentId:

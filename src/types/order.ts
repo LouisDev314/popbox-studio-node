@@ -32,6 +32,7 @@ export type OrderDetailView = {
   id: string;
   publicId: string;
   status: string;
+  includesLastOnePrize: boolean;
   currency: string;
   subtotalCents: number;
   taxCents: number;

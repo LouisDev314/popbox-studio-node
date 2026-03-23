@@ -245,6 +245,7 @@ export const orders = pgTable(
     shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, unknown>>().notNull(),
     billingAddressJson: jsonb('billing_address_json').$type<Record<string, unknown> | null>(),
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
+    includesLastOnePrize: boolean('includes_last_one_prize').notNull().default(false),
     confirmationEmailSentAt: timestamp('confirmation_email_sent_at', { withTimezone: true }),
     confirmationEmailError: text('confirmation_email_error'),
     placedAt: timestamp('placed_at', { withTimezone: true }),

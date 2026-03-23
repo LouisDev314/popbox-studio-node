@@ -45,6 +45,7 @@ const mapOrderDetail = (
     id: row.order.id,
     publicId: row.order.publicId,
     status: row.order.status,
+    includesLastOnePrize: row.order.includesLastOnePrize,
     currency: row.order.currency,
     subtotalCents: row.order.subtotalCents,
     taxCents: row.order.taxCents,
