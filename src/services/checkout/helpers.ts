@@ -21,6 +21,7 @@ import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { sendOrderConfirmationEmail } from '../notifications';
+import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
 class NeedsAttentionError extends Error {
   constructor(message: string) {
@@ -37,6 +38,13 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
 }
 
 const LAST_ONE_PRIZE_CODE = 'LO';
+const ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX = 'orders:confirmation-email';
+const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
+  'paid',
+  'packed',
+  'shipped',
+  'refunded',
+]);
 
 type FinalizedCheckoutAmounts = {
   currency: string;
@@ -884,10 +892,113 @@ export const markOrderPaidNeedsAttention = async (
     .where(eq(payments.orderId, orderId));
 };
 
+const buildEmailErrorMessage = (error: unknown) => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Unknown order confirmation email error';
+};
+
+const sendOrderConfirmationEmailIfNeeded = async (orderId: string) => {
+  const lockHandle = await tryAcquireAdvisoryLock(`${ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX}:${orderId}`);
+
+  if (!lockHandle) {
+    logger.info({ orderId }, 'Skipping order confirmation email because another worker is already sending it');
+    return;
+  }
+
+  try {
+    const [order] = await db
+      .select({
+        id: orders.id,
+        publicId: orders.publicId,
+        status: orders.status,
+        confirmationEmailSentAt: orders.confirmationEmailSentAt,
+      })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for confirmation email');
+    }
+
+    if (order.confirmationEmailSentAt) {
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          confirmationEmailSentAt: order.confirmationEmailSentAt,
+        },
+        'Skipping order confirmation email because it was already sent',
+      );
+      return;
+    }
+
+    if (!ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES.has(order.status)) {
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          status: order.status,
+        },
+        'Skipping order confirmation email because the order is not in an emailable state',
+      );
+      return;
+    }
+
+    const detail = await getOrderDetailById(orderId);
+
+    await sendOrderConfirmationEmail({
+      email: detail.customer.email,
+      firstName: detail.customer.firstName,
+      orderPublicId: detail.publicId,
+      orderUrl: buildGuestOrderAccessUrl(detail.publicId),
+    });
+
+    await db
+      .update(orders)
+      .set({
+        confirmationEmailSentAt: new Date(),
+        confirmationEmailError: null,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.info(
+      {
+        orderId,
+        publicId: detail.publicId,
+        email: detail.customer.email,
+      },
+      'Order confirmation email sent',
+    );
+  } catch (error) {
+    const emailErrorMessage = buildEmailErrorMessage(error);
+
+    await db
+      .update(orders)
+      .set({
+        confirmationEmailError: emailErrorMessage,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.error({ error, orderId, emailErrorMessage }, 'Order confirmation email send failed');
+    throw error;
+  } finally {
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error({ error: unlockError, orderId }, 'Failed to release order confirmation email advisory lock');
+    }
+  }
+};
+
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
-  const { orderId } = ensurePaymentSessionMetadata(session);
-  const finalizedAmounts = buildFinalizedCheckoutAmounts(session);
-  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
+  const hydratedSession = session.id ? await stripe.checkout.sessions.retrieve(session.id) : session;
+  const { orderId } = ensurePaymentSessionMetadata(hydratedSession);
+  const finalizedAmounts = buildFinalizedCheckoutAmounts(hydratedSession);
+  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(hydratedSession);
   let orderPublicId = '';
 
   try {
@@ -945,7 +1056,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           subtotalCents: Number(lockedOrder.subtotalCents),
           shippingCents: Number(lockedOrder.shippingCents),
         },
-        session,
+        hydratedSession,
         finalizedAmounts,
         finalizedSnapshots,
       );
@@ -961,8 +1072,9 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           customerId: finalizedCustomerId,
           status: 'paid',
           currency: finalizedAmounts.currency,
-          stripeCheckoutSessionId: session.id,
-          stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+          stripeCheckoutSessionId: hydratedSession.id,
+          stripePaymentIntentId:
+            typeof hydratedSession.payment_intent === 'string' ? hydratedSession.payment_intent : null,
           customerDetailsJson: finalizedSnapshots.customerDetailsJson,
           shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
           billingAddressJson: finalizedSnapshots.billingAddressJson,
@@ -978,12 +1090,13 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       await tx
         .update(payments)
         .set({
-          providerCheckoutSessionId: session.id,
-          providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+          providerCheckoutSessionId: hydratedSession.id,
+          providerPaymentIntentId:
+            typeof hydratedSession.payment_intent === 'string' ? hydratedSession.payment_intent : null,
           amountCents: finalizedAmounts.totalCents,
           currency: finalizedAmounts.currency,
           status: 'paid',
-          rawResponse: session as unknown as Record<string, unknown>,
+          rawResponse: hydratedSession as unknown as Record<string, unknown>,
         })
         .where(eq(payments.orderId, orderId));
 
@@ -995,6 +1108,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
+      await sendOrderConfirmationEmailIfNeeded(orderId);
       const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
@@ -1022,7 +1136,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         await markOrderPaidNeedsAttention(
           tx,
           orderId,
-          session,
+          hydratedSession,
           finalizedSnapshots,
           finalizedAmounts,
           isLatePayment ? 'expired' : 'released',
@@ -1041,19 +1155,9 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     throw error;
   }
 
-  const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
+  await sendOrderConfirmationEmailIfNeeded(orderId);
 
-  try {
-    await sendOrderConfirmationEmail({
-      email: detail.customer.email,
-      firstName: detail.customer.firstName,
-      orderPublicId: detail.publicId,
-      orderUrl,
-    });
-  } catch (emailError) {
-    logger.error({ orderId, emailError }, 'Failed to send order confirmation email');
-  }
+  const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
   return {
     orderId,

@@ -157,7 +157,7 @@ Required variables include:
 - `CORS_ORIGIN`
 - `CLIENT_BASE_URL`
 - `ADMIN_BASE_URL` (optional if it should default to `CLIENT_BASE_URL/admin`)
-- `API_BASE_URL`
+- `API_BASE_URL` (optional if guest order email links should use a different public API origin; defaults to `CLIENT_BASE_URL`)
 - `DATABASE_URL`
 - `SUPABASE_URL`
 - `SUPABASE_PUBLIC_KEY`
