@@ -20,6 +20,7 @@ import { getOrderDetailById } from '../orders/helpers';
 import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
+import { isLastOnePrizeCode } from '../../utils/kuji';
 import { sendOrderConfirmationEmail } from '../notifications';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
@@ -37,7 +38,6 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
   }
 }
 
-const LAST_ONE_PRIZE_CODE = 'LO';
 const ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX = 'orders:confirmation-email';
 const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
   'paid',
@@ -692,7 +692,7 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       remainingQuantity: Number(row.remainingQuantity),
       productId: String(row.productId),
     }));
-    const normalPrizePool = prizePool.filter((prize) => prize.prizeCode !== LAST_ONE_PRIZE_CODE);
+    const normalPrizePool = prizePool.filter((prize) => !isLastOnePrizeCode(prize.prizeCode));
     const totalRemaining = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
 
     if (totalRemaining < item.quantity) {
@@ -701,7 +701,7 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
     const shouldAwardLastOne = totalRemaining === item.quantity;
     const lastOnePrize = shouldAwardLastOne
-      ? prizePool.find((prize) => prize.prizeCode === LAST_ONE_PRIZE_CODE)
+      ? prizePool.find((prize) => isLastOnePrizeCode(prize.prizeCode))
       : undefined;
 
     if (shouldAwardLastOne && (!lastOnePrize || lastOnePrize.remainingQuantity <= 0)) {

@@ -1,13 +1,12 @@
 import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { collections, kujiPrizes, productInventory, products, productTags, tags } from '../db/schema';
 import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
-
-const LAST_ONE_PRIZE_CODE = 'LO';
+import { LAST_ONE_PRIZE_CODE } from './kuji';
 
 const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
   if (onHand < reserved) {
@@ -89,7 +88,12 @@ export const ensureKujiInventoryRecord = async (productId: string) => {
       remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
     })
     .from(kujiPrizes)
-    .where(and(eq(kujiPrizes.productId, productId), ne(kujiPrizes.prizeCode, LAST_ONE_PRIZE_CODE)));
+    .where(
+      and(
+        eq(kujiPrizes.productId, productId),
+        sql`UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}`,
+      ),
+    );
 
   const totalRemaining = sumRow?.remaining ?? 0;
   const [existingInventory] = await db

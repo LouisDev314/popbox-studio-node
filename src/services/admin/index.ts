@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
@@ -18,6 +18,7 @@ import {
   replaceProductTags,
   throwStorageFailure,
 } from '../../utils/product';
+import { LAST_ONE_PRIZE_CODE, sanitizeKujiPrizeCodeForStorage } from '../../utils/kuji';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
 type CursorPayload = {
@@ -40,15 +41,18 @@ const assertKujiPrizeQuantitiesAreValid = (initialQuantity: number, remainingQua
   }
 };
 
-const LAST_ONE_PRIZE_CODE = 'LO';
-
 const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string) => {
   const [sumRow] = await tx
     .select({
       remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
     })
     .from(kujiPrizes)
-    .where(and(eq(kujiPrizes.productId, productId), ne(kujiPrizes.prizeCode, LAST_ONE_PRIZE_CODE)));
+    .where(
+      and(
+        eq(kujiPrizes.productId, productId),
+        sql`UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}`,
+      ),
+    );
 
   const totalRemaining = sumRow?.remaining ?? 0;
   const inventoryResult = await tx.execute<{ onHand: number; reserved: number }>(sql`
@@ -594,12 +598,14 @@ export const createKujiPrize = async (
   const remainingQuantity = payload.remainingQuantity ?? payload.initialQuantity;
   assertKujiPrizeQuantitiesAreValid(payload.initialQuantity, remainingQuantity);
 
+  const nextPrizeCode = sanitizeKujiPrizeCodeForStorage(payload.prizeCode);
+
   const [prize] = await db.transaction(async (tx) => {
     const [createdPrize] = await tx
       .insert(kujiPrizes)
       .values({
         productId,
-        prizeCode: payload.prizeCode,
+        prizeCode: nextPrizeCode,
         name: payload.name,
         description: payload.description ?? null,
         imageUrl: payload.imageUrl ?? null,
@@ -644,6 +650,9 @@ export const updateKujiPrize = async (
       throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
     }
 
+    const nextPrizeCode = payload.prizeCode
+      ? sanitizeKujiPrizeCodeForStorage(payload.prizeCode)
+      : existing.prizeCode;
     const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
     const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
     assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
@@ -651,7 +660,7 @@ export const updateKujiPrize = async (
     const [nextPrize] = await tx
       .update(kujiPrizes)
       .set({
-        prizeCode: payload.prizeCode ?? existing.prizeCode,
+        prizeCode: nextPrizeCode,
         name: payload.name ?? existing.name,
         description: payload.description === undefined ? existing.description : payload.description,
         imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
