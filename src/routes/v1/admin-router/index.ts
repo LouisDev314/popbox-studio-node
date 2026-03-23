@@ -22,6 +22,7 @@ import {
   updateProduct,
   updateStandardInventory,
   updateTag,
+  uploadKujiPrizeImage,
   uploadProductImages,
 } from '../../../services/admin';
 import {
@@ -61,6 +62,7 @@ import {
   parseProductImageUpload,
   readProductImageFiles,
   readProductImageUploadMetadata,
+  readSingleProductImageFile,
 } from '../../../services/admin/helpers';
 
 const adminRouter: Router = Router();
@@ -164,6 +166,22 @@ adminRouter.post(
     const body = readValidatedBody<Parameters<typeof createKujiPrize>[1]>(req);
     const result = await createKujiPrize(params.id, body);
     return res.send_created('Kuji prize created', result);
+  },
+);
+
+adminRouter.post(
+  '/products/:id/kuji-prizes/upload-image',
+  validateParams(productIdParamsSchema, 'product id'),
+  parseProductImageUpload,
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const file = readSingleProductImageFile(req, {
+      allowedFieldNames: new Set(['file']),
+      expectedFieldName: 'file',
+      usageLabel: 'kuji prize image uploads',
+    });
+    const result = await uploadKujiPrizeImage(params.id, file);
+    return res.send_created('Kuji prize image uploaded', result);
   },
 );
 

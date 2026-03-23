@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
 import { eq, sql } from 'drizzle-orm';
@@ -6,8 +7,23 @@ import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
 
-export const buildStoragePath = (productId: string, fileName: string) => {
-  return `products/${productId}/${slugify(fileName) || 'image'}`;
+export const buildStoragePath = (
+  productId: string,
+  fileName: string,
+  options?: {
+    subdirectory?: string;
+    unique?: boolean;
+  },
+) => {
+  const fileSlug = slugify(fileName) || 'image';
+  const pathSegments = ['products', productId];
+
+  if (options?.subdirectory) {
+    pathSegments.push(slugify(options.subdirectory) || options.subdirectory);
+  }
+
+  pathSegments.push(options?.unique ? `${randomUUID()}-${fileSlug}` : fileSlug);
+  return pathSegments.join('/');
 };
 
 // Supabase storage

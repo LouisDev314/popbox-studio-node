@@ -55,18 +55,53 @@ export const readMultipartStringValues = (value: unknown) => {
   return typeof value === 'string' ? [value] : [];
 };
 
-export const readProductImageFiles = (req: Request) => {
+export const readProductImageFiles = (
+  req: Request,
+  options?: {
+    allowedFieldNames?: ReadonlySet<string>;
+    expectedFieldName?: string;
+    usageLabel?: string;
+  },
+) => {
   const uploadedFiles = Array.isArray(req.files) ? req.files : [];
-  const unexpectedFile = uploadedFiles.find((file) => !PRODUCT_IMAGE_UPLOAD_FIELD_NAMES.has(file.fieldname));
+  const allowedFieldNames = options?.allowedFieldNames ?? PRODUCT_IMAGE_UPLOAD_FIELD_NAMES;
+  const unexpectedFile = uploadedFiles.find((file) => !allowedFieldNames.has(file.fieldname));
 
   if (unexpectedFile) {
     throw new Exception(
       HttpStatusCode.BAD_REQUEST,
-      `Unexpected file field "${unexpectedFile.fieldname}". Use "files" for product image uploads`,
+      `Unexpected file field "${unexpectedFile.fieldname}". Use "${options?.expectedFieldName ?? 'files'}" for ${options?.usageLabel ?? 'product image uploads'}`,
     );
   }
 
   return uploadedFiles;
+};
+
+export const readSingleProductImageFile = (
+  req: Request,
+  options?: {
+    allowedFieldNames?: ReadonlySet<string>;
+    expectedFieldName?: string;
+    usageLabel?: string;
+  },
+) => {
+  const files = readProductImageFiles(req, options);
+
+  if (!files.length) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'An image file is required');
+  }
+
+  if (files.length > 1) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'Only one image file is allowed');
+  }
+
+  const [file] = files;
+
+  if (!file) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'An image file is required');
+  }
+
+  return file;
 };
 
 export const readProductImageUploadMetadata = (req: Request, fileCount: number) => {

@@ -1019,6 +1019,67 @@ paths:
           $ref: '#/components/responses/UnprocessableEntityError'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/kuji-prizes/upload-image:
+    post:
+      tags: [Admin Products]
+      summary: Upload kuji prize image
+      description: |
+        Uploads a single kuji prize image to storage and returns a public URL
+        that can be used in kuji prize create or update requests.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Kuji prize image uploaded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          imageUrl:
+                            type: string
+                            format: uri
+                        required: [imageUrl]
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products/{id}/kuji-prizes/{prizeId}:
     patch:
       tags: [Admin Products]

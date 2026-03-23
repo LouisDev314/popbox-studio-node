@@ -12,6 +12,7 @@ import { clampLimit } from '../../utils/limit';
 import {
   assertProductExists,
   buildStoragePath,
+  buildImageUrl,
   ensureUniqueSlug,
   replaceProductTags,
   syncKujiInventory,
@@ -332,6 +333,31 @@ export const uploadProductImages = async (
     await rollbackUploadedProductImages(productId, uploadedStorageKeys, error);
     throw error;
   }
+};
+
+export const uploadKujiPrizeImage = async (productId: string, file: Express.Multer.File) => {
+  const product = await assertProductExists(productId);
+
+  if (product.productType !== 'kuji') {
+    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Only kuji products can upload kuji prize images');
+  }
+
+  validateProductImageFiles([file]);
+
+  const storageKey = buildStoragePath(productId, file.originalname, {
+    subdirectory: 'kuji-prizes',
+    unique: true,
+  });
+  const { error } = await supabaseAdmin.storage.from(getEnvConfig().supabaseStorageBucket).upload(storageKey, file.buffer, {
+    contentType: file.mimetype,
+    upsert: false,
+  });
+
+  throwStorageFailure('Unable to upload kuji prize image', error);
+
+  return {
+    imageUrl: buildImageUrl(storageKey),
+  };
 };
 
 export const reorderProductImages = async (productId: string, imageIds: string[]) => {
