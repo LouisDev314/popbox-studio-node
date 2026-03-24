@@ -50,6 +50,18 @@ export const orderStatusEnum = pgEnum('order_status', [
 export const paymentProviderEnum = pgEnum('payment_provider', ['stripe']);
 export const paymentStatusEnum = pgEnum('payment_status', ['pending', 'paid', 'failed', 'refunded']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['received', 'processed', 'failed']);
+export const legalDocumentTypeEnum = pgEnum('legal_document_type', [
+  'faq',
+  'contact',
+  'shipping_returns',
+  'terms',
+  'privacy',
+]);
+
+export type LegalDocumentContentSection = {
+  heading: string;
+  paragraphs: string[];
+};
 
 const authUsers = authSchema.table('users', {
   id: uuid('id').primaryKey(),
@@ -373,6 +385,29 @@ export const payments = pgTable(
     check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
     check('payments_refunded_amount_cents_check', sql`${table.refundedAmountCents} >= 0`),
     check('payments_refunded_amount_not_exceed_amount_check', sql`${table.refundedAmountCents} <= ${table.amountCents}`),
+  ],
+);
+
+export const legalDocuments = pgTable(
+  'legal_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: legalDocumentTypeEnum('type').notNull(),
+    title: varchar('title', { length: 255 }).notNull(),
+    content: jsonb('content').$type<LegalDocumentContentSection[]>().notNull(),
+    version: integer('version').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    uniqueIndex('legal_documents_type_version_unique').on(table.type, table.version),
+    uniqueIndex('legal_documents_one_active_per_type_unique')
+      .on(table.type)
+      .where(sql`${table.isActive} = true`),
+    index('legal_documents_type_active_idx').on(table.type, table.isActive),
+    index('legal_documents_type_created_at_idx').on(table.type, table.createdAt),
+    check('legal_documents_version_check', sql`${table.version} > 0`),
   ],
 );
 

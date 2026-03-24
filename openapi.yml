@@ -18,11 +18,13 @@ tags:
   - name: Search
   - name: Orders
   - name: Checkout
+  - name: Legal
   - name: Admin Products
   - name: Admin Collections
   - name: Admin Tags
   - name: Admin Orders
   - name: Admin Customers
+  - name: Admin Legal
 paths:
   /health:
     get:
@@ -95,6 +97,55 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/HomepageData'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal:
+    get:
+      tags: [Legal]
+      summary: List active legal documents
+      description: Returns the active version of each legal document type.
+      responses:
+        '200':
+          description: Legal documents retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocumentList'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal/{type}:
+    get:
+      tags: [Legal]
+      summary: Get active legal document by type
+      description: Returns the active version for a single legal document type.
+      parameters:
+        - name: type
+          in: path
+          required: true
+          description: Legal document type.
+          schema:
+            $ref: '#/components/schemas/LegalDocumentType'
+      responses:
+        '200':
+          description: Legal document retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/collections:
@@ -643,6 +694,153 @@ paths:
           $ref: '#/components/responses/ConflictError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal:
+    get:
+      tags: [Admin Legal]
+      summary: List legal document versions
+      description: Returns all legal document versions sorted by type and descending version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: Optional legal document type filter.
+          schema:
+            $ref: '#/components/schemas/LegalDocumentType'
+      responses:
+        '200':
+          description: Legal documents retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocumentList'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Legal]
+      summary: Create legal document version
+      description: Creates the first or next active version for a legal document type.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLegalCreate'
+      responses:
+        '201':
+          description: Legal document created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/{id}:
+    get:
+      tags: [Admin Legal]
+      summary: Get legal document version by id
+      description: Returns an exact stored legal document version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Legal document UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Legal document retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags: [Admin Legal]
+      summary: Publish new legal document version
+      description: Creates a new active legal document version from an existing version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Source legal document UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLegalUpdate'
+      responses:
+        '200':
+          description: Legal document published
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products/{id}:
@@ -1776,6 +1974,56 @@ components:
         duplicate:
           type: boolean
       required: [received, duplicate]
+    LegalDocumentType:
+      type: string
+      enum: [faq, contact, shipping_returns, terms, privacy]
+    LegalDocumentSection:
+      type: object
+      properties:
+        heading:
+          type: string
+        paragraphs:
+          type: array
+          minItems: 1
+          items:
+            type: string
+      required: [heading, paragraphs]
+      additionalProperties: false
+    LegalDocument:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/LegalDocumentType'
+        title:
+          type: string
+        content:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LegalDocumentSection'
+        version:
+          type: integer
+          minimum: 1
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, type, title, content, version, isActive, createdAt, updatedAt]
+    LegalDocumentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegalDocument'
+      required: [items]
     CollectionSummary:
       type: object
       properties:
@@ -2520,6 +2768,31 @@ components:
           type: string
         tagType:
           type: string
+    AdminLegalCreate:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/LegalDocumentType'
+        title:
+          type: string
+        content:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LegalDocumentSection'
+      required: [type, title, content]
+      additionalProperties: false
+    AdminLegalUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        content:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LegalDocumentSection'
+      additionalProperties: false
     AdminProductCreate:
       type: object
       properties:

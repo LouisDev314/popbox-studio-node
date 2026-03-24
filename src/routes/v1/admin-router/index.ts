@@ -35,6 +35,12 @@ import {
   updateAdminOrderStatus,
   updateShipment,
 } from '../../../services/orders';
+import {
+  createLegalDocument,
+  getAdminLegalDocumentById,
+  listAdminLegalDocuments,
+  publishLegalDocumentVersionFromExisting,
+} from '../../../services/legal';
 import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 import {
   adminOrderParamsSchema,
@@ -60,6 +66,12 @@ import {
   tagBodySchema,
   tagPatchBodySchema,
 } from '../../../schemas/admin';
+import {
+  adminLegalDocumentsQuerySchema,
+  createLegalDocumentBodySchema,
+  legalDocumentIdParamsSchema,
+  updateLegalDocumentBodySchema,
+} from '../../../schemas/legal';
 import {
   parseProductImageUpload,
   readProductImageFiles,
@@ -252,6 +264,36 @@ adminRouter.patch(
     const body = readValidatedBody<Parameters<typeof updateTag>[1]>(req);
     const result = await updateTag(params.id, body);
     return res.send_ok('Tag updated', result);
+  },
+);
+
+adminRouter.get('/legal', validateQuery(adminLegalDocumentsQuerySchema, 'admin legal filters'), async (req, res) => {
+  const query = readValidatedQuery<Parameters<typeof listAdminLegalDocuments>[0]>(req);
+  const result = await listAdminLegalDocuments(query);
+  return res.send_ok('Legal documents retrieved', result);
+});
+
+adminRouter.get('/legal/:id', validateParams(legalDocumentIdParamsSchema, 'legal document id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof legalDocumentIdParamsSchema>>(req);
+  const result = await getAdminLegalDocumentById(params.id);
+  return res.send_ok('Legal document retrieved', result);
+});
+
+adminRouter.post('/legal', validateBody(createLegalDocumentBodySchema, 'legal document creation'), async (req, res) => {
+  const body = readValidatedBody<Parameters<typeof createLegalDocument>[0]>(req);
+  const result = await createLegalDocument(body);
+  return res.send_created('Legal document created', result);
+});
+
+adminRouter.patch(
+  '/legal/:id',
+  validateParams(legalDocumentIdParamsSchema, 'legal document id'),
+  validateBody(updateLegalDocumentBodySchema, 'legal document update'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof legalDocumentIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof publishLegalDocumentVersionFromExisting>[1]>(req);
+    const result = await publishLegalDocumentVersionFromExisting(params.id, body);
+    return res.send_ok('Legal document published', result);
   },
 );
 
