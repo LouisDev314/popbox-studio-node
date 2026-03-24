@@ -1,10 +1,9 @@
-CREATE TYPE legal_document_type AS ENUM ('faq', 'contact', 'shipping_returns', 'terms', 'privacy');
+CREATE TYPE legal_document_type AS ENUM ('faq', 'shipping_returns', 'terms', 'privacy');
 
 CREATE TABLE public.legal_documents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   type legal_document_type NOT NULL,
-  title varchar(255) NOT NULL,
-  content jsonb NOT NULL,
+  content text NOT NULL,
   version integer NOT NULL,
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),

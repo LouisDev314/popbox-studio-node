@@ -4,20 +4,23 @@ import { legalDocuments } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 
-type LegalDocumentType = 'faq' | 'contact' | 'shipping_returns' | 'terms' | 'privacy';
+type LegalDocumentType = 'faq' | 'shipping_returns' | 'terms' | 'privacy';
 
-type LegalDocumentContentSection = {
-  heading: string;
-  paragraphs: string[];
+const LEGAL_DOCUMENT_TITLES: Record<LegalDocumentType, string> = {
+  faq: 'FAQ',
+  shipping_returns: 'Shipping & Returns',
+  terms: 'Terms of Service',
+  privacy: 'Privacy Policy',
 };
 
 type CreateLegalDocumentInput = {
   type: LegalDocumentType;
-  title: string;
-  content: LegalDocumentContentSection[];
+  content: string;
 };
 
-type UpdateLegalDocumentInput = Partial<Pick<CreateLegalDocumentInput, 'title' | 'content'>>;
+type UpdateLegalDocumentInput = {
+  content: string;
+};
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
@@ -29,6 +32,11 @@ const throwConflictIfNeeded = (error: unknown): never => {
 
   throw error;
 };
+
+const mapLegalDocument = (document: typeof legalDocuments.$inferSelect) => ({
+  ...document,
+  title: LEGAL_DOCUMENT_TITLES[document.type],
+});
 
 const getLegalDocumentByIdOrThrow = async (id: string) => {
   const [document] = await db.select().from(legalDocuments).where(eq(legalDocuments.id, id)).limit(1);
@@ -47,7 +55,7 @@ export const listActiveLegalDocuments = async () => {
     .where(eq(legalDocuments.isActive, true))
     .orderBy(asc(legalDocuments.type));
 
-  return { items };
+  return { items: items.map(mapLegalDocument) };
 };
 
 export const getActiveLegalDocumentByType = async (type: LegalDocumentType) => {
@@ -61,7 +69,7 @@ export const getActiveLegalDocumentByType = async (type: LegalDocumentType) => {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Legal document not found');
   }
 
-  return document;
+  return mapLegalDocument(document);
 };
 
 export const listAdminLegalDocuments = async (filters: { type?: LegalDocumentType }) => {
@@ -71,11 +79,11 @@ export const listAdminLegalDocuments = async (filters: { type?: LegalDocumentTyp
     .where(filters.type ? eq(legalDocuments.type, filters.type) : undefined)
     .orderBy(asc(legalDocuments.type), desc(legalDocuments.version), desc(legalDocuments.createdAt));
 
-  return { items };
+  return { items: items.map(mapLegalDocument) };
 };
 
 export const getAdminLegalDocumentById = async (id: string) => {
-  return getLegalDocumentByIdOrThrow(id);
+  return mapLegalDocument(await getLegalDocumentByIdOrThrow(id));
 };
 
 export const createLegalDocument = async (payload: CreateLegalDocumentInput) => {
@@ -99,7 +107,6 @@ export const createLegalDocument = async (payload: CreateLegalDocumentInput) => 
         .insert(legalDocuments)
         .values({
           type: payload.type,
-          title: payload.title,
           content: payload.content,
           version: nextVersionRow?.nextVersion ?? 1,
           isActive: true,
@@ -110,7 +117,7 @@ export const createLegalDocument = async (payload: CreateLegalDocumentInput) => 
         throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Legal document creation failed');
       }
 
-      return document;
+      return mapLegalDocument(document);
     });
   } catch (error) {
     throwConflictIfNeeded(error);
@@ -140,8 +147,7 @@ export const publishLegalDocumentVersionFromExisting = async (id: string, payloa
         .insert(legalDocuments)
         .values({
           type: source.type,
-          title: payload.title ?? source.title,
-          content: payload.content ?? source.content,
+          content: payload.content,
           version: nextVersionRow?.nextVersion ?? source.version + 1,
           isActive: true,
         })
@@ -151,7 +157,7 @@ export const publishLegalDocumentVersionFromExisting = async (id: string, payloa
         throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Legal document publish failed');
       }
 
-      return document;
+      return mapLegalDocument(document);
     });
   } catch (error) {
     throwConflictIfNeeded(error);

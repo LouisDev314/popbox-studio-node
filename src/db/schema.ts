@@ -52,16 +52,10 @@ export const paymentStatusEnum = pgEnum('payment_status', ['pending', 'paid', 'f
 export const webhookStatusEnum = pgEnum('webhook_status', ['received', 'processed', 'failed']);
 export const legalDocumentTypeEnum = pgEnum('legal_document_type', [
   'faq',
-  'contact',
   'shipping_returns',
   'terms',
   'privacy',
 ]);
-
-export type LegalDocumentContentSection = {
-  heading: string;
-  paragraphs: string[];
-};
 
 const authUsers = authSchema.table('users', {
   id: uuid('id').primaryKey(),
@@ -393,8 +387,7 @@ export const legalDocuments = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     type: legalDocumentTypeEnum('type').notNull(),
-    title: varchar('title', { length: 255 }).notNull(),
-    content: jsonb('content').$type<LegalDocumentContentSection[]>().notNull(),
+    content: text('content').notNull(),
     version: integer('version').notNull(),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAtColumn(),

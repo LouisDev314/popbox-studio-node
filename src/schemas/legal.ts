@@ -1,15 +1,7 @@
 import z from 'zod';
 
-export const legalDocumentTypeSchema = z.enum(['faq', 'contact', 'shipping_returns', 'terms', 'privacy']);
-
-export const legalDocumentContentSectionSchema = z
-  .object({
-    heading: z.string().trim().min(1),
-    paragraphs: z.array(z.string().trim().min(1)).min(1),
-  })
-  .strict();
-
-export const legalDocumentContentSchema = z.array(legalDocumentContentSectionSchema).min(1);
+export const legalDocumentTypeSchema = z.enum(['faq', 'shipping_returns', 'terms', 'privacy']);
+export const legalDocumentContentSchema = z.string().trim().min(1);
 
 export const legalDocumentTypeParamsSchema = z.object({
   type: legalDocumentTypeSchema,
@@ -28,17 +20,12 @@ export const adminLegalDocumentsQuerySchema = z
 export const createLegalDocumentBodySchema = z
   .object({
     type: legalDocumentTypeSchema,
-    title: z.string().trim().min(1),
     content: legalDocumentContentSchema,
   })
   .strict();
 
 export const updateLegalDocumentBodySchema = z
   .object({
-    title: z.string().trim().min(1).optional(),
-    content: legalDocumentContentSchema.optional(),
+    content: legalDocumentContentSchema,
   })
-  .strict()
-  .refine((value) => value.title !== undefined || value.content !== undefined, {
-    message: 'At least one field is required',
-  });
+  .strict();
