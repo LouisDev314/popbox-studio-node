@@ -1,4 +1,4 @@
-import { pg } from '../db';
+import { advisoryLockPg } from '../db';
 
 type AdvisoryLockResult = {
   acquired: boolean;
@@ -8,7 +8,7 @@ type AdvisoryUnlockResult = {
   released: boolean;
 };
 
-type ReservedConnection = Awaited<ReturnType<typeof pg.reserve>>;
+type ReservedConnection = Awaited<ReturnType<typeof advisoryLockPg.reserve>>;
 
 export type AdvisoryLockHandle = {
   connection: ReservedConnection;
@@ -29,7 +29,7 @@ const toBigIntKey = (key: string): bigint => {
 
 export const tryAcquireAdvisoryLock = async (key: string): Promise<AdvisoryLockHandle | null> => {
   const lockKey = toBigIntKey(key);
-  const connection = await pg.reserve();
+  const connection = await advisoryLockPg.reserve();
 
   try {
     const result = await connection.unsafe<AdvisoryLockResult[]>('select pg_try_advisory_lock($1) as acquired', [
