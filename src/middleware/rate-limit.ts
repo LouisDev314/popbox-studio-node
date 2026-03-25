@@ -44,3 +44,9 @@ export const webhookLimiter = createLimiter({
   windowMs: 60 * 1000,
   limit: 600, // effectively not limiting for your scale
 });
+
+export const contactLimiter = createLimiter({
+  windowMs: 10 * 60 * 1000, // 10 min
+  limit: 5, // 5 submissions / 10 min / IP
+  message: 'Too many contact requests, please try again later.',
+});

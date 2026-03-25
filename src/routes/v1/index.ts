@@ -8,6 +8,7 @@ import ordersRouter from './orders-router';
 import adminRouter from './admin-router';
 import checkoutRouter from './checkout-router';
 import legalRouter from './legal-router';
+import contactRouter from './contact-router';
 
 const v1Router: Router = Router();
 
@@ -20,5 +21,6 @@ v1Router.use('/orders', ordersRouter);
 v1Router.use('/legal', legalRouter);
 v1Router.use('/admin', adminRouter);
 v1Router.use('/checkout', checkoutRouter);
+v1Router.use('/contact', contactRouter);
 
 export default v1Router;
