@@ -11,7 +11,7 @@ export const inquiryTypes = [
 export const contactBodySchema = z
   .object({
     firstName: z.string().trim().min(1, 'First name is required.').max(50),
-    lastName: z.string().trim().min(1, 'Last name is required.').max(50).optional(),
+    lastName: z.string().trim().min(1, 'Last name is required.').max(50).optional().or(z.literal('')),
     email: z.email('Invalid email address.'),
     inquiryType: z.enum(inquiryTypes),
     orderNumber: z.string().trim().max(50).optional().or(z.literal('')),
