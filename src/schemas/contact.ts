@@ -11,17 +11,11 @@ export const inquiryTypes = [
 export const contactBodySchema = z
   .object({
     firstName: z.string().trim().min(1, 'First name is required.').max(50),
-
-    lastName: z.string().trim().min(1, 'Last name is required.').max(50),
-
-    email: z.string().trim().toLowerCase().email('Invalid email address.'),
-
+    lastName: z.string().trim().min(1, 'Last name is required.').max(50).optional(),
+    email: z.email('Invalid email address.'),
     inquiryType: z.enum(inquiryTypes),
-
     orderNumber: z.string().trim().max(50).optional().or(z.literal('')),
-
     requestedSeries: z.string().trim().max(120).optional().or(z.literal('')),
-
     message: z.string().trim().min(12, 'Message must be at least 12 characters.').max(1000),
   })
   .superRefine((values, ctx) => {
