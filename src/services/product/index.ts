@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, lt, gt, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { collections, kujiPrizes, productImages, productInventory, productTags, products, tags } from '../../db/schema';
+import { PRODUCT_RECOMMENDATIONS_DEFAULT_LIMIT, PRODUCT_RECOMMENDATIONS_MAX_LIMIT } from '../../constants/product';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
@@ -9,6 +10,8 @@ import {
   ProductCardQueryRow,
   ProductCursor,
   ProductListFilters,
+  ProductRecommendationQueryRow,
+  ProductRecommendationsResult,
   ProductRelationMaps,
   ProductRow,
   ProductSuggestion,
@@ -27,6 +30,14 @@ const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
 };
 
 const sortRows = (sort: ProductSort) => SORT_MAP[sort] ?? SORT_MAP.newest;
+
+const clampRecommendationLimit = (limit?: number) => {
+  if (!limit || Number.isNaN(limit)) {
+    return PRODUCT_RECOMMENDATIONS_DEFAULT_LIMIT;
+  }
+
+  return Math.min(Math.max(limit, 1), PRODUCT_RECOMMENDATIONS_MAX_LIMIT);
+};
 
 const buildCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): SQL | undefined => {
   if (!cursor) return undefined;
@@ -374,6 +385,89 @@ export const getProductBySlug = async (slug: string) => {
 
   const relations = await loadProductRelations([row.id]);
   return mapProduct(row, relations);
+};
+
+export const getProductRecommendationsBySlug = async (
+  slug: string,
+  limit?: number,
+): Promise<ProductRecommendationsResult> => {
+  const safeLimit = clampRecommendationLimit(limit);
+  const [sourceProduct] = await db
+    .select({
+      id: products.id,
+      collectionId: products.collectionId,
+      productType: products.productType,
+      priceCents: products.priceCents,
+      currency: products.currency,
+    })
+    .from(products)
+    .where(and(eq(products.slug, slug), eq(products.status, 'active')))
+    .limit(1);
+
+  if (!sourceProduct) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Product not found');
+  }
+
+  const recommendationRows = (await db.execute(sql<ProductRecommendationQueryRow>`
+    WITH source_tags AS (
+      SELECT ${productTags.tagId} AS tag_id
+      FROM ${productTags}
+      WHERE ${productTags.productId} = ${sourceProduct.id}::uuid
+    ),
+    tag_overlap AS (
+      SELECT ${productTags.productId} AS product_id,
+        COUNT(*)::int AS shared_tag_count
+      FROM ${productTags}
+      INNER JOIN source_tags
+        ON source_tags.tag_id = ${productTags.tagId}
+      WHERE ${productTags.productId} <> ${sourceProduct.id}::uuid
+      GROUP BY ${productTags.productId}
+    )
+    SELECT
+      p.id AS "id",
+      (
+        CASE
+          WHEN ${sourceProduct.collectionId}::uuid IS NOT NULL AND p.collection_id = ${sourceProduct.collectionId}::uuid
+            THEN 40
+          ELSE 0
+        END +
+        COALESCE(tag_overlap.shared_tag_count, 0) * 15 +
+        CASE
+          WHEN p.product_type = ${sourceProduct.productType} THEN 10
+          ELSE 0
+        END +
+        CASE
+          WHEN COALESCE(inventory.on_hand - inventory.reserved, 0) > 0 THEN 8
+          ELSE 0
+        END +
+        CASE
+          WHEN p.currency = ${sourceProduct.currency}
+            AND ABS(p.price_cents - ${sourceProduct.priceCents}) <= GREATEST(500, FLOOR(${sourceProduct.priceCents} * 0.2))
+            THEN 5
+          ELSE 0
+        END
+      )::float8 AS "score",
+      (COALESCE(inventory.on_hand - inventory.reserved, 0) > 0) AS "inStock"
+    FROM ${products} AS p
+    LEFT JOIN ${productInventory} AS inventory
+      ON inventory.product_id = p.id
+    LEFT JOIN tag_overlap
+      ON tag_overlap.product_id = p.id
+    WHERE p.status = 'active'
+      AND p.id <> ${sourceProduct.id}::uuid
+    ORDER BY "score" DESC, "inStock" DESC, p.created_at DESC, p.id DESC
+    LIMIT ${safeLimit}
+  `)) as ProductRecommendationQueryRow[];
+
+  const items = await getProductCardsByIds(recommendationRows.map((row) => row.id));
+
+  return {
+    items,
+    meta: {
+      count: items.length,
+      limit: safeLimit,
+    },
+  };
 };
 
 export const listProducts = async (filters: ProductListFilters) => {

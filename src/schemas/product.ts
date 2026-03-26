@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PRODUCT_RECOMMENDATIONS_MAX_LIMIT } from '../constants/product';
 
 export const listProductsQuerySchema = z
   .object({
@@ -14,3 +15,9 @@ export const listProductsQuerySchema = z
 export const productSlugParamsSchema = z.object({
   slug: z.string().min(1),
 });
+
+export const productRecommendationsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(PRODUCT_RECOMMENDATIONS_MAX_LIMIT).optional(),
+  })
+  .strict();

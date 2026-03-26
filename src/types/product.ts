@@ -97,3 +97,17 @@ export type ProductSuggestionQueryRow = {
   currency: string;
   imageStorageKey: string | null;
 };
+
+export type ProductRecommendationQueryRow = {
+  id: string;
+  score: number;
+  inStock: boolean;
+};
+
+export type ProductRecommendationsResult = {
+  items: ProductCard[];
+  meta: {
+    count: number;
+    limit: number;
+  };
+};
