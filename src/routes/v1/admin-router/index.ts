@@ -36,10 +36,14 @@ import {
   updateShipment,
 } from '../../../services/orders';
 import {
+  createFaqItem,
   createLegalDocument,
+  deleteFaqItem,
   getAdminLegalDocumentById,
+  listAdminFaqItems,
   listAdminLegalDocuments,
   publishLegalDocumentVersionFromExisting,
+  updateFaqItem,
 } from '../../../services/legal';
 import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 import {
@@ -68,8 +72,11 @@ import {
 } from '../../../schemas/admin';
 import {
   adminLegalDocumentsQuerySchema,
+  createFaqItemBodySchema,
   createLegalDocumentBodySchema,
+  faqItemIdParamsSchema,
   legalDocumentIdParamsSchema,
+  updateFaqItemBodySchema,
   updateLegalDocumentBodySchema,
 } from '../../../schemas/legal';
 import {
@@ -271,6 +278,35 @@ adminRouter.get('/legal', validateQuery(adminLegalDocumentsQuerySchema, 'admin l
   const query = readValidatedQuery<Parameters<typeof listAdminLegalDocuments>[0]>(req);
   const result = await listAdminLegalDocuments(query);
   return res.send_ok('Legal documents retrieved', result);
+});
+
+adminRouter.get('/legal/faq', async (_req, res) => {
+  const result = await listAdminFaqItems();
+  return res.send_ok('FAQ items retrieved', result);
+});
+
+adminRouter.post('/legal/faq', validateBody(createFaqItemBodySchema, 'faq item creation'), async (req, res) => {
+  const body = readValidatedBody<Parameters<typeof createFaqItem>[0]>(req);
+  const result = await createFaqItem(body);
+  return res.send_created('FAQ item created', result);
+});
+
+adminRouter.patch(
+  '/legal/faq/:id',
+  validateParams(faqItemIdParamsSchema, 'faq item id'),
+  validateBody(updateFaqItemBodySchema, 'faq item update'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof faqItemIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateFaqItem>[1]>(req);
+    const result = await updateFaqItem(params.id, body);
+    return res.send_ok('FAQ item updated', result);
+  },
+);
+
+adminRouter.delete('/legal/faq/:id', validateParams(faqItemIdParamsSchema, 'faq item id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof faqItemIdParamsSchema>>(req);
+  const result = await deleteFaqItem(params.id);
+  return res.send_ok('FAQ item deleted', result);
 });
 
 adminRouter.get('/legal/:id', validateParams(legalDocumentIdParamsSchema, 'legal document id'), async (req, res) => {

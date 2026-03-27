@@ -1,13 +1,13 @@
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { legalDocuments } from '../../db/schema';
+import { faqItems, legalDocuments } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 
-type LegalDocumentType = 'faq' | 'shipping_returns' | 'terms' | 'privacy';
+type LegalDocumentType = 'shipping_returns' | 'terms' | 'privacy';
+type ManagedLegalDocument = Omit<typeof legalDocuments.$inferSelect, 'type'> & { type: LegalDocumentType };
 
 const LEGAL_DOCUMENT_TITLES: Record<LegalDocumentType, string> = {
-  faq: 'FAQ',
   shipping_returns: 'Shipping & Returns',
   terms: 'Terms of Service',
   privacy: 'Privacy Policy',
@@ -22,6 +22,16 @@ type UpdateLegalDocumentInput = {
   content: string;
 };
 
+type CreateFaqItemInput = {
+  question: string;
+  answer: string;
+  category?: string | null;
+  sortOrder?: number;
+  isPublished?: boolean;
+};
+
+type UpdateFaqItemInput = Partial<CreateFaqItemInput>;
+
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
 
@@ -33,10 +43,22 @@ const throwConflictIfNeeded = (error: unknown): never => {
   throw error;
 };
 
-const mapLegalDocument = (document: typeof legalDocuments.$inferSelect) => ({
-  ...document,
-  title: LEGAL_DOCUMENT_TITLES[document.type],
-});
+const assertManagedLegalDocument = (document: typeof legalDocuments.$inferSelect): ManagedLegalDocument => {
+  if (document.type === 'faq') {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Legal document not found');
+  }
+
+  return document as ManagedLegalDocument;
+};
+
+const mapLegalDocument = (document: typeof legalDocuments.$inferSelect) => {
+  const managedDocument = assertManagedLegalDocument(document);
+
+  return {
+    ...managedDocument,
+    title: LEGAL_DOCUMENT_TITLES[managedDocument.type],
+  };
+};
 
 const getLegalDocumentByIdOrThrow = async (id: string) => {
   const [document] = await db.select().from(legalDocuments).where(eq(legalDocuments.id, id)).limit(1);
@@ -48,11 +70,21 @@ const getLegalDocumentByIdOrThrow = async (id: string) => {
   return document;
 };
 
+const getFaqItemByIdOrThrow = async (id: string) => {
+  const [item] = await db.select().from(faqItems).where(eq(faqItems.id, id)).limit(1);
+
+  if (!item) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'FAQ item not found');
+  }
+
+  return item;
+};
+
 export const listActiveLegalDocuments = async () => {
   const items = await db
     .select()
     .from(legalDocuments)
-    .where(eq(legalDocuments.isActive, true))
+    .where(and(eq(legalDocuments.isActive, true), ne(legalDocuments.type, 'faq')))
     .orderBy(asc(legalDocuments.type));
 
   return { items: items.map(mapLegalDocument) };
@@ -76,7 +108,7 @@ export const listAdminLegalDocuments = async (filters: { type?: LegalDocumentTyp
   const items = await db
     .select()
     .from(legalDocuments)
-    .where(filters.type ? eq(legalDocuments.type, filters.type) : undefined)
+    .where(and(ne(legalDocuments.type, 'faq'), filters.type ? eq(legalDocuments.type, filters.type) : undefined))
     .orderBy(asc(legalDocuments.type), desc(legalDocuments.version), desc(legalDocuments.createdAt));
 
   return { items: items.map(mapLegalDocument) };
@@ -125,7 +157,7 @@ export const createLegalDocument = async (payload: CreateLegalDocumentInput) => 
 };
 
 export const publishLegalDocumentVersionFromExisting = async (id: string, payload: UpdateLegalDocumentInput) => {
-  const source = await getLegalDocumentByIdOrThrow(id);
+  const source = assertManagedLegalDocument(await getLegalDocumentByIdOrThrow(id));
 
   try {
     return await db.transaction(async (tx) => {
@@ -162,4 +194,70 @@ export const publishLegalDocumentVersionFromExisting = async (id: string, payloa
   } catch (error) {
     throwConflictIfNeeded(error);
   }
+};
+
+export const listPublishedFaqItems = async () => {
+  const items = await db
+    .select()
+    .from(faqItems)
+    .where(eq(faqItems.isPublished, true))
+    .orderBy(asc(faqItems.sortOrder), asc(faqItems.createdAt), asc(faqItems.id));
+
+  return { items };
+};
+
+export const listAdminFaqItems = async () => {
+  const items = await db.select().from(faqItems).orderBy(asc(faqItems.sortOrder), asc(faqItems.createdAt), asc(faqItems.id));
+  return { items };
+};
+
+export const createFaqItem = async (payload: CreateFaqItemInput) => {
+  const [item] = await db
+    .insert(faqItems)
+    .values({
+      question: payload.question,
+      answer: payload.answer,
+      category: payload.category ?? null,
+      sortOrder: payload.sortOrder ?? 0,
+      isPublished: payload.isPublished ?? false,
+    })
+    .returning();
+
+  if (!item) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'FAQ item creation failed');
+  }
+
+  return item;
+};
+
+export const updateFaqItem = async (id: string, payload: UpdateFaqItemInput) => {
+  const existing = await getFaqItemByIdOrThrow(id);
+
+  const [item] = await db
+    .update(faqItems)
+    .set({
+      question: payload.question ?? existing.question,
+      answer: payload.answer ?? existing.answer,
+      category: payload.category === undefined ? existing.category : payload.category,
+      sortOrder: payload.sortOrder ?? existing.sortOrder,
+      isPublished: payload.isPublished ?? existing.isPublished,
+    })
+    .where(eq(faqItems.id, id))
+    .returning();
+
+  if (!item) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'FAQ item update failed');
+  }
+
+  return item;
+};
+
+export const deleteFaqItem = async (id: string) => {
+  await getFaqItemByIdOrThrow(id);
+  await db.delete(faqItems).where(eq(faqItems.id, id));
+
+  return {
+    id,
+    deleted: true,
+  };
 };

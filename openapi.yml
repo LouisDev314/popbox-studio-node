@@ -103,7 +103,7 @@ paths:
     get:
       tags: [Legal]
       summary: List active legal documents
-      description: Returns the active version of each legal document type.
+      description: Returns the active version of each non-FAQ legal document type.
       responses:
         '200':
           description: Legal documents retrieved
@@ -118,11 +118,30 @@ paths:
                         $ref: '#/components/schemas/LegalDocumentList'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal/faq:
+    get:
+      tags: [Legal]
+      summary: List published FAQ items
+      description: Returns published FAQ items ordered by sort order, created time, and id.
+      responses:
+        '200':
+          description: FAQ items retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItemList'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/legal/{type}:
     get:
       tags: [Legal]
       summary: Get active legal document by type
-      description: Returns the active version for a single legal document type.
+      description: Returns the active version for a single non-FAQ legal document type.
       parameters:
         - name: type
           in: path
@@ -700,7 +719,7 @@ paths:
     get:
       tags: [Admin Legal]
       summary: List legal document versions
-      description: Returns all legal document versions sorted by type and descending version.
+      description: Returns all non-FAQ legal document versions sorted by type and descending version.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -733,7 +752,7 @@ paths:
     post:
       tags: [Admin Legal]
       summary: Create legal document version
-      description: Creates the first or next active version for a legal document type.
+      description: Creates the first or next active version for a non-FAQ legal document type.
       security:
         - AdminBearerAuth: []
       requestBody:
@@ -764,11 +783,152 @@ paths:
           $ref: '#/components/responses/ConflictError'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/faq:
+    get:
+      tags: [Admin Legal]
+      summary: List FAQ items
+      description: Returns all FAQ items ordered by sort order, created time, and id.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: FAQ items retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItemList'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Legal]
+      summary: Create FAQ item
+      description: Creates a new FAQ item for admin management.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminFaqCreate'
+      responses:
+        '201':
+          description: FAQ item created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItem'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/faq/{id}:
+    patch:
+      tags: [Admin Legal]
+      summary: Update FAQ item
+      description: Updates an existing FAQ item.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: FAQ item UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminFaqUpdate'
+      responses:
+        '200':
+          description: FAQ item updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItem'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Admin Legal]
+      summary: Delete FAQ item
+      description: Deletes an existing FAQ item.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: FAQ item UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: FAQ item deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            format: uuid
+                          deleted:
+                            type: boolean
+                        required: [id, deleted]
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/legal/{id}:
     get:
       tags: [Admin Legal]
       summary: Get legal document version by id
-      description: Returns an exact stored legal document version.
+      description: Returns an exact stored non-FAQ legal document version.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -802,7 +962,7 @@ paths:
     patch:
       tags: [Admin Legal]
       summary: Publish new legal document version
-      description: Creates a new active legal document version from an existing version.
+      description: Creates a new active non-FAQ legal document version from an existing version.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -1976,7 +2136,7 @@ components:
       required: [received, duplicate]
     LegalDocumentType:
       type: string
-      enum: [faq, shipping_returns, terms, privacy]
+      enum: [shipping_returns, terms, privacy]
     LegalDocument:
       type: object
       properties:
@@ -2009,6 +2169,38 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LegalDocument'
+      required: [items]
+    FaqItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isPublished:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, question, answer, sortOrder, isPublished, createdAt, updatedAt]
+    FaqItemList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FaqItem'
       required: [items]
     CollectionSummary:
       type: object
@@ -2769,6 +2961,39 @@ components:
         content:
           type: string
       required: [content]
+      additionalProperties: false
+    AdminFaqCreate:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+        isPublished:
+          type: boolean
+      required: [question, answer]
+      additionalProperties: false
+    AdminFaqUpdate:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+        isPublished:
+          type: boolean
       additionalProperties: false
     AdminProductCreate:
       type: object

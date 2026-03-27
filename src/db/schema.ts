@@ -404,6 +404,25 @@ export const legalDocuments = pgTable(
   ],
 );
 
+export const faqItems = pgTable(
+  'faq_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    question: text('question').notNull(),
+    answer: text('answer').notNull(),
+    category: varchar('category', { length: 120 }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isPublished: boolean('is_published').notNull().default(false),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    index('faq_items_published_sort_idx').on(table.isPublished, table.sortOrder, table.createdAt, table.id),
+    index('faq_items_category_sort_idx').on(table.category, table.sortOrder, table.createdAt, table.id),
+    check('faq_items_sort_order_check', sql`${table.sortOrder} >= 0`),
+  ],
+);
+
 export const paymentRefunds = pgTable(
   'payment_refunds',
   {
