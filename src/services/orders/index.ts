@@ -9,12 +9,17 @@ import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import logger from '../../utils/logger';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
-import { sendShipmentEmail } from '../notifications';
+import { sendPackedEmail, sendRefundEmail, sendShipmentEmail } from '../notifications';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
-import { OrdersCursor } from '../../types/order';
-import { releaseReservationsForOrder, sendOrderConfirmationEmailForOrder } from '../checkout/helpers';
+import type { OrderDetailView, OrdersCursor } from '../../types/order';
+import {
+  isPlaceholderCustomerEmail,
+  normalizeEmail,
+  releaseReservationsForOrder,
+  sendOrderConfirmationEmailForOrder,
+} from '../checkout/helpers';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
 const ADMIN_MUTABLE_ORDER_STATUSES = new Set<OrderStatus>(['packed', 'shipped', 'cancelled']);
@@ -62,15 +67,123 @@ const loadLockedOrder = async (
   return lockedOrder;
 };
 
+const normalizeRefundReason = (reason: string | null | undefined) => {
+  const trimmed = reason?.trim();
+  return trimmed ? trimmed : null;
+};
+
+const resolveNullableTextPatch = (input: string | null | undefined, currentValue: string | null) => {
+  return input === undefined ? currentValue : input;
+};
+
+const resolveNullableDatePatch = (input: string | null | undefined, currentValue: Date | null) => {
+  if (input === undefined) {
+    return currentValue;
+  }
+
+  return input ? new Date(input) : null;
+};
+
+const areDatesEqual = (left: Date | null, right: Date | null) => left?.getTime() === right?.getTime();
+
+const hasShipmentChanged = (
+  currentShipment: typeof shipments.$inferSelect | undefined,
+  nextShipment: {
+    carrierName: string | null;
+    trackingNumber: string | null;
+    trackingUrl: string | null;
+    shippedAt: Date | null;
+    deliveredAt: Date | null;
+  },
+) => {
+  if (!currentShipment) {
+    return true;
+  }
+
+  return (
+    currentShipment.carrierName !== nextShipment.carrierName ||
+    currentShipment.trackingNumber !== nextShipment.trackingNumber ||
+    currentShipment.trackingUrl !== nextShipment.trackingUrl ||
+    !areDatesEqual(currentShipment.shippedAt, nextShipment.shippedAt) ||
+    !areDatesEqual(currentShipment.deliveredAt, nextShipment.deliveredAt)
+  );
+};
+
+const getDeliverableOrderEmail = (email: string) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail || isPlaceholderCustomerEmail(normalizedEmail)) {
+    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Order does not have a deliverable customer email');
+  }
+
+  return normalizedEmail;
+};
+
+const sendOrderLifecycleEmailSafely = async (params: {
+  orderId: string;
+  action: 'packed' | 'shipment' | 'refund';
+  detail: OrderDetailView;
+  metadata?: Record<string, unknown>;
+  send: (email: string, orderUrl: string) => Promise<void>;
+}) => {
+  let email: string;
+
+  try {
+    email = getDeliverableOrderEmail(params.detail.customer.email);
+  } catch (error) {
+    logger.warn(
+      {
+        error,
+        action: params.action,
+        orderId: params.orderId,
+        publicId: params.detail.publicId,
+        customerEmail: params.detail.customer.email,
+        ...(params.metadata ?? {}),
+      },
+      'Skipping order lifecycle email because the order has no deliverable customer email',
+    );
+    return;
+  }
+
+  const orderUrl = buildGuestOrderAccessUrl(params.detail.publicId);
+
+  try {
+    await params.send(email, orderUrl);
+    logger.info(
+      {
+        action: params.action,
+        orderId: params.orderId,
+        publicId: params.detail.publicId,
+        email,
+        ...(params.metadata ?? {}),
+      },
+      'Order lifecycle email sent',
+    );
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        action: params.action,
+        orderId: params.orderId,
+        publicId: params.detail.publicId,
+        email,
+        ...(params.metadata ?? {}),
+      },
+      'Order lifecycle email send failed',
+    );
+  }
+};
+
 const buildRefundIdempotencyKey = (params: {
   orderId: string;
   paymentId: string;
-  alreadyRefundedAmountCents: number;
   requestedRefundAmountCents: number;
+  requestedReason: string | null;
 }) => {
+  // Keep identical admin refund requests stable across simple retries.
   return createHash('sha256')
     .update(
-      `${params.orderId}:${params.paymentId}:${params.alreadyRefundedAmountCents}:${params.requestedRefundAmountCents}:stripe-refund`,
+      `${params.orderId}:${params.paymentId}:${params.requestedRefundAmountCents}:${params.requestedReason ?? ''}:stripe-refund`,
     )
     .digest('hex');
 };
@@ -84,9 +197,11 @@ const upsertRefundRecord = async (
     paymentId: string;
     refund: Stripe.Refund;
     idempotencyKey?: string | null;
+    requestedReason?: string | null;
   },
 ) => {
   const normalizedStatus = normalizeStripeRefundStatus(params.refund.status);
+  const refundReason = normalizeRefundReason(params.requestedReason) ?? params.refund.reason ?? null;
 
   await tx
     .insert(paymentRefunds)
@@ -98,7 +213,7 @@ const upsertRefundRecord = async (
       amountCents: params.refund.amount,
       currency: (params.refund.currency ?? 'cad').toUpperCase(),
       status: normalizedStatus,
-      reason: params.refund.reason ?? null,
+      reason: refundReason,
       providerCreatedAt: new Date(params.refund.created * 1000),
       rawResponse: params.refund as unknown as Record<string, unknown>,
     })
@@ -109,7 +224,7 @@ const upsertRefundRecord = async (
         amountCents: params.refund.amount,
         currency: (params.refund.currency ?? 'cad').toUpperCase(),
         status: normalizedStatus,
-        reason: params.refund.reason ?? null,
+        reason: refundReason,
         providerCreatedAt: new Date(params.refund.created * 1000),
         rawResponse: params.refund as unknown as Record<string, unknown>,
         updatedAt: new Date(),
@@ -357,6 +472,44 @@ export const resendAdminOrderConfirmation = async (orderId: string, adminUserId?
   return result;
 };
 
+export const markOrderPacked = async (orderId: string) => {
+  await withOrderActionLock(orderId, 'mark packed', async () => {
+    await db.transaction(async (tx) => {
+      const order = await loadLockedOrder(tx, orderId);
+
+      if (order.status !== 'paid') {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be packed');
+      }
+
+      assertOrderStatusTransition(order.status, 'packed');
+
+      await tx
+        .update(orders)
+        .set({
+          status: 'packed',
+        })
+        .where(eq(orders.id, orderId));
+    });
+  });
+
+  const detail = await getOrderDetailById(orderId);
+
+  await sendOrderLifecycleEmailSafely({
+    orderId,
+    action: 'packed',
+    detail,
+    send: (email, orderUrl) =>
+      sendPackedEmail({
+        email,
+        firstName: detail.customer.firstName,
+        orderPublicId: detail.publicId,
+        orderUrl,
+      }),
+  });
+
+  return detail;
+};
+
 export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
   if (!ADMIN_MUTABLE_ORDER_STATUSES.has(nextStatus)) {
     throw new Exception(HttpStatusCode.CONFLICT, `Admins cannot set orders to ${nextStatus}`);
@@ -369,16 +522,16 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
     );
   }
 
-  const [updated] = await withOrderActionLock(orderId, 'admin status update', async () =>
-    db.transaction(async (tx) => {
+  if (nextStatus === 'packed') {
+    return markOrderPacked(orderId);
+  }
+
+  await withOrderActionLock(orderId, 'admin status update', async () => {
+    await db.transaction(async (tx) => {
       const order = await loadLockedOrder(tx, orderId);
 
       if (nextStatus === 'cancelled' && order.status !== 'pending_payment') {
         throw new Exception(HttpStatusCode.CONFLICT, 'Admins can only cancel unpaid orders');
-      }
-
-      if (nextStatus === 'packed' && order.status !== 'paid') {
-        throw new Exception(HttpStatusCode.CONFLICT, 'Only paid orders can be packed');
       }
 
       if (nextStatus === 'shipped' && order.status !== 'packed') {
@@ -396,11 +549,11 @@ export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderS
         updateValues.cancelledAt = new Date();
       }
 
-      return tx.update(orders).set(updateValues).where(eq(orders.id, orderId)).returning();
-    }),
-  );
+      await tx.update(orders).set(updateValues).where(eq(orders.id, orderId));
+    });
+  });
 
-  return updated;
+  return getOrderDetailById(orderId);
 };
 
 export const updateShipment = async (
@@ -413,13 +566,7 @@ export const updateShipment = async (
     shippedAt?: string | null;
   },
 ) => {
-  const shipmentData = {
-    carrierName: payload.carrierName ?? null,
-    trackingNumber: payload.trackingNumber ?? null,
-    trackingUrl: payload.trackingUrl ?? null,
-    shippedAt: payload.shippedAt ? new Date(payload.shippedAt) : new Date(),
-    deliveredAt: payload.deliveredAt ? new Date(payload.deliveredAt) : null,
-  };
+  let shouldSendShipmentEmail = false;
 
   await withOrderActionLock(orderId, 'shipment update', async () => {
     await db.transaction(async (tx) => {
@@ -430,6 +577,23 @@ export const updateShipment = async (
       }
 
       const [existingShipment] = await tx.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1);
+      const shipmentData = {
+        carrierName: resolveNullableTextPatch(payload.carrierName, existingShipment?.carrierName ?? null),
+        trackingNumber: resolveNullableTextPatch(payload.trackingNumber, existingShipment?.trackingNumber ?? null),
+        trackingUrl: resolveNullableTextPatch(payload.trackingUrl, existingShipment?.trackingUrl ?? null),
+        shippedAt: resolveNullableDatePatch(
+          payload.shippedAt,
+          existingShipment?.shippedAt ?? (order.status === 'packed' ? new Date() : null),
+        ),
+        deliveredAt: resolveNullableDatePatch(payload.deliveredAt, existingShipment?.deliveredAt ?? null),
+      };
+
+      if (order.status === 'packed' && !shipmentData.shippedAt) {
+        shipmentData.shippedAt = new Date();
+      }
+
+      shouldSendShipmentEmail = order.status !== 'shipped' || hasShipmentChanged(existingShipment, shipmentData);
+
       if (existingShipment) {
         await tx.update(shipments).set(shipmentData).where(eq(shipments.orderId, orderId));
       } else {
@@ -452,27 +616,37 @@ export const updateShipment = async (
   });
 
   const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
-  try {
-    await sendShipmentEmail({
-      email: detail.customer.email,
-      firstName: detail.customer.firstName,
-      orderPublicId: detail.publicId,
-      orderUrl,
-      carrierName: shipmentData.carrierName,
-      trackingNumber: shipmentData.trackingNumber,
-      trackingUrl: shipmentData.trackingUrl,
+
+  if (shouldSendShipmentEmail && detail.shipment) {
+    const shipment = detail.shipment;
+
+    await sendOrderLifecycleEmailSafely({
+      orderId,
+      action: 'shipment',
+      detail,
+      metadata: {
+        trackingNumber: shipment.trackingNumber,
+      },
+      send: (email, orderUrl) =>
+        sendShipmentEmail({
+          email,
+          firstName: detail.customer.firstName,
+          orderPublicId: detail.publicId,
+          orderUrl,
+          carrierName: shipment.carrierName,
+          trackingNumber: shipment.trackingNumber,
+          trackingUrl: shipment.trackingUrl,
+        }),
     });
-  } catch (emailError) {
-    logger.error({ orderId, emailError }, 'Failed to send shipment email');
   }
 
-  return getOrderDetailById(orderId);
+  return detail;
 };
 
 export const refundOrder = async (orderId: string, amountCents?: number, reason?: string | null) => {
   return withOrderActionLock(orderId, 'refund', async () => {
     const { payment: paymentRow, order: orderRow, orderTickets } = await getRefundContext(orderId);
+    const normalizedReason = normalizeRefundReason(reason);
 
     if (!paymentRow.providerPaymentIntentId) {
       throw new Exception(HttpStatusCode.CONFLICT, 'Stripe payment intent is missing for this order');
@@ -496,15 +670,44 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
     const refundIdempotencyKey = buildRefundIdempotencyKey({
       orderId,
       paymentId: paymentRow.id,
-      alreadyRefundedAmountCents: paymentRow.refundedAmountCents,
       requestedRefundAmountCents,
+      requestedReason: normalizedReason,
     });
 
     if (requestedRefundAmountCents > refundableAmountCents) {
       throw new Exception(HttpStatusCode.CONFLICT, 'Refund amount exceeds the remaining refundable amount');
     }
 
+    const [existingRefund] = await db
+      .select({
+        providerRefundId: paymentRefunds.providerRefundId,
+        status: paymentRefunds.status,
+      })
+      .from(paymentRefunds)
+      .where(eq(paymentRefunds.idempotencyKey, refundIdempotencyKey))
+      .limit(1);
+
+    if (existingRefund && NON_FAILED_REFUND_STATUSES.has(normalizeStripeRefundStatus(existingRefund.status))) {
+      logger.info(
+        {
+          orderId,
+          providerRefundId: existingRefund.providerRefundId,
+          requestedRefundAmountCents,
+        },
+        'Skipping duplicate refund request because the same refund was already created',
+      );
+      return getOrderDetailById(orderId);
+    }
+
     let stripeRefund: Stripe.Refund;
+    let refundSummary:
+      | {
+          refundedAmountCents: number;
+          refundCount: number;
+          isFullyRefunded: boolean;
+          hasRefundDrift: boolean;
+        }
+      | undefined;
     try {
       stripeRefund = await stripe.refunds.create(
         {
@@ -514,6 +717,7 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
             orderId,
             paymentId: paymentRow.id,
             refundIdempotencyKey,
+            ...(normalizedReason ? { adminRefundReason: normalizedReason } : {}),
           },
         },
         {
@@ -560,12 +764,13 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
           paymentId: lockedPayment.id,
           refund: stripeRefund,
           idempotencyKey: refundIdempotencyKey,
+          requestedReason: normalizedReason,
         });
 
-        await syncRefundAggregate(tx, {
+        refundSummary = await syncRefundAggregate(tx, {
           order: lockedOrder,
           payment: lockedPayment,
-          ticketVoidReason: reason,
+          ticketVoidReason: normalizedReason,
         });
       });
     } catch (error) {
@@ -598,7 +803,28 @@ export const refundOrder = async (orderId: string, amountCents?: number, reason?
       );
     }
 
-    return getOrderDetailById(orderId);
+    const detail = await getOrderDetailById(orderId);
+
+    await sendOrderLifecycleEmailSafely({
+      orderId,
+      action: 'refund',
+      detail,
+      metadata: {
+        refundAmountCents: requestedRefundAmountCents,
+      },
+      send: (email, orderUrl) =>
+        sendRefundEmail({
+          email,
+          firstName: detail.customer.firstName,
+          orderPublicId: detail.publicId,
+          orderUrl,
+          amountCents: requestedRefundAmountCents,
+          currency: detail.currency,
+          isFullyRefunded: refundSummary?.isFullyRefunded ?? detail.status === 'refunded',
+        }),
+    });
+
+    return detail;
   });
 };
 

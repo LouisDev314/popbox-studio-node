@@ -8,6 +8,17 @@ const { resendApiKey, resendFromEmail } = getEnvConfig();
 
 const canSendEmail = resend && !!resendApiKey && !!resendFromEmail;
 
+const formatMoney = (amountCents: number, currency: string) => {
+  try {
+    return new Intl.NumberFormat('en-CA', {
+      style: 'currency',
+      currency,
+    }).format(amountCents / 100);
+  } catch {
+    return `${(amountCents / 100).toFixed(2)} ${currency}`;
+  }
+};
+
 const sendEmail = async (params: { emailType: string; subject: string; html: string; to: string }) => {
   if (!canSendEmail) {
     logger.warn(
@@ -127,6 +138,60 @@ export const sendShipmentEmail = async (params: {
         <p>Hi ${displayName},</p>
         <p>Your order is on the way.</p>
         ${trackingBlock}
+        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+      </div>
+    `,
+    to: params.email,
+  });
+};
+
+export const sendPackedEmail = async (params: {
+  email: string;
+  firstName?: string | null;
+  orderPublicId: string;
+  orderUrl: string;
+}) => {
+  const displayName = params.firstName?.trim() || 'there';
+
+  await sendEmail({
+    emailType: 'order_packed',
+    subject: `Your order is being prepared: ${params.orderPublicId}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+        <h1 style="font-size: 22px;">Your order is being packed</h1>
+        <p>Hi ${displayName},</p>
+        <p>We’ve finished payment processing and your order is now being prepared for shipment.</p>
+        <p><strong>Order Number:</strong> ${params.orderPublicId}</p>
+        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+      </div>
+    `,
+    to: params.email,
+  });
+};
+
+export const sendRefundEmail = async (params: {
+  email: string;
+  firstName?: string | null;
+  orderPublicId: string;
+  orderUrl: string;
+  amountCents: number;
+  currency: string;
+  isFullyRefunded: boolean;
+}) => {
+  const displayName = params.firstName?.trim() || 'there';
+  const refundAmount = formatMoney(params.amountCents, params.currency);
+  const refundLabel = params.isFullyRefunded ? 'full refund' : 'refund';
+
+  await sendEmail({
+    emailType: 'order_refund',
+    subject: `Refund processed: ${params.orderPublicId}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+        <h1 style="font-size: 22px;">Your ${refundLabel} has been processed</h1>
+        <p>Hi ${displayName},</p>
+        <p>We’ve processed a refund for your order.</p>
+        <p><strong>Order Number:</strong> ${params.orderPublicId}</p>
+        <p><strong>Refund Amount:</strong> ${refundAmount}</p>
         <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>
     `,
