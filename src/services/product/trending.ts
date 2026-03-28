@@ -40,7 +40,17 @@ const TRENDING_WEIGHTS = {
 type TrendingProductRow = {
   id: string;
   score: number;
-  createdAt: Date;
+  createdAt: Date | string;
+};
+
+const normalizeTrendingCursorTimestamp = (value: TrendingProductRow['createdAt']): Date => {
+  const date = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new TypeError(`Invalid trending cursor timestamp: ${String(value)}`);
+  }
+
+  return date;
 };
 
 const joinOrderStatuses = (values: readonly (typeof TRENDING_PAID_STATUSES)[number][]) =>
@@ -232,7 +242,7 @@ export const listTrendingProductIds = async (
         ? encodeCursor({
             id: lastRow.id,
             score: lastRow.score,
-            createdAt: lastRow.createdAt.toISOString(),
+            createdAt: normalizeTrendingCursorTimestamp(lastRow.createdAt).toISOString(),
           })
         : null,
   };
