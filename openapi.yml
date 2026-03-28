@@ -635,8 +635,9 @@ paths:
       tags: [Admin Products]
       summary: List products (admin)
       description: |
-        Returns a paginated admin view of products. When a status filter is
-        provided, this uses the same cursor semantics as the public product list.
+        Returns a paginated admin view of products with optional status, type,
+        collection, tag, and sort filters. Pagination is applied after the
+        requested filters and sort order.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -647,6 +648,41 @@ paths:
           schema:
             type: string
             enum: [draft, active, archived]
+        - name: type
+          in: query
+          required: false
+          description: Product type to filter by.
+          schema:
+            type: string
+            enum: [standard, kuji]
+        - name: collectionId
+          in: query
+          required: false
+          description: Collection id to filter by.
+          schema:
+            type: string
+            format: uuid
+        - name: tagIds
+          in: query
+          required: false
+          description: |
+            Tag ids to filter by. Matches products that have any selected tag.
+            Accepts repeated query params (`tagIds=id1&tagIds=id2`) and
+            comma-separated values (`tagIds=id1,id2`).
+          schema:
+            type: array
+            items:
+              type: string
+              format: uuid
+          style: form
+          explode: true
+        - name: sort
+          in: query
+          required: false
+          description: Admin list sort order.
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc, inventory_desc, inventory_asc]
         - name: cursor
           in: query
           required: false

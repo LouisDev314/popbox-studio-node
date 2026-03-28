@@ -1,13 +1,13 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
 import { DbClient } from '../../types/checkout';
-import { collections, kujiPrizes, productImages, productInventory, products, tags } from '../../db/schema';
+import { collections, kujiPrizes, productImages, productInventory, productTags, products, tags } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
-import { getProductById, listProducts } from '../product';
+import { getProductById } from '../product';
 import { clampLimit } from '../../utils/limit';
 import {
   assertProductExists,
@@ -21,9 +21,126 @@ import {
 import { LAST_ONE_PRIZE_CODE, sanitizeKujiPrizeCodeForStorage } from '../../utils/kuji';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
-type CursorPayload = {
-  createdAt: string;
+type AdminProductListSort = 'updated_desc' | 'updated_asc' | 'inventory_desc' | 'inventory_asc';
+
+type AdminProductListFilters = {
+  status?: 'draft' | 'active' | 'archived';
+  type?: 'standard' | 'kuji';
+  collectionId?: string;
+  tagIds?: string[];
+  sort?: AdminProductListSort;
+  cursor?: string;
+  limit?: number;
+};
+
+type AdminProductCursorPayload = {
   id: string;
+  updatedAt?: string;
+  inventorySortValue?: number;
+};
+
+const DEFAULT_ADMIN_PRODUCT_SORT: AdminProductListSort = 'updated_desc';
+
+const buildAdminInventorySortValue = () => {
+  const kujiRemainingQuantity = sql<number>`COALESCE(
+    (
+      SELECT sum(${kujiPrizes.remainingQuantity})::int
+      FROM ${kujiPrizes}
+      WHERE ${kujiPrizes.productId} = ${products.id}
+        AND UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}
+    ),
+    0
+  )`;
+
+  return sql<number>`CASE
+    WHEN ${products.productType} = 'kuji' THEN ${kujiRemainingQuantity}
+    ELSE GREATEST(COALESCE(${productInventory.onHand}, 0) - COALESCE(${productInventory.reserved}, 0), 0)
+  END`;
+};
+
+const buildAdminProductSortOrder = (sort: AdminProductListSort, inventorySortValue: SQL) => {
+  switch (sort) {
+    case 'updated_asc':
+      return [asc(products.updatedAt), asc(products.id)] as const;
+    case 'inventory_desc':
+      return [desc(inventorySortValue), desc(products.id)] as const;
+    case 'inventory_asc':
+      return [asc(inventorySortValue), asc(products.id)] as const;
+    case 'updated_desc':
+    default:
+      return [desc(products.updatedAt), desc(products.id)] as const;
+  }
+};
+
+const buildAdminProductCursorCondition = (
+  sort: AdminProductListSort,
+  cursor: AdminProductCursorPayload | null,
+  inventorySortValue: SQL,
+) => {
+  if (!cursor || typeof cursor.id !== 'string') {
+    return undefined;
+  }
+
+  switch (sort) {
+    case 'updated_asc': {
+      if (typeof cursor.updatedAt !== 'string') {
+        return undefined;
+      }
+
+      const cursorDate = new Date(cursor.updatedAt);
+
+      if (Number.isNaN(cursorDate.getTime())) {
+        return undefined;
+      }
+
+      return or(
+        gt(products.updatedAt, cursorDate),
+        and(eq(products.updatedAt, cursorDate), gt(products.id, cursor.id)),
+      );
+    }
+
+    case 'updated_desc': {
+      if (typeof cursor.updatedAt !== 'string') {
+        return undefined;
+      }
+
+      const cursorDate = new Date(cursor.updatedAt);
+
+      if (Number.isNaN(cursorDate.getTime())) {
+        return undefined;
+      }
+
+      return or(
+        lt(products.updatedAt, cursorDate),
+        and(eq(products.updatedAt, cursorDate), lt(products.id, cursor.id)),
+      );
+    }
+
+    case 'inventory_asc': {
+      if (typeof cursor.inventorySortValue !== 'number' || Number.isNaN(cursor.inventorySortValue)) {
+        return undefined;
+      }
+
+      return sql`(
+        ${inventorySortValue} > ${cursor.inventorySortValue}
+        OR (${inventorySortValue} = ${cursor.inventorySortValue} AND ${products.id} > ${cursor.id})
+      )`;
+    }
+
+    case 'inventory_desc': {
+      if (typeof cursor.inventorySortValue !== 'number' || Number.isNaN(cursor.inventorySortValue)) {
+        return undefined;
+      }
+
+      return sql`(
+        ${inventorySortValue} < ${cursor.inventorySortValue}
+        OR (${inventorySortValue} = ${cursor.inventorySortValue} AND ${products.id} < ${cursor.id})
+      )`;
+    }
+
+    default:
+      return undefined;
+  }
 };
 
 const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
@@ -76,30 +193,39 @@ const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string)
   });
 };
 
-export const listAdminProducts = async (filters: {
-  status?: 'draft' | 'active' | 'archived';
-  cursor?: string;
-  limit?: number;
-}) => {
+export const listAdminProducts = async (filters: AdminProductListFilters) => {
+  const limit = clampLimit(filters.limit);
+  const sort = filters.sort ?? DEFAULT_ADMIN_PRODUCT_SORT;
+  const cursor = decodeCursor<AdminProductCursorPayload>(filters.cursor);
+  const inventorySortValue = buildAdminInventorySortValue();
+  const conditions: SQL[] = [];
+  const normalizedTagIds = filters.tagIds?.length ? [...new Set(filters.tagIds)] : undefined;
+
   if (filters.status) {
-    const productFilters: Parameters<typeof listProducts>[0] = {
-      status: filters.status,
-    };
-
-    if (filters.cursor) productFilters.cursor = filters.cursor;
-    if (filters.limit !== undefined) productFilters.limit = filters.limit;
-
-    return listProducts(productFilters);
+    conditions.push(eq(products.status, filters.status));
   }
 
-  const limit = clampLimit(filters.limit);
-  const cursor = decodeCursor<CursorPayload>(filters.cursor);
-  const conditions = [];
+  if (filters.type) {
+    conditions.push(eq(products.productType, filters.type));
+  }
 
-  if (cursor) {
-    conditions.push(
-      sql`(${products.createdAt} < ${new Date(cursor.createdAt)} OR (${products.createdAt} = ${new Date(cursor.createdAt)} AND ${products.id} < ${cursor.id}))`,
-    );
+  if (filters.collectionId) {
+    conditions.push(eq(products.collectionId, filters.collectionId));
+  }
+
+  if (normalizedTagIds?.length) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${productTags}
+      WHERE ${productTags.productId} = ${products.id}
+        AND ${inArray(productTags.tagId, normalizedTagIds)}
+    )`);
+  }
+
+  const cursorCondition = buildAdminProductCursorCondition(sort, cursor, inventorySortValue);
+
+  if (cursorCondition) {
+    conditions.push(cursorCondition);
   }
 
   const rows = await db
@@ -107,12 +233,13 @@ export const listAdminProducts = async (filters: {
       product: products,
       collection: collections,
       inventory: productInventory,
+      inventorySortValue,
     })
     .from(products)
     .leftJoin(collections, eq(collections.id, products.collectionId))
     .leftJoin(productInventory, eq(productInventory.productId, products.id))
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(products.createdAt), desc(products.id))
+    .orderBy(...buildAdminProductSortOrder(sort, inventorySortValue))
     .limit(limit + 1);
 
   const pageRows = rows.slice(0, limit);
@@ -147,10 +274,17 @@ export const listAdminProducts = async (filters: {
     })),
     nextCursor:
       rows.length > limit && lastRow
-        ? encodeCursor({
-            id: lastRow.product.id,
-            createdAt: lastRow.product.createdAt.toISOString(),
-          })
+        ? encodeCursor(
+            sort === 'inventory_asc' || sort === 'inventory_desc'
+              ? {
+                  id: lastRow.product.id,
+                  inventorySortValue: lastRow.inventorySortValue,
+                }
+              : {
+                  id: lastRow.product.id,
+                  updatedAt: lastRow.product.updatedAt.toISOString(),
+                },
+          )
         : null,
   };
 };

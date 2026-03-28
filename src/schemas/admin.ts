@@ -6,8 +6,25 @@ export const paginationQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(50).optional(),
 });
 
+const normalizeUuidListQueryParam = (value: unknown) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const rawValues = Array.isArray(value) ? value : [value];
+
+  return rawValues
+    .flatMap((item) => (typeof item === 'string' ? item.split(',') : [item]))
+    .map((item) => (typeof item === 'string' ? item.trim() : item))
+    .filter((item) => typeof item === 'string' && item.length > 0);
+};
+
 export const productListQuerySchema = paginationQuerySchema.extend({
   status: z.enum(['draft', 'active', 'archived']).optional(),
+  type: z.enum(['standard', 'kuji']).optional(),
+  collectionId: z.uuid().optional(),
+  tagIds: z.preprocess(normalizeUuidListQueryParam, z.array(z.uuid()).min(1)).optional(),
+  sort: z.enum(['updated_desc', 'updated_asc', 'inventory_desc', 'inventory_asc']).optional(),
 });
 
 export const productBodySchema = z.object({
