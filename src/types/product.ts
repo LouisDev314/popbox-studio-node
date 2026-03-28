@@ -1,12 +1,13 @@
 import { collections, kujiPrizes, productImages, productInventory, products, tags } from '../db/schema';
 
-export type ProductSort = 'newest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc';
+export type ProductSort = 'newest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc' | 'trending';
 
 export type ProductCursor = {
   id: string;
-  createdAt: string;
-  priceCents: number;
-  name: string;
+  createdAt?: string;
+  priceCents?: number;
+  name?: string;
+  score?: number;
 };
 
 export type ProductListFilters = {

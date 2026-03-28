@@ -20,6 +20,7 @@ import {
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
 import { buildImageUrl } from '../../utils/product';
+import { listTrendingProductIds } from './trending';
 
 const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
   newest: [desc(products.createdAt), desc(products.id)],
@@ -27,6 +28,7 @@ const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
   price_desc: [desc(products.priceCents), desc(products.id)],
   name_asc: [asc(products.name), desc(products.id)],
   name_desc: [desc(products.name), desc(products.id)],
+  trending: [desc(products.createdAt), desc(products.id)],
 };
 
 const sortRows = (sort: ProductSort) => SORT_MAP[sort] ?? SORT_MAP.newest;
@@ -44,27 +46,47 @@ const buildCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): 
 
   switch (sort) {
     case 'price_asc':
+      if (typeof cursor.priceCents !== 'number' || Number.isNaN(cursor.priceCents)) {
+        return undefined;
+      }
+
       return or(
         gt(products.priceCents, cursor.priceCents),
         and(eq(products.priceCents, cursor.priceCents), lt(products.id, cursor.id)),
       );
 
     case 'price_desc':
+      if (typeof cursor.priceCents !== 'number' || Number.isNaN(cursor.priceCents)) {
+        return undefined;
+      }
+
       return or(
         lt(products.priceCents, cursor.priceCents),
         and(eq(products.priceCents, cursor.priceCents), lt(products.id, cursor.id)),
       );
 
     case 'name_asc':
+      if (typeof cursor.name !== 'string') {
+        return undefined;
+      }
+
       return or(gt(products.name, cursor.name), and(eq(products.name, cursor.name), lt(products.id, cursor.id)));
 
     case 'name_desc':
+      if (typeof cursor.name !== 'string') {
+        return undefined;
+      }
+
       return or(lt(products.name, cursor.name), and(eq(products.name, cursor.name), lt(products.id, cursor.id)));
 
     case 'newest': {
+      if (typeof cursor.createdAt !== 'string') {
+        return undefined;
+      }
+
       const cursorDate = new Date(cursor.createdAt);
       if (Number.isNaN(cursorDate.getTime())) {
-        throw new Error('Invalid cursor.createdAt');
+        return undefined;
       }
 
       return or(
@@ -74,7 +96,7 @@ const buildCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): 
     }
 
     default:
-      return lt(products.id, cursor.id);
+      return undefined;
   }
 };
 
@@ -475,6 +497,22 @@ export const listProducts = async (filters: ProductListFilters) => {
   const limit = clampLimit(filters.limit);
   const cursor = decodeCursor<ProductCursor>(filters.cursor);
 
+  if (sort === 'trending') {
+    const trendingPage = await listTrendingProductIds({
+      collection: filters.collection,
+      tag: filters.tag,
+      type: filters.type,
+      cursor,
+      limit,
+      excludeUnavailable: false,
+    });
+
+    return {
+      items: await getProductCardsByIds(trendingPage.ids),
+      nextCursor: trendingPage.nextCursor,
+    };
+  }
+
   const conditions: SQL[] = [eq(products.status, filters.status ?? 'active')];
 
   if (filters.collection) {
@@ -522,11 +560,22 @@ export const listProducts = async (filters: ProductListFilters) => {
     items: await getProductCardsByIds(pageRows.map((row) => row.id)),
     nextCursor:
       hasMore && lastItem
-        ? encodeCursor({
-            id: lastItem.id,
-            createdAt: lastItem.createdAt?.toISOString() ?? null,
-            priceCents: lastItem.priceCents,
-          })
+        ? encodeCursor(
+            sort === 'price_asc' || sort === 'price_desc'
+              ? {
+                  id: lastItem.id,
+                  priceCents: lastItem.priceCents,
+                }
+              : sort === 'name_asc' || sort === 'name_desc'
+                ? {
+                    id: lastItem.id,
+                    name: lastItem.name,
+                  }
+                : {
+                    id: lastItem.id,
+                    createdAt: lastItem.createdAt.toISOString(),
+                  },
+          )
         : null,
   };
 };

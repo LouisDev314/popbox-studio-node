@@ -3,9 +3,10 @@ import { db } from '../../db';
 import { collections, products } from '../../db/schema';
 import { HOMEPAGE_LIMIT } from '../../constants/pagination';
 import { getProductCardsByIds } from '../product';
+import { getTrendingProductIds } from '../product/trending';
 
 export const getHomepageData = async () => {
-  const [featuredProducts, allProducts] = await Promise.all([
+  const [featuredProducts, trendingIds, allProducts] = await Promise.all([
     db
       .select({ id: products.id })
       .from(products)
@@ -20,6 +21,10 @@ export const getHomepageData = async () => {
       )
       .orderBy(desc(products.createdAt), desc(products.id))
       .limit(HOMEPAGE_LIMIT),
+    getTrendingProductIds({
+      limit: HOMEPAGE_LIMIT,
+      excludeUnavailable: true,
+    }),
     db
       .select({ id: products.id })
       .from(products)
@@ -28,11 +33,7 @@ export const getHomepageData = async () => {
       .limit(HOMEPAGE_LIMIT * 2),
   ]);
 
-  // TODO: later replace this with real trending algorithm output
-  const trendingProducts = featuredProducts;
-
   const featuredIds = featuredProducts.map((row) => row.id);
-  const trendingIds = trendingProducts.map((row) => row.id);
   const allProductIds = allProducts.map((row) => row.id);
   const uniqueIds = Array.from(new Set([...featuredIds, ...trendingIds, ...allProductIds]));
   const productCards = await getProductCardsByIds(uniqueIds);

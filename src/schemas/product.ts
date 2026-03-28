@@ -8,7 +8,7 @@ export const listProductsQuerySchema = z
     collection: z.string().optional(),
     tag: z.string().optional(),
     type: z.enum(['standard', 'kuji']).optional(),
-    sort: z.enum(['newest', 'price_asc', 'price_desc', 'name_asc', 'name_desc']).optional(),
+    sort: z.enum(['newest', 'price_asc', 'price_desc', 'name_asc', 'name_desc', 'trending']).optional(),
   })
   .strict();
 
