@@ -1834,6 +1834,9 @@ paths:
       summary: Update order status
       description: |
         Updates an order's status, enforcing allowed transitions and inventory rules.
+        This endpoint does not send shipment emails. Use
+        `/api/v1/admin/orders/{id}/shipment` as the canonical shipping action
+        when fulfillment details should advance the order to `shipped`.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -1884,7 +1887,8 @@ paths:
       summary: Update shipment
       description: |
         Creates or updates shipment details and, if necessary, advances the
-        order status to `shipped` and sends a shipment email.
+        order status to `shipped`. A shipment email is sent only when that
+        request performs the actual transition to `shipped`.
       security:
         - AdminBearerAuth: []
       parameters:

@@ -145,30 +145,6 @@ export const sendShipmentEmail = async (params: {
   });
 };
 
-export const sendPackedEmail = async (params: {
-  email: string;
-  firstName?: string | null;
-  orderPublicId: string;
-  orderUrl: string;
-}) => {
-  const displayName = params.firstName?.trim() || 'there';
-
-  await sendEmail({
-    emailType: 'order_packed',
-    subject: `Your order is being prepared: ${params.orderPublicId}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-        <h1 style="font-size: 22px;">Your order is being packed</h1>
-        <p>Hi ${displayName},</p>
-        <p>We’ve finished payment processing and your order is now being prepared for shipment.</p>
-        <p><strong>Order Number:</strong> ${params.orderPublicId}</p>
-        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
-      </div>
-    `,
-    to: params.email,
-  });
-};
-
 export const sendRefundEmail = async (params: {
   email: string;
   firstName?: string | null;

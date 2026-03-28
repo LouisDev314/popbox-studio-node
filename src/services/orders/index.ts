@@ -9,7 +9,7 @@ import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import logger from '../../utils/logger';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
-import { sendPackedEmail, sendRefundEmail, sendShipmentEmail } from '../notifications';
+import { sendRefundEmail, sendShipmentEmail } from '../notifications';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
@@ -84,31 +84,6 @@ const resolveNullableDatePatch = (input: string | null | undefined, currentValue
   return input ? new Date(input) : null;
 };
 
-const areDatesEqual = (left: Date | null, right: Date | null) => left?.getTime() === right?.getTime();
-
-const hasShipmentChanged = (
-  currentShipment: typeof shipments.$inferSelect | undefined,
-  nextShipment: {
-    carrierName: string | null;
-    trackingNumber: string | null;
-    trackingUrl: string | null;
-    shippedAt: Date | null;
-    deliveredAt: Date | null;
-  },
-) => {
-  if (!currentShipment) {
-    return true;
-  }
-
-  return (
-    currentShipment.carrierName !== nextShipment.carrierName ||
-    currentShipment.trackingNumber !== nextShipment.trackingNumber ||
-    currentShipment.trackingUrl !== nextShipment.trackingUrl ||
-    !areDatesEqual(currentShipment.shippedAt, nextShipment.shippedAt) ||
-    !areDatesEqual(currentShipment.deliveredAt, nextShipment.deliveredAt)
-  );
-};
-
 const getDeliverableOrderEmail = (email: string) => {
   const normalizedEmail = normalizeEmail(email);
 
@@ -121,7 +96,7 @@ const getDeliverableOrderEmail = (email: string) => {
 
 const sendOrderLifecycleEmailSafely = async (params: {
   orderId: string;
-  action: 'packed' | 'shipment' | 'refund';
+  action: 'shipped' | 'refund';
   detail: OrderDetailView;
   metadata?: Record<string, unknown>;
   send: (email: string, orderUrl: string) => Promise<void>;
@@ -172,6 +147,39 @@ const sendOrderLifecycleEmailSafely = async (params: {
       'Order lifecycle email send failed',
     );
   }
+};
+
+const sendOrderShippedEmailSafely = async (params: {
+  orderId: string;
+  detail: OrderDetailView;
+}) => {
+  const shipment = params.detail.shipment;
+
+  await sendOrderLifecycleEmailSafely({
+    orderId: params.orderId,
+    action: 'shipped',
+    detail: params.detail,
+    metadata: {
+      trackingNumber: shipment?.trackingNumber ?? null,
+    },
+    send: (email, orderUrl) => {
+      const shipmentEmailParams = {
+        email,
+        firstName: params.detail.customer.firstName,
+        orderPublicId: params.detail.publicId,
+        orderUrl,
+        ...(shipment
+          ? {
+              carrierName: shipment.carrierName,
+              trackingNumber: shipment.trackingNumber,
+              trackingUrl: shipment.trackingUrl,
+            }
+          : {}),
+      };
+
+      return sendShipmentEmail(shipmentEmailParams);
+    },
+  });
 };
 
 const buildRefundIdempotencyKey = (params: {
@@ -492,22 +500,7 @@ export const markOrderPacked = async (orderId: string) => {
     });
   });
 
-  const detail = await getOrderDetailById(orderId);
-
-  await sendOrderLifecycleEmailSafely({
-    orderId,
-    action: 'packed',
-    detail,
-    send: (email, orderUrl) =>
-      sendPackedEmail({
-        email,
-        firstName: detail.customer.firstName,
-        orderPublicId: detail.publicId,
-        orderUrl,
-      }),
-  });
-
-  return detail;
+  return getOrderDetailById(orderId);
 };
 
 export const updateAdminOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
@@ -566,7 +559,7 @@ export const updateShipment = async (
     shippedAt?: string | null;
   },
 ) => {
-  let shouldSendShipmentEmail = false;
+  let didTransitionToShipped = false;
 
   await withOrderActionLock(orderId, 'shipment update', async () => {
     await db.transaction(async (tx) => {
@@ -592,8 +585,6 @@ export const updateShipment = async (
         shipmentData.shippedAt = new Date();
       }
 
-      shouldSendShipmentEmail = order.status !== 'shipped' || hasShipmentChanged(existingShipment, shipmentData);
-
       if (existingShipment) {
         await tx.update(shipments).set(shipmentData).where(eq(shipments.orderId, orderId));
       } else {
@@ -611,32 +602,18 @@ export const updateShipment = async (
             status: 'shipped',
           })
           .where(eq(orders.id, orderId));
+
+        didTransitionToShipped = true;
       }
     });
   });
 
   const detail = await getOrderDetailById(orderId);
 
-  if (shouldSendShipmentEmail && detail.shipment) {
-    const shipment = detail.shipment;
-
-    await sendOrderLifecycleEmailSafely({
+  if (didTransitionToShipped) {
+    await sendOrderShippedEmailSafely({
       orderId,
-      action: 'shipment',
       detail,
-      metadata: {
-        trackingNumber: shipment.trackingNumber,
-      },
-      send: (email, orderUrl) =>
-        sendShipmentEmail({
-          email,
-          firstName: detail.customer.firstName,
-          orderPublicId: detail.publicId,
-          orderUrl,
-          carrierName: shipment.carrierName,
-          trackingNumber: shipment.trackingNumber,
-          trackingUrl: shipment.trackingUrl,
-        }),
     });
   }
 
