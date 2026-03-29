@@ -157,7 +157,6 @@ Required variables include:
 - `CORS_ORIGIN`
 - `CLIENT_BASE_URL`
 - `ADMIN_BASE_URL` (optional if it should default to `CLIENT_BASE_URL/admin`)
-- `API_BASE_URL` (optional if guest order email links should use a different public API origin; defaults to `CLIENT_BASE_URL`)
 - `DATABASE_URL`
 - `SUPABASE_URL`
 - `SUPABASE_PUBLIC_KEY`
@@ -172,6 +171,8 @@ Required variables include:
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
 - `ORDER_TOKEN_PEPPER`
+
+Apply `supabase/migrations/popbox_supabase_init_schema.sql` to live environments. It defines required auth sync, kuji inventory sync, and search-vector triggers.
 
 ### Run the development server
 

@@ -1,7 +1,6 @@
 import {
   DEFAULT_STRIPE_CHECKOUT_TTL_MS,
-  STRIPE_CHECKOUT_TTL_MAX_MS,
-  STRIPE_CHECKOUT_TTL_MIN_MS,
+  STRIPE_CHECKOUT_TTL_EXACT_MS,
 } from '../constants/checkout';
 
 export const validateStripeCheckoutReservationTtlMs = (ttlMs: number) => {
@@ -13,9 +12,9 @@ export const validateStripeCheckoutReservationTtlMs = (ttlMs: number) => {
     throw new Error('STRIPE_CHECK_SESSION_RESERVATION_TTL must be divisible by 1000 so Stripe and local expiry match');
   }
 
-  if (ttlMs < STRIPE_CHECKOUT_TTL_MIN_MS || ttlMs > STRIPE_CHECKOUT_TTL_MAX_MS) {
+  if (ttlMs !== STRIPE_CHECKOUT_TTL_EXACT_MS) {
     throw new Error(
-      `STRIPE_CHECK_SESSION_RESERVATION_TTL must be between ${STRIPE_CHECKOUT_TTL_MIN_MS} and ${STRIPE_CHECKOUT_TTL_MAX_MS} milliseconds (30 minutes to 24 hours)`,
+      `STRIPE_CHECK_SESSION_RESERVATION_TTL must be exactly ${STRIPE_CHECKOUT_TTL_EXACT_MS} milliseconds (10 minutes)`,
     );
   }
 

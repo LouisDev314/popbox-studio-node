@@ -35,6 +35,10 @@ checkoutRouter.get('/success', validateQuery(successQuerySchema, 'checkout succe
   const query = readValidatedQuery<z.infer<typeof successQuerySchema>>(req);
   const result = await getCheckoutSuccess(query.session_id);
 
+  if (result.pending) {
+    return res.send_accepted('Order payment is still awaiting webhook finalization', result);
+  }
+
   setGuestOrderSessionCookie(res, result.publicId);
   return res.send_ok('Checkout session verified', result);
 });

@@ -23,6 +23,27 @@ import { getCheckoutSessionExpiry } from '../../utils/checkout';
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
+const FINALIZED_CHECKOUT_ORDER_STATUSES = ['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'] as const;
+const isFinalizedCheckoutOrderStatus = (
+  status: (typeof orders.$inferSelect)['status'],
+): status is (typeof FINALIZED_CHECKOUT_ORDER_STATUSES)[number] =>
+  FINALIZED_CHECKOUT_ORDER_STATUSES.some((finalizedStatus) => finalizedStatus === status);
+
+type CheckoutSuccessPendingResult = {
+  pending: true;
+  retryable: true;
+};
+
+type CheckoutSuccessFinalizedResult = {
+  pending: false;
+  publicId: string;
+  orderUrl: string;
+  clientOrderUrl: string;
+  needsAttention: boolean;
+  order: Awaited<ReturnType<typeof getOrderDetailById>>;
+};
+
+export type CheckoutSuccessResult = CheckoutSuccessPendingResult | CheckoutSuccessFinalizedResult;
 
 const reuseCheckoutSessionByIdempotencyKey = async (idempotencyKey: string) => {
   const [existingOrder] = await db
@@ -311,25 +332,40 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Checkout session not found');
   }
 
-  if (session.payment_status !== 'paid' && session.status !== 'complete') {
+  if (session.payment_status !== 'paid') {
     throw new Exception(HttpStatusCode.CONFLICT, 'Checkout session has not been paid yet');
   }
 
   const { orderId } = ensurePaymentSessionMetadata(session);
-  const detail = await getOrderDetailById(orderId);
+  const [order] = await db
+    .select({
+      status: orders.status,
+    })
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
 
-  if (!['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(detail.status)) {
-    throw new Exception(HttpStatusCode.ACCEPTED, 'Order payment is still awaiting webhook finalization');
+  if (!order) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for checkout session');
   }
 
+  if (!isFinalizedCheckoutOrderStatus(order.status)) {
+    return {
+      pending: true,
+      retryable: true,
+    } satisfies CheckoutSuccessPendingResult;
+  }
+
+  const detail = await getOrderDetailById(orderId);
   const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
   const clientOrderUrl = buildClientOrderUrl(detail.publicId);
 
   return {
+    pending: false,
     publicId: detail.publicId,
     orderUrl,
     clientOrderUrl,
     needsAttention: detail.status === 'paid_needs_attention',
     order: detail,
-  };
+  } satisfies CheckoutSuccessFinalizedResult;
 };

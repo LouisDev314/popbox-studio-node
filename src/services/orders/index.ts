@@ -366,8 +366,12 @@ export const revealTicket = async (orderId: string, ticketId: string) => {
       throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
     }
 
-    if (ticket.revealedAt || ticket.voidedAt) {
-      throw new Exception(HttpStatusCode.BAD_REQUEST, 'Ticket is revealed or voided');
+    if (ticket.voidedAt) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Ticket is voided');
+    }
+
+    if (ticket.revealedAt) {
+      return getTicketViewById(orderId, ticketId);
     }
 
     await db

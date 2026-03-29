@@ -99,7 +99,7 @@ export const startBackgroundJobs = () => {
     },
     {
       name: 'cleanupExpiredPendingOrders',
-      schedule: '*/10 * * * *',
+      schedule: '*/2 * * * *',
       lockKey: 'jobs:cleanupExpiredPendingOrders',
       job: cleanupExpiredPendingOrders,
     },

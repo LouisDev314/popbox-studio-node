@@ -1039,6 +1039,24 @@ export const sendOrderConfirmationEmailForOrder = async (
   }
 };
 
+const sendOrderConfirmationEmailBestEffort = async (
+  orderId: string,
+  options: SendOrderConfirmationEmailForOrderOptions = {},
+) => {
+  try {
+    await sendOrderConfirmationEmailForOrder(orderId, options);
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        orderId,
+        trigger: options.trigger ?? 'checkout_finalize',
+      },
+      'Order confirmation email failed after checkout finalization; manual resend may be required',
+    );
+  }
+};
+
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
   const hydratedSession = session.id ? await stripe.checkout.sessions.retrieve(session.id) : session;
   const { orderId } = ensurePaymentSessionMetadata(hydratedSession);
@@ -1154,7 +1172,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
-      await sendOrderConfirmationEmailForOrder(orderId);
+      await sendOrderConfirmationEmailBestEffort(orderId);
       const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
@@ -1201,7 +1219,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     throw error;
   }
 
-  await sendOrderConfirmationEmailForOrder(orderId);
+  await sendOrderConfirmationEmailBestEffort(orderId);
 
   const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
