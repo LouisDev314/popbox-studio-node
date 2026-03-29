@@ -1,5 +1,6 @@
 import {
   DEFAULT_STRIPE_CHECKOUT_TTL_MS,
+  STRIPE_CHECKOUT_MIN_EXPIRES_IN_SECONDS,
   STRIPE_CHECKOUT_TTL_EXACT_MS,
 } from '../constants/checkout';
 
@@ -31,12 +32,18 @@ export const parseStripeCheckoutReservationTtlMs = (rawValue: string | undefined
 
 export const getCheckoutSessionExpiry = (ttlMs: number, now = new Date()) => {
   const validatedTtlMs = validateStripeCheckoutReservationTtlMs(ttlMs);
-  const expiresAtMs = now.getTime() + validatedTtlMs;
-  const stripeExpiresAt = Math.floor(expiresAtMs / 1000);
+  const reservationExpiresAtMs = now.getTime() + validatedTtlMs;
+  const minimumStripeExpiresAt = Math.ceil(
+    (now.getTime() + STRIPE_CHECKOUT_MIN_EXPIRES_IN_SECONDS * 1000) / 1000,
+  );
+  const stripeExpiresAt = Math.max(
+    Math.ceil(reservationExpiresAtMs / 1000),
+    minimumStripeExpiresAt,
+  );
 
   return {
-    expiresAt: new Date(stripeExpiresAt * 1000),
+    reservationExpiresAt: new Date(reservationExpiresAtMs),
+    reservationTtlSeconds: validatedTtlMs / 1000,
     stripeExpiresAt,
-    ttlSeconds: validatedTtlMs / 1000,
   };
 };

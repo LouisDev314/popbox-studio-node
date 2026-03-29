@@ -97,7 +97,9 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
 
   const normalizedItems = normalizeItems(input.items);
   const guestAccessTokenHash = hashGuestAccessToken(createGuestAccessToken());
-  const { expiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(getEnvConfig().stripeCheckoutSessionReservationTtl);
+  const { reservationExpiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(
+    getEnvConfig().stripeCheckoutSessionReservationTtl,
+  );
   const publicId = createPublicId('PBX');
   const shippingCents = getEnvConfig().stripeShippingRateCents;
 
@@ -182,7 +184,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
           productId: item.productId,
           quantity: item.quantity,
           status: 'active',
-          expiresAt,
+          expiresAt: reservationExpiresAt,
         });
 
         await tx
