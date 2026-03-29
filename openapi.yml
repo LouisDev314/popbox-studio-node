@@ -372,8 +372,9 @@ paths:
       tags: [Orders]
       summary: Exchange guest order access token
       description: |
-        Validates a guest order access token provided as a query parameter, header,
-        or existing session cookie, then redirects to the client order URL.
+        Bootstrap route for guest order access. Validates a guest order access token
+        provided as a query parameter or header, establishes the guest order session
+        cookie, and redirects to the clean client order URL.
       parameters:
         - name: publicId
           in: path
@@ -414,7 +415,8 @@ paths:
       summary: Get guest order
       description: |
         Returns a guest-safe view of an order. Requires a valid guest order
-        session cookie established via the access endpoint.
+        session cookie established via the access bootstrap endpoint. Guest
+        access tokens are not accepted on this route.
       parameters:
         - name: publicId
           in: path
@@ -602,7 +604,8 @@ paths:
       summary: Get checkout success details
       description: |
         Confirms a Stripe Checkout session has been paid and returns order
-        details and guest access links.
+        details and clean order URLs after establishing the guest order session
+        cookie.
       parameters:
         - name: session_id
           in: query
@@ -2848,8 +2851,10 @@ components:
           type: string
         orderUrl:
           type: string
+          description: Clean client order URL for compatibility.
         clientOrderUrl:
           type: string
+          description: Clean client order URL.
         needsAttention:
           type: boolean
         order:

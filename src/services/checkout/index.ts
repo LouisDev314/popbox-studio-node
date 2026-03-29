@@ -10,7 +10,7 @@ import { createGuestAccessToken, createPublicId, hashGuestAccessToken } from '..
 import logger from '../../utils/logger';
 import { getOrderDetailById } from '../orders/helpers';
 import { CreateCheckoutSessionInput, LockedProductRow } from '../../types/checkout';
-import { buildClientOrderUrl, buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
+import { buildClientOrderUrl } from '../../utils/guest-order-access';
 import {
   createOrUpdateCustomer,
   ensurePaymentSessionMetadata,
@@ -357,13 +357,12 @@ export const getCheckoutSuccess = async (sessionId: string) => {
   }
 
   const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId);
   const clientOrderUrl = buildClientOrderUrl(detail.publicId);
 
   return {
     pending: false,
     publicId: detail.publicId,
-    orderUrl,
+    orderUrl: clientOrderUrl,
     clientOrderUrl,
     needsAttention: detail.status === 'paid_needs_attention',
     order: detail,
