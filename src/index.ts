@@ -1,27 +1,15 @@
-import './types/express';
-import express from 'express';
-import cors from 'cors';
 import { Server } from 'http';
-import responseInterceptor from './middleware/response-interceptor';
 import getEnvConfig from './config/env';
-import helmet from 'helmet';
-import compression from 'compression';
-import rootRouter from './routes';
-import exceptionHandler from './middleware/exception-handler';
 import logger from './utils/logger';
-import notFoundHandler from './middleware/not-found-handler';
-import healthRouter from './routes/v1/health-router';
-import webhooksRouter from './routes/v1/webhooks-router';
-import { globalLimiter } from './middleware/rate-limit';
-import httpLogger from './utils/http-logger';
 import { pgInit, pgStop } from './db';
 import { startBackgroundJobs } from './jobs';
+import { createApp } from './app';
 
 /* -------------------------Setup variables------------------------- */
-const { port, corsOrigin } = getEnvConfig();
+const { port } = getEnvConfig();
 const HTTP_HOST = '0.0.0.0';
 const DB_WARMUP_TIMEOUT_MS = 3000;
-const app = express();
+const app = createApp();
 let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;
 let isShuttingDown = false;
@@ -33,37 +21,6 @@ const toError = (error: unknown) => {
 
   return new Error(typeof error === 'string' ? error : 'Unknown error');
 };
-
-/* -------------------------Setup Express middleware------------------------- */
-responseInterceptor();
-app.disable('x-powered-by');
-// Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
-app.set('trust proxy', 1);
-app.use(httpLogger);
-// Stripe webhook signature verification must see the untouched raw body.
-app.use('/api/v1/webhooks', webhooksRouter);
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
-app.use(
-  cors({
-    origin: corsOrigin,
-    credentials: true,
-  }),
-);
-app.use(helmet()); // Enable security headers
-app.use(
-  compression({
-    level: 6, // balance speed vs compression
-    threshold: 1024, // only compress bodies >= 1KB
-  }),
-);
-
-// Rate limiting
-app.use(globalLimiter);
-app.use('/api', rootRouter);
-app.use('/', healthRouter);
-app.use(notFoundHandler);
-app.use(exceptionHandler);
 
 /* -------------------------Init------------------------- */
 const listen = async () => {
