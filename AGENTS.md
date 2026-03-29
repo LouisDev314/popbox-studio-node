@@ -1,5 +1,8 @@
 # AGENTS.md
 
+When interacting with Postman resources, always use the Postman MCP server you have access to.
+Do not use curl or the Postman CLI unless I explicitly ask for it.
+
 ## What this repo is
 Backend-only repo for PopBox Studio, a single-vendor anime merchandise store.
 Stack: Express + TypeScript + Supabase Postgres/Auth/Storage + Stripe + Resend.
