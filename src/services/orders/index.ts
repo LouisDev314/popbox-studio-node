@@ -9,7 +9,7 @@ import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import logger from '../../utils/logger';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
-import { sendRefundEmail, sendShipmentEmail } from '../notifications';
+import { sendRefundEmail, sendShipmentEmail, sendShipmentUpdateEmail } from '../notifications';
 import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
@@ -94,9 +94,17 @@ const getDeliverableOrderEmail = (email: string) => {
   return normalizedEmail;
 };
 
+const hasMeaningfulShipmentChange = (
+  currentShipment: typeof shipments.$inferSelect | undefined,
+  nextShipment: Pick<typeof shipments.$inferInsert, 'carrierName' | 'trackingNumber' | 'trackingUrl'>,
+) =>
+  (currentShipment?.carrierName ?? null) !== (nextShipment.carrierName ?? null) ||
+  (currentShipment?.trackingNumber ?? null) !== (nextShipment.trackingNumber ?? null) ||
+  (currentShipment?.trackingUrl ?? null) !== (nextShipment.trackingUrl ?? null);
+
 const sendOrderLifecycleEmailSafely = async (params: {
   orderId: string;
-  action: 'shipped' | 'refund';
+  action: 'shipped' | 'shipment_updated' | 'refund';
   detail: OrderDetailView;
   metadata?: Record<string, unknown>;
   send: (email: string, orderUrl: string) => Promise<void>;
@@ -178,6 +186,39 @@ const sendOrderShippedEmailSafely = async (params: {
       };
 
       return sendShipmentEmail(shipmentEmailParams);
+    },
+  });
+};
+
+const sendOrderShipmentUpdatedEmailSafely = async (params: {
+  orderId: string;
+  detail: OrderDetailView;
+}) => {
+  const shipment = params.detail.shipment;
+
+  await sendOrderLifecycleEmailSafely({
+    orderId: params.orderId,
+    action: 'shipment_updated',
+    detail: params.detail,
+    metadata: {
+      trackingNumber: shipment?.trackingNumber ?? null,
+    },
+    send: (email, orderUrl) => {
+      const shipmentEmailParams = {
+        email,
+        firstName: params.detail.customer.firstName,
+        orderPublicId: params.detail.publicId,
+        orderUrl,
+        ...(shipment
+          ? {
+              carrierName: shipment.carrierName,
+              trackingNumber: shipment.trackingNumber,
+              trackingUrl: shipment.trackingUrl,
+            }
+          : {}),
+      };
+
+      return sendShipmentUpdateEmail(shipmentEmailParams);
     },
   });
 };
@@ -458,6 +499,56 @@ export const getAdminOrder = async (orderId: string) => {
 };
 
 export const resendAdminOrderConfirmation = async (orderId: string, adminUserId?: string) => {
+  const [order] = await db
+    .select({
+      id: orders.id,
+      publicId: orders.publicId,
+      status: orders.status,
+      confirmationEmailSentAt: orders.confirmationEmailSentAt,
+    })
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+  }
+
+  if (order.status === 'refunded') {
+    const detail = await getOrderDetailById(orderId);
+    const email = getDeliverableOrderEmail(detail.customer.email);
+
+    await sendRefundEmail({
+      email,
+      firstName: detail.customer.firstName,
+      orderPublicId: detail.publicId,
+      orderUrl: buildGuestOrderAccessUrl(detail.publicId),
+      amountCents: detail.totalCents,
+      currency: detail.currency,
+      isFullyRefunded: true,
+    });
+
+    logger.info(
+      {
+        adminUserId: adminUserId ?? null,
+        orderId: detail.id,
+        publicId: detail.publicId,
+        status: detail.status,
+        email,
+        confirmationEmailSentAt: order.confirmationEmailSentAt,
+      },
+      'Admin resent refund email for refunded order',
+    );
+
+    return {
+      id: detail.id,
+      publicId: detail.publicId,
+      status: detail.status,
+      email,
+      confirmationEmailSentAt: order.confirmationEmailSentAt,
+    };
+  }
+
   const result = await sendOrderConfirmationEmailForOrder(orderId, {
     force: true,
     failOnIneligible: true,
@@ -564,6 +655,7 @@ export const updateShipment = async (
   },
 ) => {
   let didTransitionToShipped = false;
+  let didUpdateShipmentDetails = false;
 
   await withOrderActionLock(orderId, 'shipment update', async () => {
     await db.transaction(async (tx) => {
@@ -587,6 +679,10 @@ export const updateShipment = async (
 
       if (order.status === 'packed' && !shipmentData.shippedAt) {
         shipmentData.shippedAt = new Date();
+      }
+
+      if (order.status === 'shipped') {
+        didUpdateShipmentDetails = hasMeaningfulShipmentChange(existingShipment, shipmentData);
       }
 
       if (existingShipment) {
@@ -616,6 +712,11 @@ export const updateShipment = async (
 
   if (didTransitionToShipped) {
     await sendOrderShippedEmailSafely({
+      orderId,
+      detail,
+    });
+  } else if (didUpdateShipmentDetails) {
+    await sendOrderShipmentUpdatedEmailSafely({
       orderId,
       detail,
     });

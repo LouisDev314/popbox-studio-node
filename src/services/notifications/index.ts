@@ -107,6 +107,22 @@ export const sendOrderConfirmationEmail = async (params: {
   });
 };
 
+const buildShipmentTrackingBlock = (params: {
+  carrierName?: string | null;
+  trackingNumber?: string | null;
+  trackingUrl?: string | null;
+}) =>
+  params.trackingNumber || params.trackingUrl
+    ? `
+        <p><strong>Carrier:</strong> ${params.carrierName ?? 'Carrier update available'}</p>
+        <p><strong>Tracking:</strong> ${
+          params.trackingUrl
+            ? `<a href="${params.trackingUrl}">${params.trackingNumber ?? params.trackingUrl}</a>`
+            : (params.trackingNumber ?? 'Tracking pending')
+        }</p>
+      `
+    : '';
+
 export const sendShipmentEmail = async (params: {
   email: string;
   firstName?: string | null;
@@ -117,17 +133,7 @@ export const sendShipmentEmail = async (params: {
   trackingUrl?: string | null;
 }) => {
   const displayName = params.firstName?.trim() || 'there';
-  const trackingBlock =
-    params.trackingNumber || params.trackingUrl
-      ? `
-        <p><strong>Carrier:</strong> ${params.carrierName ?? 'Carrier update available'}</p>
-        <p><strong>Tracking:</strong> ${
-          params.trackingUrl
-            ? `<a href="${params.trackingUrl}">${params.trackingNumber ?? params.trackingUrl}</a>`
-            : (params.trackingNumber ?? 'Tracking pending')
-        }</p>
-      `
-      : '';
+  const trackingBlock = buildShipmentTrackingBlock(params);
 
   await sendEmail({
     emailType: 'shipment',
@@ -137,6 +143,34 @@ export const sendShipmentEmail = async (params: {
         <h1 style="font-size: 22px;">Your order has shipped</h1>
         <p>Hi ${displayName},</p>
         <p>Your order is on the way.</p>
+        ${trackingBlock}
+        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+      </div>
+    `,
+    to: params.email,
+  });
+};
+
+export const sendShipmentUpdateEmail = async (params: {
+  email: string;
+  firstName?: string | null;
+  orderPublicId: string;
+  orderUrl: string;
+  carrierName?: string | null;
+  trackingNumber?: string | null;
+  trackingUrl?: string | null;
+}) => {
+  const displayName = params.firstName?.trim() || 'there';
+  const trackingBlock = buildShipmentTrackingBlock(params);
+
+  await sendEmail({
+    emailType: 'shipment_update',
+    subject: `Shipment updated: ${params.orderPublicId}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+        <h1 style="font-size: 22px;">Your shipment details were updated</h1>
+        <p>Hi ${displayName},</p>
+        <p>We updated the shipping details for your order.</p>
         ${trackingBlock}
         <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>

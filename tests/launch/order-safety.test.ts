@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
     stripe,
     sendOrderConfirmationEmailMock: vi.fn(),
     sendShipmentEmailMock: vi.fn(),
+    sendShipmentUpdateEmailMock: vi.fn(),
     sendRefundEmailMock: vi.fn(),
     getOrderDetailByIdMock: vi.fn(),
     getGuestOrderViewMock: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../../src/integrations/stripe', () => ({
 vi.mock('../../src/services/notifications', () => ({
   sendOrderConfirmationEmail: mocks.sendOrderConfirmationEmailMock,
   sendShipmentEmail: mocks.sendShipmentEmailMock,
+  sendShipmentUpdateEmail: mocks.sendShipmentUpdateEmailMock,
   sendRefundEmail: mocks.sendRefundEmailMock,
 }));
 vi.mock('../../src/services/orders/helpers', () => ({
@@ -69,6 +71,7 @@ describe('launch: order and payment safety invariants', () => {
     mocks.releaseAdvisoryLockMock.mockResolvedValue(undefined);
     mocks.sendOrderConfirmationEmailMock.mockResolvedValue(undefined);
     mocks.sendShipmentEmailMock.mockResolvedValue(undefined);
+    mocks.sendShipmentUpdateEmailMock.mockResolvedValue(undefined);
     mocks.sendRefundEmailMock.mockResolvedValue(undefined);
     mocks.getOrderDetailByIdMock.mockResolvedValue({
       id: 'ord_launch',
@@ -463,5 +466,240 @@ describe('launch: order and payment safety invariants', () => {
     await expect(updateAdminOrderStatus('ord_launch', 'paid')).rejects.toMatchObject({
       msg: 'Admins cannot set orders to paid',
     });
+  });
+
+  it('sends a shipment update email when tracking fields change on an already shipped order', async () => {
+    const tx = createDbLikeMock();
+
+    tx.execute.mockResolvedValueOnce([
+      {
+        id: 'ord_launch',
+        status: 'shipped',
+      },
+    ]);
+    tx.select.mockReturnValueOnce(
+      createChain([
+        {
+          orderId: 'ord_launch',
+          carrierName: 'Canada Post',
+          trackingNumber: 'TRACK-OLD',
+          trackingUrl: 'https://tracking.example.com/old',
+          shippedAt: new Date('2026-03-28T00:00:00.000Z'),
+          deliveredAt: null,
+        },
+      ]),
+    );
+    tx.update.mockReturnValue(createChain(undefined));
+    tx.insert.mockReturnValue(createChain(undefined));
+    tx.delete.mockReturnValue(createChain(undefined));
+    mocks.db.transaction.mockImplementationOnce(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+    mocks.getOrderDetailByIdMock.mockResolvedValueOnce({
+      id: 'ord_launch',
+      publicId: 'PBX-LAUNCH',
+      status: 'shipped',
+      currency: 'CAD',
+      totalCents: 2630,
+      customer: {
+        email: 'customer@example.com',
+        firstName: 'Ada',
+      },
+      shipment: {
+        carrierName: 'Canada Post',
+        trackingNumber: 'TRACK-NEW',
+        trackingUrl: 'https://tracking.example.com/new',
+        shippedAt: new Date('2026-03-28T00:00:00.000Z'),
+        deliveredAt: null,
+      },
+      items: [],
+      tickets: [],
+    });
+
+    const { updateShipment } = await importFresh(() => import('../../src/services/orders'));
+    const result = await updateShipment('ord_launch', {
+      trackingNumber: 'TRACK-NEW',
+      trackingUrl: 'https://tracking.example.com/new',
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'ord_launch',
+        status: 'shipped',
+      }),
+    );
+    expect(mocks.sendShipmentUpdateEmailMock).toHaveBeenCalledTimes(1);
+    expect(mocks.sendShipmentUpdateEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderPublicId: 'PBX-LAUNCH',
+        trackingNumber: 'TRACK-NEW',
+      }),
+    );
+    expect(mocks.sendShipmentEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('does not send a shipment update email when only deliveredAt changes on an already shipped order', async () => {
+    const tx = createDbLikeMock();
+
+    tx.execute.mockResolvedValueOnce([
+      {
+        id: 'ord_launch',
+        status: 'shipped',
+      },
+    ]);
+    tx.select.mockReturnValueOnce(
+      createChain([
+        {
+          orderId: 'ord_launch',
+          carrierName: 'Canada Post',
+          trackingNumber: 'TRACK-UNCHANGED',
+          trackingUrl: 'https://tracking.example.com/same',
+          shippedAt: new Date('2026-03-28T00:00:00.000Z'),
+          deliveredAt: null,
+        },
+      ]),
+    );
+    tx.update.mockReturnValue(createChain(undefined));
+    tx.insert.mockReturnValue(createChain(undefined));
+    tx.delete.mockReturnValue(createChain(undefined));
+    mocks.db.transaction.mockImplementationOnce(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+    mocks.getOrderDetailByIdMock.mockResolvedValueOnce({
+      id: 'ord_launch',
+      publicId: 'PBX-LAUNCH',
+      status: 'shipped',
+      currency: 'CAD',
+      totalCents: 2630,
+      customer: {
+        email: 'customer@example.com',
+        firstName: 'Ada',
+      },
+      shipment: {
+        carrierName: 'Canada Post',
+        trackingNumber: 'TRACK-UNCHANGED',
+        trackingUrl: 'https://tracking.example.com/same',
+        shippedAt: new Date('2026-03-28T00:00:00.000Z'),
+        deliveredAt: new Date('2026-03-29T00:00:00.000Z'),
+      },
+      items: [],
+      tickets: [],
+    });
+
+    const { updateShipment } = await importFresh(() => import('../../src/services/orders'));
+    await updateShipment('ord_launch', {
+      deliveredAt: '2026-03-29T00:00:00.000Z',
+    });
+
+    expect(mocks.sendShipmentUpdateEmailMock).not.toHaveBeenCalled();
+    expect(mocks.sendShipmentEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('resends only the refund email for refunded orders', async () => {
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          id: 'ord_launch',
+          publicId: 'PBX-LAUNCH',
+          status: 'refunded',
+          confirmationEmailSentAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ]),
+    );
+    mocks.getOrderDetailByIdMock.mockResolvedValueOnce({
+      id: 'ord_launch',
+      publicId: 'PBX-LAUNCH',
+      status: 'refunded',
+      currency: 'CAD',
+      totalCents: 2630,
+      customer: {
+        email: 'customer@example.com',
+        firstName: 'Ada',
+      },
+      shipment: null,
+      items: [],
+      tickets: [],
+    });
+
+    const { resendAdminOrderConfirmation } = await importFresh(() => import('../../src/services/orders'));
+    const result = await resendAdminOrderConfirmation('ord_launch', 'admin_1');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'ord_launch',
+        publicId: 'PBX-LAUNCH',
+        status: 'refunded',
+        email: 'customer@example.com',
+      }),
+    );
+    expect(mocks.sendRefundEmailMock).toHaveBeenCalledTimes(1);
+    expect(mocks.sendOrderConfirmationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps confirmation resend behavior for non-refunded orders', async () => {
+    const confirmationSentAt = new Date('2026-03-28T00:00:00.000Z');
+
+    mocks.db.select
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'ord_launch',
+            publicId: 'PBX-LAUNCH',
+            status: 'paid',
+            confirmationEmailSentAt: null,
+          },
+        ]),
+      )
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'ord_launch',
+            publicId: 'PBX-LAUNCH',
+            status: 'paid',
+            confirmationEmailSentAt: null,
+          },
+        ]),
+      );
+    mocks.getOrderDetailByIdMock.mockResolvedValueOnce({
+      id: 'ord_launch',
+      publicId: 'PBX-LAUNCH',
+      status: 'paid',
+      currency: 'CAD',
+      totalCents: 2630,
+      customer: {
+        email: 'customer@example.com',
+        firstName: 'Ada',
+      },
+      shipment: null,
+      items: [],
+      tickets: [],
+    });
+    const dbUpdateChain = createChain(undefined);
+    mocks.db.update.mockReturnValueOnce(dbUpdateChain);
+
+    const RealDate = Date;
+    vi.useFakeTimers();
+    vi.setSystemTime(confirmationSentAt);
+
+    try {
+      const { resendAdminOrderConfirmation } = await importFresh(() => import('../../src/services/orders'));
+      const result = await resendAdminOrderConfirmation('ord_launch', 'admin_1');
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'ord_launch',
+          publicId: 'PBX-LAUNCH',
+          status: 'paid',
+          email: 'customer@example.com',
+          confirmationEmailSentAt: confirmationSentAt,
+        }),
+      );
+      expect(mocks.sendOrderConfirmationEmailMock).toHaveBeenCalledTimes(1);
+      expect(mocks.sendRefundEmailMock).not.toHaveBeenCalled();
+      expect(dbUpdateChain.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          confirmationEmailSentAt: new RealDate(confirmationSentAt),
+          confirmationEmailError: null,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
