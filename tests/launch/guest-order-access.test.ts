@@ -85,6 +85,16 @@ describe('launch: guest order access hardening', () => {
     expect(readCookie(response, 'guest_order_session')).toContain('guest_order_session=');
   });
 
+  it('builds customer email links against the storefront order route', async () => {
+    const { buildGuestOrderAccessUrl } = await importFresh(() => import('../../src/utils/guest-order-access'));
+    const link = buildGuestOrderAccessUrl('PBX-LAUNCH');
+    const url = new URL(link);
+
+    expect(url.origin).toBe(TEST_CLIENT_BASE_URL);
+    expect(url.pathname).toBe('/orders/PBX-LAUNCH');
+    expect(url.searchParams.get('token')).toBeTruthy();
+  });
+
   it('rejects an invalid bootstrap token', async () => {
     mocks.db.select.mockReturnValue(
       createChain([
