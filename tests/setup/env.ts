@@ -20,6 +20,7 @@ process.env.STRIPE_CHECK_SESSION_RESERVATION_TTL = process.env.STRIPE_CHECK_SESS
 process.env.RESEND_API_KEY = process.env.RESEND_API_KEY ?? 're_test_launch';
 process.env.RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL ?? 'noreply@popbox.example.com';
 process.env.ORDER_NOTIFICATION_EMAIL = process.env.ORDER_NOTIFICATION_EMAIL ?? 'orders@popbox.example.com';
+process.env.CONTACT_EMAIL = process.env.CONTACT_EMAIL ?? 'contact@popbox.example.com';
 process.env.ORDER_TOKEN_PEPPER = process.env.ORDER_TOKEN_PEPPER ?? 'launch-test-pepper';
 
 export {};

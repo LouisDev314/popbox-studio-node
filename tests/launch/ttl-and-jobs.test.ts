@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_STRIPE_CHECKOUT_TTL_MS,
+  STRIPE_CHECKOUT_MIN_EXPIRES_IN_SECONDS,
   STRIPE_CHECKOUT_TTL_EXACT_MS,
 } from '../../src/constants/checkout';
 import {
@@ -57,9 +58,11 @@ describe('launch: reservation TTL and cleanup cadence', () => {
     const now = new Date('2026-03-28T12:00:00.000Z');
     const expiry = getCheckoutSessionExpiry(600000, now);
 
-    expect(expiry.ttlSeconds).toBe(600);
-    expect(expiry.expiresAt.toISOString()).toBe('2026-03-28T12:10:00.000Z');
-    expect(expiry.stripeExpiresAt).toBe(Math.floor(new Date('2026-03-28T12:10:00.000Z').getTime() / 1000));
+    expect(expiry.reservationTtlSeconds).toBe(600);
+    expect(expiry.reservationExpiresAt.toISOString()).toBe('2026-03-28T12:10:00.000Z');
+    expect(expiry.stripeExpiresAt).toBe(
+      Math.ceil((now.getTime() + STRIPE_CHECKOUT_MIN_EXPIRES_IN_SECONDS * 1000) / 1000),
+    );
   });
 
   it('schedules both cleanup jobs every 2 minutes in UTC', async () => {
