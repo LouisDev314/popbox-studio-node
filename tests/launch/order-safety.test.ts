@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => {
     },
     stripe,
     sendOrderConfirmationEmailMock: vi.fn(),
+    sendOrderNotificationEmailMock: vi.fn(),
     sendShipmentEmailMock: vi.fn(),
     sendShipmentUpdateEmailMock: vi.fn(),
     sendRefundEmailMock: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../../src/integrations/stripe', () => ({
 }));
 vi.mock('../../src/services/notifications', () => ({
   sendOrderConfirmationEmail: mocks.sendOrderConfirmationEmailMock,
+  sendOrderNotificationEmail: mocks.sendOrderNotificationEmailMock,
   sendShipmentEmail: mocks.sendShipmentEmailMock,
   sendShipmentUpdateEmail: mocks.sendShipmentUpdateEmailMock,
   sendRefundEmail: mocks.sendRefundEmailMock,
@@ -70,6 +72,7 @@ describe('launch: order and payment safety invariants', () => {
     mocks.tryAcquireAdvisoryLockMock.mockResolvedValue({ key: 'lock' });
     mocks.releaseAdvisoryLockMock.mockResolvedValue(undefined);
     mocks.sendOrderConfirmationEmailMock.mockResolvedValue(undefined);
+    mocks.sendOrderNotificationEmailMock.mockResolvedValue(undefined);
     mocks.sendShipmentEmailMock.mockResolvedValue(undefined);
     mocks.sendShipmentUpdateEmailMock.mockResolvedValue(undefined);
     mocks.sendRefundEmailMock.mockResolvedValue(undefined);
@@ -176,6 +179,7 @@ describe('launch: order and payment safety invariants', () => {
           publicId: 'PBX-LAUNCH',
           status: 'paid',
           confirmationEmailSentAt: null,
+          orderNotificationSentAt: null,
         },
       ]),
     );
@@ -198,11 +202,18 @@ describe('launch: order and payment safety invariants', () => {
       }),
     );
     expect(mocks.sendOrderConfirmationEmailMock).toHaveBeenCalledTimes(1);
+    expect(mocks.sendOrderNotificationEmailMock).toHaveBeenCalledTimes(1);
     expect(txUpdateChains).not.toHaveLength(0);
-    expect(dbUpdateChains).toHaveLength(1);
+    expect(dbUpdateChains).toHaveLength(2);
     expect(dbUpdateChains[0]?.set).toHaveBeenCalledWith(
       expect.objectContaining({
         confirmationEmailError: 'smtp unavailable',
+      }),
+    );
+    expect(dbUpdateChains[1]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderNotificationSentAt: expect.any(Date),
+        orderNotificationError: null,
       }),
     );
   });
@@ -305,6 +316,7 @@ describe('launch: order and payment safety invariants', () => {
           publicId: 'PBX-LAUNCH',
           status: 'paid_needs_attention',
           confirmationEmailSentAt: new Date('2026-03-28T00:00:00.000Z'),
+          orderNotificationSentAt: new Date('2026-03-28T00:00:00.000Z'),
         },
       ]),
     );
@@ -360,6 +372,7 @@ describe('launch: order and payment safety invariants', () => {
           publicId: 'PBX-LAUNCH',
           status: 'paid',
           confirmationEmailSentAt: new Date('2026-03-28T00:00:00.000Z'),
+          orderNotificationSentAt: new Date('2026-03-28T00:00:00.000Z'),
         },
       ]),
     );
@@ -377,6 +390,169 @@ describe('launch: order and payment safety invariants', () => {
     );
     expect(tx.select).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('does not block checkout finalization when order notification sending fails', async () => {
+    const session = buildCheckoutSession({
+      id: 'cs_finalize_notification_failure',
+      metadata: {
+        orderId: 'ord_launch',
+        orderPublicId: 'PBX-LAUNCH',
+      },
+    });
+    const tx = createDbLikeMock();
+    const dbUpdateChains: Array<ReturnType<typeof createChain>> = [];
+
+    mocks.stripe.checkout.sessions.retrieve.mockResolvedValue(session);
+    tx.execute
+      .mockResolvedValueOnce([
+        {
+          publicId: 'PBX-LAUNCH',
+          customerId: 'cust_1',
+          stripeCheckoutSessionId: 'cs_finalize_notification_failure',
+          status: 'pending_payment',
+          currency: 'CAD',
+          subtotalCents: 1000,
+          shippingCents: 1500,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          onHand: 5,
+          reserved: 1,
+          productType: 'standard',
+        },
+      ]);
+    tx.select
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'ord_launch',
+            customerId: 'cust_1',
+          },
+        ]),
+      )
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'cust_1',
+            email: 'customer@example.com',
+            firstName: 'Ada',
+            lastName: 'Lovelace',
+            phone: '+1 780 555 0100',
+          },
+        ]),
+      )
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'res_1',
+            orderId: 'ord_launch',
+            productId: 'prod_1',
+            quantity: 1,
+            status: 'active',
+            expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+          },
+        ]),
+      )
+      .mockReturnValueOnce(createChain([]));
+    tx.update.mockReturnValue(createChain(undefined));
+    tx.insert.mockReturnValue(createChain(undefined));
+    tx.delete.mockReturnValue(createChain(undefined));
+    mocks.db.transaction.mockImplementationOnce(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+    mocks.db.select
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'ord_launch',
+            publicId: 'PBX-LAUNCH',
+            status: 'paid',
+            confirmationEmailSentAt: null,
+          },
+        ]),
+      )
+      .mockReturnValueOnce(
+        createChain([
+          {
+            id: 'ord_launch',
+            publicId: 'PBX-LAUNCH',
+            status: 'paid',
+            orderNotificationSentAt: null,
+          },
+        ]),
+      );
+    mocks.db.update.mockImplementation(() => {
+      const chain = createChain(undefined);
+      dbUpdateChains.push(chain);
+      return chain;
+    });
+    mocks.sendOrderNotificationEmailMock.mockRejectedValue(new Error('smtp unavailable'));
+
+    const { finalizeCheckoutSession } = await importFresh(() => import('../../src/services/checkout/helpers'));
+    const result = await finalizeCheckoutSession(session);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        orderId: 'ord_launch',
+        publicId: 'PBX-LAUNCH',
+        needsAttention: false,
+        alreadyFinalized: false,
+      }),
+    );
+    expect(mocks.sendOrderConfirmationEmailMock).toHaveBeenCalledTimes(1);
+    expect(mocks.sendOrderNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(dbUpdateChains).toHaveLength(2);
+    expect(dbUpdateChains[0]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirmationEmailSentAt: expect.any(Date),
+        confirmationEmailError: null,
+      }),
+    );
+    expect(dbUpdateChains[1]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderNotificationError: 'smtp unavailable',
+      }),
+    );
+  });
+
+  it('does not resend the order notification when the sent marker already exists', async () => {
+    mocks.db.select.mockReturnValue(
+      createChain([
+        {
+          id: 'ord_launch',
+          publicId: 'PBX-LAUNCH',
+          status: 'paid',
+          orderNotificationSentAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ]),
+    );
+
+    const { sendOrderNotificationForOrder } = await importFresh(() => import('../../src/services/checkout/helpers'));
+    const result = await sendOrderNotificationForOrder('ord_launch');
+
+    expect(result).toBeUndefined();
+    expect(mocks.sendOrderNotificationEmailMock).not.toHaveBeenCalled();
+    expect(mocks.db.update).not.toHaveBeenCalled();
+  });
+
+  it('does not send the order notification for unpaid orders', async () => {
+    mocks.db.select.mockReturnValue(
+      createChain([
+        {
+          id: 'ord_launch',
+          publicId: 'PBX-LAUNCH',
+          status: 'pending_payment',
+          orderNotificationSentAt: null,
+        },
+      ]),
+    );
+
+    const { sendOrderNotificationForOrder } = await importFresh(() => import('../../src/services/checkout/helpers'));
+    const result = await sendOrderNotificationForOrder('ord_launch');
+
+    expect(result).toBeUndefined();
+    expect(mocks.sendOrderNotificationEmailMock).not.toHaveBeenCalled();
+    expect(mocks.db.update).not.toHaveBeenCalled();
   });
 
   it('returns the same revealed ticket result when the same ticket is revealed twice', async () => {

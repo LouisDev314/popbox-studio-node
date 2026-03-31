@@ -3,8 +3,9 @@ import getEnvConfig from '../../config/env';
 import logger from '../../utils/logger';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
+import type { OrderDetailView } from '../../types/order';
 
-const { resendApiKey, resendFromEmail } = getEnvConfig();
+const { resendApiKey, resendFromEmail, orderNotificationEmail } = getEnvConfig();
 
 const canSendEmail = resend && !!resendApiKey && !!resendFromEmail;
 
@@ -17,6 +18,43 @@ const formatMoney = (amountCents: number, currency: string) => {
   } catch {
     return `${(amountCents / 100).toFixed(2)} ${currency}`;
   }
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('\'', '&#39;');
+
+const formatDateTime = (value: Date | null) => {
+  if (!value) {
+    return 'N/A';
+  }
+
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/Edmonton',
+    }).format(value);
+  } catch {
+    return value.toISOString();
+  }
+};
+
+const formatAddressSummary = (address: Record<string, unknown> | null) => {
+  if (!address) {
+    return 'N/A';
+  }
+
+  const fields = ['fullName', 'line1', 'line2', 'city', 'province', 'postalCode', 'countryCode'] as const;
+  const parts = fields
+    .map((field) => address[field])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return parts.length > 0 ? parts.join(', ') : 'N/A';
 };
 
 const sendEmail = async (params: { emailType: string; subject: string; html: string; to: string }) => {
@@ -206,5 +244,41 @@ export const sendRefundEmail = async (params: {
       </div>
     `,
     to: params.email,
+  });
+};
+
+export const sendOrderNotificationEmail = async (detail: OrderDetailView) => {
+  const customerName = [detail.customer.firstName, detail.customer.lastName].filter(Boolean).join(' ').trim() || 'N/A';
+  const itemSummary =
+    detail.items.length > 0
+      ? detail.items
+          .map((item) => {
+            const quantity = `${item.quantity}x`;
+            const name = escapeHtml(item.productName);
+            const lineTotal = escapeHtml(formatMoney(item.lineTotalCents, detail.currency));
+            return `<li>${quantity} ${name} (${lineTotal})</li>`;
+          })
+          .join('')
+      : '<li>No order items recorded</li>';
+
+  await sendEmail({
+    emailType: 'order_notification',
+    subject: `New paid order: ${detail.publicId}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+        <h1 style="font-size: 22px;">New paid order received</h1>
+        <p><strong>Order Number:</strong> ${escapeHtml(detail.publicId)}</p>
+        <p><strong>Status:</strong> ${escapeHtml(detail.status)}</p>
+        <p><strong>Paid At:</strong> ${escapeHtml(formatDateTime(detail.paidAt))}</p>
+        <p><strong>Placed At:</strong> ${escapeHtml(formatDateTime(detail.placedAt))}</p>
+        <p><strong>Customer:</strong> ${escapeHtml(customerName)}</p>
+        <p><strong>Customer Email:</strong> ${escapeHtml(detail.customer.email)}</p>
+        <p><strong>Total:</strong> ${escapeHtml(formatMoney(detail.totalCents, detail.currency))}</p>
+        <p><strong>Shipping:</strong> ${escapeHtml(formatAddressSummary(detail.shippingAddress))}</p>
+        <p><strong>Items:</strong></p>
+        <ul>${itemSummary}</ul>
+      </div>
+    `,
+    to: orderNotificationEmail,
   });
 };

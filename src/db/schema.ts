@@ -253,6 +253,8 @@ export const orders = pgTable(
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
     confirmationEmailSentAt: timestamp('confirmation_email_sent_at', { withTimezone: true }),
     confirmationEmailError: text('confirmation_email_error'),
+    orderNotificationSentAt: timestamp('order_notification_sent_at', { withTimezone: true }),
+    orderNotificationError: text('order_notification_error'),
     includesLastOnePrize: boolean('includes_last_one_prize').notNull().default(false),
     placedAt: timestamp('placed_at', { withTimezone: true }),
     paidAt: timestamp('paid_at', { withTimezone: true }),

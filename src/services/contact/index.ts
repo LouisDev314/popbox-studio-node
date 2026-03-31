@@ -93,7 +93,7 @@ export const sendContactEmail = async (payload: ContactBody): Promise<void> => {
 
   const result = await resend.emails.send({
     from: `PopBox Studio <${getEnvConfig().resendFromEmail}>`,
-    to: getEnvConfig().resendFromEmail,
+    to: getEnvConfig().contactEmail,
     replyTo: payload.email,
     subject,
     text,

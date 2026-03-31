@@ -21,6 +21,8 @@ type EnvConfig = Readonly<{
   stripeCheckoutSessionReservationTtl: number;
   resendApiKey: string;
   resendFromEmail: string;
+  contactEmail: string;
+  orderNotificationEmail: string;
   orderTokenPepper: string;
 }>;
 
@@ -210,6 +212,12 @@ const createEnvConfig = (): EnvConfig => {
 
     resendApiKey: readRequiredString('RESEND_API_KEY', process.env.RESEND_API_KEY, errors),
     resendFromEmail: parseRequiredEmail('RESEND_FROM_EMAIL', process.env.RESEND_FROM_EMAIL, errors),
+    orderNotificationEmail: parseRequiredEmail(
+      'ORDER_NOTIFICATION_EMAIL',
+      process.env.ORDER_NOTIFICATION_EMAIL,
+      errors,
+    ),
+    contactEmail: parseRequiredEmail('CONTACT_EMAIL', process.env.CONTACT_EMAIL, errors),
 
     orderTokenPepper: readRequiredString('ORDER_TOKEN_PEPPER', process.env.ORDER_TOKEN_PEPPER, errors),
   } satisfies EnvConfig;

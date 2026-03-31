@@ -21,7 +21,7 @@ import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { isLastOnePrizeCode } from '../../utils/kuji';
-import { sendOrderConfirmationEmail } from '../notifications';
+import { sendOrderConfirmationEmail, sendOrderNotificationEmail } from '../notifications';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
 class NeedsAttentionError extends Error {
@@ -39,8 +39,16 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
 }
 
 const ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX = 'orders:confirmation-email';
+const ORDER_NOTIFICATION_LOCK_PREFIX = 'orders:order-notification-email';
 export const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
   'paid',
+  'packed',
+  'shipped',
+  'refunded',
+]);
+const ORDER_NOTIFICATION_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
+  'paid',
+  'paid_needs_attention',
   'packed',
   'shipped',
   'refunded',
@@ -51,6 +59,12 @@ type SendOrderConfirmationEmailForOrderOptions = {
   failOnIneligible?: boolean;
   failOnLockUnavailable?: boolean;
   trigger?: 'checkout_finalize' | 'admin_resend';
+};
+
+type SendOrderNotificationForOrderOptions = {
+  failOnIneligible?: boolean;
+  failOnLockUnavailable?: boolean;
+  trigger?: 'checkout_finalize';
 };
 
 type FinalizedCheckoutAmounts = {
@@ -897,7 +911,7 @@ const buildEmailErrorMessage = (error: unknown) => {
     return error.message;
   }
 
-  return 'Unknown order confirmation email error';
+  return 'Unknown order email error';
 };
 
 const getOrderConfirmationRecipientEmail = (email: string) => {
@@ -1039,6 +1053,124 @@ export const sendOrderConfirmationEmailForOrder = async (
   }
 };
 
+export const sendOrderNotificationForOrder = async (
+  orderId: string,
+  options: SendOrderNotificationForOrderOptions = {},
+) => {
+  const lockHandle = await tryAcquireAdvisoryLock(`${ORDER_NOTIFICATION_LOCK_PREFIX}:${orderId}`);
+  const trigger = options.trigger ?? 'checkout_finalize';
+
+  if (!lockHandle) {
+    if (options.failOnLockUnavailable) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Order notification email is already being sent. Retry shortly.');
+    }
+
+    logger.info(
+      { orderId, trigger },
+      'Skipping order notification email because another worker is already sending it',
+    );
+    return;
+  }
+
+  try {
+    const [order] = await db
+      .select({
+        id: orders.id,
+        publicId: orders.publicId,
+        status: orders.status,
+        orderNotificationSentAt: orders.orderNotificationSentAt,
+      })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for notification email');
+    }
+
+    if (order.orderNotificationSentAt) {
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          orderNotificationSentAt: order.orderNotificationSentAt,
+          trigger,
+        },
+        'Skipping order notification email because it was already sent',
+      );
+      return;
+    }
+
+    if (!ORDER_NOTIFICATION_ELIGIBLE_STATUSES.has(order.status)) {
+      if (options.failOnIneligible) {
+        throw new Exception(
+          HttpStatusCode.CONFLICT,
+          'Order notification email is only available for paid, needs-attention, fulfilled, or refunded orders',
+        );
+      }
+
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          status: order.status,
+          trigger,
+        },
+        'Skipping order notification email because the order is not in an emailable state',
+      );
+      return;
+    }
+
+    const detail = await getOrderDetailById(orderId);
+    await sendOrderNotificationEmail(detail);
+
+    const orderNotificationSentAt = new Date();
+
+    await db
+      .update(orders)
+      .set({
+        orderNotificationSentAt,
+        orderNotificationError: null,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.info(
+      {
+        orderId,
+        publicId: detail.publicId,
+        orderNotificationSentAt,
+        trigger,
+      },
+      'Order notification email sent',
+    );
+
+    return {
+      id: detail.id,
+      publicId: detail.publicId,
+      status: detail.status,
+      orderNotificationSentAt,
+    };
+  } catch (error) {
+    const emailErrorMessage = buildEmailErrorMessage(error);
+
+    await db
+      .update(orders)
+      .set({
+        orderNotificationError: emailErrorMessage,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.error({ error, orderId, emailErrorMessage, trigger }, 'Order notification email send failed');
+    throw error;
+  } finally {
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error({ error: unlockError, orderId }, 'Failed to release order notification email advisory lock');
+    }
+  }
+};
+
 const sendOrderConfirmationEmailBestEffort = async (
   orderId: string,
   options: SendOrderConfirmationEmailForOrderOptions = {},
@@ -1053,6 +1185,24 @@ const sendOrderConfirmationEmailBestEffort = async (
         trigger: options.trigger ?? 'checkout_finalize',
       },
       'Order confirmation email failed after checkout finalization; manual resend may be required',
+    );
+  }
+};
+
+const sendOrderNotificationBestEffort = async (
+  orderId: string,
+  options: SendOrderNotificationForOrderOptions = {},
+) => {
+  try {
+    await sendOrderNotificationForOrder(orderId, options);
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        orderId,
+        trigger: options.trigger ?? 'checkout_finalize',
+      },
+      'Order notification email failed after checkout finalization',
     );
   }
 };
@@ -1173,6 +1323,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
 
     if (finalizeResult.alreadyFinalized) {
       await sendOrderConfirmationEmailBestEffort(orderId);
+      await sendOrderNotificationBestEffort(orderId);
       const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
@@ -1220,6 +1371,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
   }
 
   await sendOrderConfirmationEmailBestEffort(orderId);
+  await sendOrderNotificationBestEffort(orderId);
 
   const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
