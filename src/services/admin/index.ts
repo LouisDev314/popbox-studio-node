@@ -7,7 +7,7 @@ import { collections, kujiPrizes, productImages, productInventory, productTags, 
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
-import { getProductById } from '../product';
+import { getProductById, getProductCardsByIds, loadProductTagMap } from '../product';
 import { clampLimit } from '../../utils/limit';
 import {
   assertProductExists,
@@ -37,6 +37,39 @@ type AdminProductCursorPayload = {
   id: string;
   updatedAt?: string;
   inventorySortValue?: number;
+};
+
+type AdminProductListItem = {
+  id: string;
+  name: string;
+  slug: string;
+  sku: string | null;
+  status: 'draft' | 'active' | 'archived';
+  productType: 'standard' | 'kuji';
+  priceCents: number;
+  currency: string;
+  collection: {
+    id: string;
+    name: string;
+    slug: string;
+  } | null;
+  inventory: {
+    onHand: number;
+    reserved: number;
+    available: number;
+    lowStockThreshold: number;
+  } | null;
+  tags: Array<{
+    id: string;
+    name: string;
+    slug: string;
+  }>;
+  primaryImage: {
+    url: string | null;
+    storageKey: string | null;
+    altText: string | null;
+  } | null;
+  updatedAt: Date;
 };
 
 const DEFAULT_ADMIN_PRODUCT_SORT: AdminProductListSort = 'updated_desc';
@@ -231,12 +264,9 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
   const rows = await db
     .select({
       product: products,
-      collection: collections,
-      inventory: productInventory,
       inventorySortValue,
     })
     .from(products)
-    .leftJoin(collections, eq(collections.id, products.collectionId))
     .leftJoin(productInventory, eq(productInventory.productId, products.id))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(...buildAdminProductSortOrder(sort, inventorySortValue))
@@ -244,34 +274,43 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
 
   const pageRows = rows.slice(0, limit);
   const lastRow = pageRows.at(-1);
+  const productIds = pageRows.map((row) => row.product.id);
+  const [productCards, tagMap] = await Promise.all([getProductCardsByIds(productIds), loadProductTagMap(productIds)]);
+  const productCardMap = new Map(productCards.map((productCard) => [productCard.id, productCard]));
 
-  return {
-    items: pageRows.map((row) => ({
+  const items: AdminProductListItem[] = pageRows.map((row) => {
+    const productCard = productCardMap.get(row.product.id);
+    const primaryImage = productCard?.images[0] ?? null;
+
+    return {
       id: row.product.id,
       name: row.product.name,
       slug: row.product.slug,
+      sku: row.product.sku,
       productType: row.product.productType,
       status: row.product.status,
       priceCents: row.product.priceCents,
       currency: row.product.currency,
-      sku: row.product.sku,
-      collection: row.collection
+      collection: productCard?.collection ?? null,
+      inventory: productCard?.inventory ?? null,
+      tags: (tagMap.get(row.product.id) ?? []).map((tag) => ({
+        id: tag.id,
+        name: tag.name,
+        slug: tag.slug,
+      })),
+      primaryImage: primaryImage
         ? {
-            id: row.collection.id,
-            name: row.collection.name,
-            slug: row.collection.slug,
+            url: primaryImage.url,
+            storageKey: primaryImage.storageKey,
+            altText: primaryImage.altText,
           }
         : null,
-      inventory: row.inventory
-        ? {
-            onHand: row.inventory.onHand,
-            reserved: row.inventory.reserved,
-            lowStockThreshold: row.inventory.lowStockThreshold,
-          }
-        : null,
-      createdAt: row.product.createdAt,
       updatedAt: row.product.updatedAt,
-    })),
+    };
+  });
+
+  return {
+    items,
     nextCursor:
       rows.length > limit && lastRow
         ? encodeCursor(

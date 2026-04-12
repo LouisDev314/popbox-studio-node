@@ -17,6 +17,7 @@ import {
   ProductSuggestion,
   ProductSuggestionQueryRow,
   ProductSort,
+  TagRow,
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
 import { buildImageUrl } from '../../utils/product';
@@ -116,22 +117,14 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
   }
 
   // Runs all relation queries concurrently
-  const [imagesRows, inventoryRows, productTagRows, productCollectionRows, prizeRows] = await Promise.all([
+  const [imagesRows, inventoryRows, tagMap, productCollectionRows, prizeRows] = await Promise.all([
     db
       .select()
       .from(productImages)
       .where(inArray(productImages.productId, productIds))
       .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
     db.select().from(productInventory).where(inArray(productInventory.productId, productIds)),
-    db
-      .select({
-        productId: productTags.productId,
-        tag: tags,
-      })
-      .from(productTags)
-      .innerJoin(tags, eq(tags.id, productTags.tagId))
-      .where(inArray(productTags.productId, productIds))
-      .orderBy(asc(tags.name)),
+    loadProductTagMap(productIds),
     db
       .select({
         productId: products.id,
@@ -147,6 +140,8 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
       .orderBy(asc(kujiPrizes.sortOrder), asc(kujiPrizes.id)),
   ]);
 
+  maps.tags = tagMap;
+
   for (const row of imagesRows) {
     const items = maps.images.get(row.productId) ?? [];
     items.push(row);
@@ -155,12 +150,6 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
 
   for (const row of inventoryRows) {
     maps.inventory.set(row.productId, row);
-  }
-
-  for (const row of productTagRows) {
-    const items = maps.tags.get(row.productId) ?? [];
-    items.push(row.tag);
-    maps.tags.set(row.productId, items);
   }
 
   for (const row of productCollectionRows) {
@@ -174,6 +163,32 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
   }
 
   return maps;
+};
+
+export const loadProductTagMap = async (productIds: string[]): Promise<Map<string, TagRow[]>> => {
+  const tagMap = new Map<string, TagRow[]>();
+
+  if (productIds.length === 0) {
+    return tagMap;
+  }
+
+  const rows = await db
+    .select({
+      productId: productTags.productId,
+      tag: tags,
+    })
+    .from(productTags)
+    .innerJoin(tags, eq(tags.id, productTags.tagId))
+    .where(inArray(productTags.productId, productIds))
+    .orderBy(asc(tags.name));
+
+  for (const row of rows) {
+    const items = tagMap.get(row.productId) ?? [];
+    items.push(row.tag);
+    tagMap.set(row.productId, items);
+  }
+
+  return tagMap;
 };
 
 export const mapProductCard = (row: ProductCardQueryRow): ProductCard => ({

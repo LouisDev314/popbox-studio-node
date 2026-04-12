@@ -711,7 +711,7 @@ paths:
                   - type: object
                     properties:
                       data:
-                        $ref: '#/components/schemas/ProductListPage'
+                        $ref: '#/components/schemas/AdminProductListPage'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -2329,6 +2329,31 @@ components:
         tagType:
           type: string
       required: [id, name, slug, tagType]
+    AdminProductPrimaryImage:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+        storageKey:
+          type: string
+          nullable: true
+        altText:
+          type: string
+          nullable: true
+      required: [url, storageKey, altText]
+    AdminProductTag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+      required: [id, name, slug]
     KujiPrize:
       type: object
       properties:
@@ -2397,6 +2422,62 @@ components:
         - priceCents
         - currency
         - images
+    AdminProductListItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        sku:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [draft, active, archived]
+        productType:
+          type: string
+          enum: [standard, kuji]
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        collection:
+          allOf:
+            - $ref: '#/components/schemas/ProductCollection'
+          nullable: true
+        inventory:
+          allOf:
+            - $ref: '#/components/schemas/ProductInventory'
+          nullable: true
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminProductTag'
+        primaryImage:
+          allOf:
+            - $ref: '#/components/schemas/AdminProductPrimaryImage'
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - slug
+        - sku
+        - status
+        - productType
+        - priceCents
+        - currency
+        - collection
+        - inventory
+        - tags
+        - primaryImage
+        - updatedAt
     Product:
       type: object
       properties:
@@ -2469,6 +2550,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ProductCard'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items, nextCursor]
+    AdminProductListPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminProductListItem'
         nextCursor:
           type: string
           nullable: true
