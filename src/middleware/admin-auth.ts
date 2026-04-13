@@ -26,7 +26,7 @@ const requireAdminAuth: RequestHandler = async (req, _res, next) => {
     const userId = typeof payload.sub === 'string' ? payload.sub : '';
 
     if (!userId) {
-      return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token'));
+      return next(new Exception(HttpStatusCode.UNAUTHORIZED, 'Invalid authentication token - no user id'));
     }
 
     const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);

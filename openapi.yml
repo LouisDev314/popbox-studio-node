@@ -2753,7 +2753,14 @@ components:
               type: string
             slug:
               type: string
-          required: [id, name, slug]
+            imageUrl:
+              type: string
+              format: uri
+              nullable: true
+            imageAltText:
+              type: string
+              nullable: true
+          required: [id, name, slug, imageUrl, imageAltText]
         createdAt:
           type: string
           format: date-time

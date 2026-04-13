@@ -8,7 +8,7 @@ import {
   shipments,
   tickets,
 } from '../../db/schema';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { OrderDetailView, OrderRecordRow, OrderTicketView } from '../../types/order';
 import { db } from '../../db';
 import Exception from '../../utils/Exception';
@@ -20,6 +20,18 @@ type OrderItemWithImageRow = {
   image: typeof productImages.$inferSelect | null;
 };
 
+type OrderTicketJoinRow = {
+  ticket: typeof tickets.$inferSelect;
+  prize: typeof kujiPrizes.$inferSelect;
+  product: typeof products.$inferSelect;
+};
+
+type PrimaryProductImageRow = {
+  productId: string;
+  storageKey: string;
+  altText: string | null;
+};
+
 const readCustomerSnapshotField = (
   snapshot: Record<string, unknown> | null | undefined,
   field: 'email' | 'firstName' | 'lastName' | 'phone',
@@ -28,10 +40,48 @@ const readCustomerSnapshotField = (
   return typeof value === 'string' ? value : null;
 };
 
-const resolveImage = (image: typeof productImages.$inferSelect | null, fallbackAltText: string) => ({
+const resolveImage = (
+  image: Pick<typeof productImages.$inferSelect, 'storageKey' | 'altText'> | null,
+  fallbackAltText: string,
+) => ({
   imageUrl: image?.storageKey ? buildImageUrl(image.storageKey) : null,
   imageAltText: image?.altText ?? fallbackAltText,
 });
+
+const loadPrimaryProductImages = async (productIds: string[]) => {
+  if (!productIds.length) {
+    return new Map<string, PrimaryProductImageRow>();
+  }
+
+  const requestedIds = sql.join(
+    productIds.map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await db.execute(sql<PrimaryProductImageRow>`
+    SELECT DISTINCT ON (pi.product_id)
+      pi.product_id AS "productId",
+      pi.storage_key AS "storageKey",
+      pi.alt_text AS "altText"
+    FROM ${productImages} AS pi
+    WHERE pi.product_id IN (${requestedIds})
+    ORDER BY
+      pi.product_id ASC,
+      pi.sort_order ASC,
+      pi.created_at ASC,
+      pi.id ASC
+  `)) as PrimaryProductImageRow[];
+
+  const primaryImages = new Map<string, PrimaryProductImageRow>();
+
+  for (const row of rows) {
+    if (!primaryImages.has(row.productId)) {
+      primaryImages.set(row.productId, row);
+    }
+  }
+
+  return primaryImages;
+};
 
 const mapOrderDetail = (
   row: OrderRecordRow,
@@ -131,18 +181,19 @@ const loadOrderChildren = async (orderId: string) => {
         ticket: tickets,
         prize: kujiPrizes,
         product: products,
-        image: productImages,
       })
       .from(tickets)
       .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
       .innerJoin(products, eq(products.id, tickets.kujiProductId))
-      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.sortOrder, 0)))
       .where(eq(tickets.orderId, orderId))
       .orderBy(asc(tickets.createdAt), asc(tickets.id)),
   ]);
 
-  const ticketRows: OrderTicketView[] = ticketJoinRows.map((row) => {
-    const image = resolveImage(row.image, row.product.name);
+  const ticketProductIds = [...new Set(ticketJoinRows.map((row) => row.product.id))];
+  const primaryTicketImages = await loadPrimaryProductImages(ticketProductIds);
+
+  const ticketRows: OrderTicketView[] = (ticketJoinRows as OrderTicketJoinRow[]).map((row) => {
+    const image = resolveImage(primaryTicketImages.get(row.product.id) ?? null, row.product.name);
 
     return {
       id: row.ticket.id,
