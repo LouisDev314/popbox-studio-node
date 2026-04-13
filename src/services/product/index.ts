@@ -21,6 +21,7 @@ import {
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
 import { buildImageUrl } from '../../utils/product';
+import { LAST_ONE_PRIZE_CODE } from '../../utils/kuji';
 import { listTrendingProductIds } from './trending';
 
 const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
@@ -229,6 +230,14 @@ export const mapProductCard = (row: ProductCardQueryRow): ProductCard => ({
           lowStockThreshold: row.inventoryLowStockThreshold,
         }
       : null,
+  ...(row.productType === 'kuji'
+    ? {
+        ticketSummary: {
+          remainingTickets: Math.max(row.remainingTickets, 0),
+          totalTickets: Math.max(row.totalTickets, 0),
+        },
+      }
+    : {}),
 });
 
 export const mapProductSuggestion = (row: ProductSuggestionQueryRow): ProductSuggestion => ({
@@ -269,7 +278,9 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       image.sort_order AS "imageSortOrder",
       inventory.on_hand AS "inventoryOnHand",
       inventory.reserved AS "inventoryReserved",
-      inventory.low_stock_threshold AS "inventoryLowStockThreshold"
+      inventory.low_stock_threshold AS "inventoryLowStockThreshold",
+      ticket_summary."remainingTickets" AS "remainingTickets",
+      ticket_summary."totalTickets" AS "totalTickets"
     FROM ${products} AS p
     LEFT JOIN ${collections} AS c
       ON c.id = p.collection_id
@@ -286,6 +297,16 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       ORDER BY pi.sort_order ASC, pi.id ASC
       LIMIT 1
     ) AS image
+      ON true
+    LEFT JOIN LATERAL (
+      SELECT
+        COALESCE(sum(GREATEST(kp.remaining_quantity, 0)), 0)::int AS "remainingTickets",
+        COALESCE(sum(GREATEST(kp.initial_quantity, 0)), 0)::int AS "totalTickets"
+      FROM ${kujiPrizes} AS kp
+      WHERE p.product_type = 'kuji'
+        AND kp.product_id = p.id
+        AND UPPER(BTRIM(kp.prize_code)) <> ${LAST_ONE_PRIZE_CODE}
+    ) AS ticket_summary
       ON true
     WHERE p.id IN (${requestedIds})
   `)) as ProductCardQueryRow[];
@@ -445,6 +466,8 @@ export const getProductRecommendationsBySlug = async (
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Product not found');
   }
 
+  const recommendationAvailabilityCondition = sql`COALESCE(inventory.on_hand - inventory.reserved, 0) > 0`;
+
   const recommendationRows = (await db.execute(sql<ProductRecommendationQueryRow>`
     WITH source_tags AS (
       SELECT ${productTags.tagId} AS tag_id
@@ -474,7 +497,7 @@ export const getProductRecommendationsBySlug = async (
           ELSE 0
         END +
         CASE
-          WHEN COALESCE(inventory.on_hand - inventory.reserved, 0) > 0 THEN 8
+          WHEN ${recommendationAvailabilityCondition} THEN 8
           ELSE 0
         END +
         CASE
@@ -484,7 +507,7 @@ export const getProductRecommendationsBySlug = async (
           ELSE 0
         END
       )::float8 AS "score",
-      (COALESCE(inventory.on_hand - inventory.reserved, 0) > 0) AS "inStock"
+      (${recommendationAvailabilityCondition}) AS "inStock"
     FROM ${products} AS p
     LEFT JOIN ${productInventory} AS inventory
       ON inventory.product_id = p.id
@@ -492,6 +515,7 @@ export const getProductRecommendationsBySlug = async (
       ON tag_overlap.product_id = p.id
     WHERE p.status = 'active'
       AND p.id <> ${sourceProduct.id}::uuid
+      AND ${recommendationAvailabilityCondition}
     ORDER BY "score" DESC, "inStock" DESC, p.created_at DESC, p.id DESC
     LIMIT ${safeLimit}
   `)) as ProductRecommendationQueryRow[];

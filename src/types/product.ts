@@ -58,6 +58,10 @@ export type ProductCard = {
     available: number;
     lowStockThreshold: ProductInventoryRow['lowStockThreshold'];
   } | null;
+  ticketSummary?: {
+    remainingTickets: number;
+    totalTickets: number;
+  };
 };
 
 export type ProductCardQueryRow = {
@@ -79,6 +83,8 @@ export type ProductCardQueryRow = {
   inventoryOnHand: number | null;
   inventoryReserved: number | null;
   inventoryLowStockThreshold: number | null;
+  remainingTickets: number;
+  totalTickets: number;
 };
 
 export type ProductSuggestion = {

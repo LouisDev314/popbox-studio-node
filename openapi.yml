@@ -2413,6 +2413,14 @@ components:
           allOf:
             - $ref: '#/components/schemas/ProductInventory'
           nullable: true
+        ticketSummary:
+          type: object
+          properties:
+            remainingTickets:
+              type: integer
+            totalTickets:
+              type: integer
+          required: [remainingTickets, totalTickets]
       required:
         - id
         - name
