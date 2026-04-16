@@ -137,8 +137,6 @@ describe('launch: guest ticket kuji product images', () => {
   it('returns the deterministic first kuji product image ordered by sort order then creation time', async () => {
     mocks.db.select
       .mockReturnValueOnce(createChain([buildOrderRecord()]))
-      .mockReturnValueOnce(createChain([]))
-      .mockReturnValueOnce(createChain([]))
       .mockReturnValueOnce(createChain([buildTicketJoinRow()]));
     mocks.db.execute.mockReturnValueOnce(
       createChain([
@@ -165,8 +163,6 @@ describe('launch: guest ticket kuji product images', () => {
   it('returns a null kuji product imageUrl when the product has no images', async () => {
     mocks.db.select
       .mockReturnValueOnce(createChain([buildOrderRecord()]))
-      .mockReturnValueOnce(createChain([]))
-      .mockReturnValueOnce(createChain([]))
       .mockReturnValueOnce(createChain([buildTicketJoinRow({ productName: 'No Image Kuji' })]));
     mocks.db.execute.mockReturnValueOnce(createChain([]));
 

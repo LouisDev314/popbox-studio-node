@@ -8,7 +8,7 @@ import { createApp } from './app';
 /* -------------------------Setup variables------------------------- */
 const { port } = getEnvConfig();
 const HTTP_HOST = '0.0.0.0';
-const DB_WARMUP_TIMEOUT_MS = 3000;
+const DB_WARMUP_TIMEOUT_MS = 10000;
 const app = createApp();
 let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;

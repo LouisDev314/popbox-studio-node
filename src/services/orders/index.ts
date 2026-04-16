@@ -10,7 +10,13 @@ import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import logger from '../../utils/logger';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { sendRefundEmail, sendShipmentEmail, sendShipmentUpdateEmail } from '../notifications';
-import { getGuestOrderView, getGuestTicketView, getOrderDetailById } from './helpers';
+import {
+  getGuestOrderView,
+  getGuestTicketView,
+  getGuestTicketViewById,
+  getGuestTicketViewByOrderId,
+  getOrderDetailById,
+} from './helpers';
 import { assertOrderStatusTransition, OrderStatus } from '../../constants/order-status';
 import { clampLimit } from '../../utils/limit';
 import type { OrderDetailView, OrdersCursor } from '../../types/order';
@@ -34,16 +40,64 @@ const KUJI_ORDER_ACTION_LOCK_PREFIX = 'orders:kuji-action';
 const REVEALABLE_ORDER_STATUSES = new Set<OrderStatus>(['paid', 'packed', 'shipped']);
 
 const withOrderActionLock = async <T>(orderId: string, action: string, work: () => Promise<T>) => {
-  const lockHandle = await tryAcquireAdvisoryLock(`${KUJI_ORDER_ACTION_LOCK_PREFIX}:${orderId}`);
+  const lockAcquireStart = Date.now();
+  let lockHandle;
+
+  try {
+    lockHandle = await tryAcquireAdvisoryLock(`${KUJI_ORDER_ACTION_LOCK_PREFIX}:${orderId}`);
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        orderId,
+        action,
+        acquireMs: Date.now() - lockAcquireStart,
+      },
+      'order action lock acquire failed',
+    );
+    throw error;
+  }
+
+  const acquireMs = Date.now() - lockAcquireStart;
 
   if (!lockHandle) {
+    logger.warn(
+      {
+        orderId,
+        action,
+        acquireMs,
+      },
+      'order action lock unavailable',
+    );
     throw new Exception(HttpStatusCode.CONFLICT, `Order is busy processing ${action}. Retry shortly.`);
   }
 
+  logger.info(
+    {
+      orderId,
+      action,
+      acquireMs,
+    },
+    'order action lock acquired',
+  );
+
+  const lockHoldStart = Date.now();
   try {
     return await work();
   } finally {
+    const releaseStart = Date.now();
     await releaseAdvisoryLock(lockHandle);
+    logger.info(
+      {
+        orderId,
+        action,
+        acquireMs,
+        holdMs: Date.now() - lockHoldStart,
+        releaseMs: Date.now() - releaseStart,
+        totalMs: Date.now() - lockAcquireStart,
+      },
+      'order action lock released',
+    );
   }
 };
 
@@ -362,17 +416,6 @@ const getRefundContext = async (orderId: string) => {
   };
 };
 
-const getTicketViewById = async (orderId: string, ticketId: string) => {
-  const ticketView = await getGuestTicketView((await getOrderDetailById(orderId)).publicId);
-  const ticket = ticketView.tickets.find((item) => item.id === ticketId);
-
-  if (!ticket) {
-    throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
-  }
-
-  return ticket;
-};
-
 export const getGuestOrder = async (publicId: string) => {
   return getGuestOrderView(publicId);
 };
@@ -393,52 +436,191 @@ const findTicketOrderStatus = async (orderId: string) => {
   }
 };
 
+const loadRevealTicketContext = async (orderId: string, ticketId: string) => {
+  const [row] = await db
+    .select({
+      orderStatus: orders.status,
+      ticketId: tickets.id,
+      revealedAt: tickets.revealedAt,
+      voidedAt: tickets.voidedAt,
+    })
+    .from(orders)
+    .leftJoin(tickets, and(eq(tickets.orderId, orders.id), eq(tickets.id, ticketId)))
+    .where(eq(orders.id, orderId))
+    .limit(1);
+
+  if (!row) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found');
+  }
+
+  if (!REVEALABLE_ORDER_STATUSES.has(row.orderStatus)) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Tickets cannot be revealed for this order');
+  }
+
+  if (!row.ticketId) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
+  }
+
+  return {
+    orderStatus: row.orderStatus,
+    ticketId: row.ticketId,
+    revealedAt: row.revealedAt,
+    voidedAt: row.voidedAt,
+  };
+};
+
 export const revealTicket = async (orderId: string, ticketId: string) => {
-  return withOrderActionLock(orderId, 'ticket reveal', async () => {
-    await findTicketOrderStatus(orderId);
+  const totalStart = Date.now();
+  let noop = false;
 
-    const [ticket] = await db
-      .select()
-      .from(tickets)
-      .where(and(eq(tickets.id, ticketId), eq(tickets.orderId, orderId)))
-      .limit(1);
+  logger.info({ orderId, ticketId }, 'revealTicket start');
 
-    if (!ticket) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
-    }
+  try {
+    const result = await withOrderActionLock(orderId, 'ticket reveal', async () => {
+      const contextStepStart = Date.now();
+      const ticket = await loadRevealTicketContext(orderId, ticketId);
+      logger.info(
+        {
+          orderId,
+          ticketId,
+          step: 'load reveal context',
+          ms: Date.now() - contextStepStart,
+        },
+        'revealTicket step',
+      );
 
-    if (ticket.voidedAt) {
-      throw new Exception(HttpStatusCode.CONFLICT, 'Ticket is voided');
-    }
+      if (ticket.voidedAt) {
+        throw new Exception(HttpStatusCode.CONFLICT, 'Ticket is voided');
+      }
 
-    if (ticket.revealedAt) {
-      return getTicketViewById(orderId, ticketId);
-    }
+      if (!ticket.revealedAt) {
+        const updateStepStart = Date.now();
+        await db
+          .update(tickets)
+          .set({
+            revealedAt: new Date(),
+          })
+          .where(eq(tickets.id, ticket.ticketId));
 
-    await db
-      .update(tickets)
-      .set({
-        revealedAt: new Date(),
-      })
-      .where(eq(tickets.id, ticket.id));
+        logger.info(
+          {
+            orderId,
+            ticketId,
+            step: 'update ticket',
+            ms: Date.now() - updateStepStart,
+          },
+          'revealTicket step',
+        );
+      } else {
+        noop = true;
+      }
 
-    return getTicketViewById(orderId, ticketId);
-  });
+      const responseStepStart = Date.now();
+      const response = await getGuestTicketViewById(orderId, ticketId);
+      logger.info(
+        {
+          orderId,
+          ticketId,
+          step: 'load response view',
+          ms: Date.now() - responseStepStart,
+          noop,
+        },
+        'revealTicket step',
+      );
+
+      return response;
+    });
+
+    logger.info(
+      {
+        orderId,
+        ticketId,
+        totalMs: Date.now() - totalStart,
+        noop,
+      },
+      'revealTicket end',
+    );
+    return result;
+  } catch (error) {
+    logger.info(
+      {
+        orderId,
+        ticketId,
+        totalMs: Date.now() - totalStart,
+        noop,
+      },
+      'revealTicket end',
+    );
+    throw error;
+  }
 };
 
 export const revealAllTickets = async (orderId: string) => {
-  return withOrderActionLock(orderId, 'ticket reveal', async () => {
-    await findTicketOrderStatus(orderId);
+  const totalStart = Date.now();
 
-    await db
-      .update(tickets)
-      .set({
-        revealedAt: sql`COALESCE(${tickets.revealedAt}, now())`,
-      })
-      .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`, sql`${tickets.revealedAt} IS NULL`));
+  logger.info({ orderId }, 'revealAllTickets start');
 
-    return getGuestTicketView((await getOrderDetailById(orderId)).publicId);
-  });
+  try {
+    const result = await withOrderActionLock(orderId, 'ticket reveal', async () => {
+      const statusStepStart = Date.now();
+      await findTicketOrderStatus(orderId);
+      logger.info(
+        {
+          orderId,
+          step: 'load reveal context',
+          ms: Date.now() - statusStepStart,
+        },
+        'revealAllTickets step',
+      );
+
+      const updateStepStart = Date.now();
+      await db
+        .update(tickets)
+        .set({
+          revealedAt: sql`COALESCE(${tickets.revealedAt}, now())`,
+        })
+        .where(and(eq(tickets.orderId, orderId), sql`${tickets.voidedAt} IS NULL`, sql`${tickets.revealedAt} IS NULL`));
+      logger.info(
+        {
+          orderId,
+          step: 'bulk reveal',
+          ms: Date.now() - updateStepStart,
+        },
+        'revealAllTickets step',
+      );
+
+      const responseStepStart = Date.now();
+      const response = await getGuestTicketViewByOrderId(orderId);
+      logger.info(
+        {
+          orderId,
+          step: 'load response view',
+          ms: Date.now() - responseStepStart,
+        },
+        'revealAllTickets step',
+      );
+
+      return response;
+    });
+
+    logger.info(
+      {
+        orderId,
+        totalMs: Date.now() - totalStart,
+      },
+      'revealAllTickets end',
+    );
+    return result;
+  } catch (error) {
+    logger.info(
+      {
+        orderId,
+        totalMs: Date.now() - totalStart,
+      },
+      'revealAllTickets end',
+    );
+    throw error;
+  }
 };
 
 export const listAdminOrders = async (filters: { status?: OrderStatus; cursor?: string; limit?: number }) => {

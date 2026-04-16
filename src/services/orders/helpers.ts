@@ -32,6 +32,17 @@ type PrimaryProductImageRow = {
   altText: string | null;
 };
 
+type GuestTicketCollectionView = {
+  tickets: OrderTicketView[];
+  revealed: OrderTicketView[];
+  unrevealed: OrderTicketView[];
+  counts: {
+    total: number;
+    revealed: number;
+    unrevealed: number;
+  };
+};
+
 const readCustomerSnapshotField = (
   snapshot: Record<string, unknown> | null | undefined,
   field: 'email' | 'firstName' | 'lastName' | 'phone',
@@ -81,6 +92,42 @@ const loadPrimaryProductImages = async (productIds: string[]) => {
   }
 
   return primaryImages;
+};
+
+const mapTicketRow = (row: OrderTicketJoinRow, primaryTicketImages: Map<string, PrimaryProductImageRow>) => {
+  const image = resolveImage(primaryTicketImages.get(row.product.id) ?? null, row.product.name);
+
+  return {
+    id: row.ticket.id,
+    ticketNumber: row.ticket.ticketNumber,
+    revealedAt: row.ticket.revealedAt,
+    voidedAt: row.ticket.voidedAt,
+    voidReason: row.ticket.voidReason,
+    prize: {
+      id: row.prize.id,
+      name: row.prize.name,
+      description: row.prize.description,
+      imageUrl: row.prize.imageUrl,
+      prizeCode: row.prize.prizeCode,
+    },
+    kujiProduct: {
+      id: row.product.id,
+      name: row.product.name,
+      slug: row.product.slug,
+      imageUrl: image.imageUrl,
+      imageAltText: image.imageAltText,
+    },
+    createdAt: row.ticket.createdAt,
+  } satisfies OrderTicketView;
+};
+
+const mapTicketRows = async (ticketJoinRows: OrderTicketJoinRow[]) => {
+  if (!ticketJoinRows.length) return [];
+
+  const ticketProductIds = [...new Set(ticketJoinRows.map((row) => row.product.id))];
+  const primaryTicketImages = await loadPrimaryProductImages(ticketProductIds);
+
+  return ticketJoinRows.map((row) => mapTicketRow(row, primaryTicketImages));
 };
 
 const mapOrderDetail = (
@@ -161,8 +208,40 @@ const loadOrderRecord = async (whereClause: ReturnType<typeof and> | ReturnType<
   return row;
 };
 
+export const loadOrderTicketRows = async (orderId: string) => {
+  const ticketJoinRows = (await db
+    .select({
+      ticket: tickets,
+      prize: kujiPrizes,
+      product: products,
+    })
+    .from(tickets)
+    .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
+    .innerJoin(products, eq(products.id, tickets.kujiProductId))
+    .where(eq(tickets.orderId, orderId))
+    .orderBy(asc(tickets.createdAt), asc(tickets.id))) as OrderTicketJoinRow[];
+
+  return mapTicketRows(ticketJoinRows);
+};
+
+export const buildGuestTicketCollection = (ticketRows: OrderTicketView[]): GuestTicketCollectionView => {
+  const revealed = ticketRows.filter((ticket) => Boolean(ticket.revealedAt));
+  const unrevealed = ticketRows.filter((ticket) => !ticket.revealedAt);
+
+  return {
+    tickets: ticketRows,
+    revealed,
+    unrevealed,
+    counts: {
+      total: ticketRows.length,
+      revealed: revealed.length,
+      unrevealed: unrevealed.length,
+    },
+  };
+};
+
 const loadOrderChildren = async (orderId: string) => {
-  const [itemRows, shipmentRow, ticketJoinRows] = await Promise.all([
+  const [itemRows, shipmentRow, ticketRows] = await Promise.all([
     db
       .select({
         item: orderItems,
@@ -175,49 +254,8 @@ const loadOrderChildren = async (orderId: string) => {
       .orderBy(asc(orderItems.createdAt), asc(orderItems.id)),
 
     db.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1),
-
-    db
-      .select({
-        ticket: tickets,
-        prize: kujiPrizes,
-        product: products,
-      })
-      .from(tickets)
-      .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
-      .innerJoin(products, eq(products.id, tickets.kujiProductId))
-      .where(eq(tickets.orderId, orderId))
-      .orderBy(asc(tickets.createdAt), asc(tickets.id)),
+    loadOrderTicketRows(orderId),
   ]);
-
-  const ticketProductIds = [...new Set(ticketJoinRows.map((row) => row.product.id))];
-  const primaryTicketImages = await loadPrimaryProductImages(ticketProductIds);
-
-  const ticketRows: OrderTicketView[] = (ticketJoinRows as OrderTicketJoinRow[]).map((row) => {
-    const image = resolveImage(primaryTicketImages.get(row.product.id) ?? null, row.product.name);
-
-    return {
-      id: row.ticket.id,
-      ticketNumber: row.ticket.ticketNumber,
-      revealedAt: row.ticket.revealedAt,
-      voidedAt: row.ticket.voidedAt,
-      voidReason: row.ticket.voidReason,
-      prize: {
-        id: row.prize.id,
-        name: row.prize.name,
-        description: row.prize.description,
-        imageUrl: row.prize.imageUrl,
-        prizeCode: row.prize.prizeCode,
-      },
-      kujiProduct: {
-        id: row.product.id,
-        name: row.product.name,
-        slug: row.product.slug,
-        imageUrl: image.imageUrl,
-        imageAltText: image.imageAltText,
-      },
-      createdAt: row.ticket.createdAt,
-    };
-  });
 
   return {
     itemRows,
@@ -238,6 +276,32 @@ const getOrderDetailByPublicId = async (publicId: string) => {
   return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);
 };
 
+export const getGuestTicketViewByOrderId = async (orderId: string) => {
+  const ticketRows = await loadOrderTicketRows(orderId);
+  return buildGuestTicketCollection(ticketRows);
+};
+
+export const getGuestTicketViewById = async (orderId: string, ticketId: string) => {
+  const [row] = (await db
+    .select({
+      ticket: tickets,
+      prize: kujiPrizes,
+      product: products,
+    })
+    .from(tickets)
+    .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
+    .innerJoin(products, eq(products.id, tickets.kujiProductId))
+    .where(and(eq(tickets.orderId, orderId), eq(tickets.id, ticketId)))
+    .limit(1)) as OrderTicketJoinRow[];
+
+  if (!row) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
+  }
+
+  const primaryTicketImages = await loadPrimaryProductImages([row.product.id]);
+  return mapTicketRow(row, primaryTicketImages);
+};
+
 export const getGuestOrderView = async (publicId: string) => {
   const detail = await getOrderDetailByPublicId(publicId);
 
@@ -251,18 +315,6 @@ export const getGuestOrderView = async (publicId: string) => {
 };
 
 export const getGuestTicketView = async (publicId: string) => {
-  const detail = await getGuestOrderView(publicId);
-  const revealed = detail.tickets.filter((ticket) => Boolean(ticket.revealedAt));
-  const unrevealed = detail.tickets.filter((ticket) => !ticket.revealedAt);
-
-  return {
-    tickets: detail.tickets,
-    revealed,
-    unrevealed,
-    counts: {
-      total: detail.tickets.length,
-      revealed: revealed.length,
-      unrevealed: unrevealed.length,
-    },
-  };
+  const row = await loadOrderRecord(eq(orders.publicId, publicId));
+  return getGuestTicketViewByOrderId(row.order.id);
 };

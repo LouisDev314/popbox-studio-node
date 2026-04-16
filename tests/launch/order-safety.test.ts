@@ -40,6 +40,8 @@ const mocks = vi.hoisted(() => {
     getOrderDetailByIdMock: vi.fn(),
     getGuestOrderViewMock: vi.fn(),
     getGuestTicketViewMock: vi.fn(),
+    getGuestTicketViewByIdMock: vi.fn(),
+    getGuestTicketViewByOrderIdMock: vi.fn(),
     tryAcquireAdvisoryLockMock: vi.fn(),
     releaseAdvisoryLockMock: vi.fn(),
   };
@@ -60,6 +62,8 @@ vi.mock('../../src/services/orders/helpers', () => ({
   getOrderDetailById: mocks.getOrderDetailByIdMock,
   getGuestOrderView: mocks.getGuestOrderViewMock,
   getGuestTicketView: mocks.getGuestTicketViewMock,
+  getGuestTicketViewById: mocks.getGuestTicketViewByIdMock,
+  getGuestTicketViewByOrderId: mocks.getGuestTicketViewByOrderIdMock,
 }));
 vi.mock('../../src/jobs/advisory-lock', () => ({
   tryAcquireAdvisoryLock: mocks.tryAcquireAdvisoryLockMock,
@@ -88,6 +92,38 @@ describe('launch: order and payment safety invariants', () => {
       tickets: [],
     });
     mocks.getGuestTicketViewMock.mockResolvedValue({
+      tickets: [],
+      revealed: [],
+      unrevealed: [],
+      counts: {
+        total: 0,
+        revealed: 0,
+        unrevealed: 0,
+      },
+    });
+    mocks.getGuestTicketViewByIdMock.mockResolvedValue({
+      id: 'ticket_1',
+      ticketNumber: 'PBX-TKT-1',
+      revealedAt: new Date('2026-03-28T00:00:00.000Z'),
+      voidedAt: null,
+      voidReason: null,
+      prize: {
+        id: 'prize_1',
+        name: 'Prize A',
+        description: null,
+        imageUrl: null,
+        prizeCode: 'A',
+      },
+      kujiProduct: {
+        id: 'product_1',
+        name: 'Kuji Box',
+        slug: 'kuji-box',
+        imageUrl: null,
+        imageAltText: 'Kuji Box',
+      },
+      createdAt: new Date('2026-03-28T00:00:00.000Z'),
+    });
+    mocks.getGuestTicketViewByOrderIdMock.mockResolvedValue({
       tickets: [],
       revealed: [],
       unrevealed: [],
@@ -579,53 +615,87 @@ describe('launch: order and payment safety invariants', () => {
       createdAt: new Date('2026-03-28T00:00:00.000Z'),
     };
 
-    mocks.db.select
-      .mockReturnValueOnce(createChain([{ status: 'paid' }]))
-      .mockReturnValueOnce(
-        createChain([
-          {
-            id: 'ticket_1',
-            orderId: 'ord_launch',
-            revealedAt: new Date('2026-03-28T00:00:00.000Z'),
-            voidedAt: null,
-          },
-        ]),
-      );
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          orderStatus: 'paid',
+          ticketId: 'ticket_1',
+          revealedAt: new Date('2026-03-28T00:00:00.000Z'),
+          voidedAt: null,
+        },
+      ]),
+    );
     mocks.db.update.mockReturnValue(createChain(undefined));
-    mocks.getOrderDetailByIdMock.mockResolvedValue({
-      publicId: 'PBX-LAUNCH',
-    });
-    mocks.getGuestTicketViewMock.mockResolvedValue({
-      tickets: [ticketView],
-      revealed: [ticketView],
-      unrevealed: [],
-      counts: {
-        total: 1,
-        revealed: 1,
-        unrevealed: 0,
-      },
-    });
+    mocks.getGuestTicketViewByIdMock.mockResolvedValue(ticketView);
 
     const { revealTicket } = await importFresh(() => import('../../src/services/orders'));
     const result = await revealTicket('ord_launch', 'ticket_1');
 
     expect(result).toEqual(ticketView);
     expect(mocks.db.update).not.toHaveBeenCalled();
+    expect(mocks.getGuestTicketViewByIdMock).toHaveBeenCalledWith('ord_launch', 'ticket_1');
+    expect(mocks.getOrderDetailByIdMock).not.toHaveBeenCalled();
+    expect(mocks.getGuestTicketViewMock).not.toHaveBeenCalled();
+  });
+
+  it('reveals an unrevealed ticket once and returns the ticket-specific view', async () => {
+    const ticketView = {
+      id: 'ticket_1',
+      ticketNumber: 'PBX-TKT-1',
+      revealedAt: new Date('2026-03-28T00:00:00.000Z'),
+      voidedAt: null,
+      voidReason: null,
+      prize: {
+        id: 'prize_1',
+        name: 'Prize A',
+        description: null,
+        imageUrl: null,
+        prizeCode: 'A',
+      },
+      kujiProduct: {
+        id: 'product_1',
+        name: 'Kuji Box',
+        slug: 'kuji-box',
+        imageUrl: null,
+        imageAltText: 'Kuji Box',
+      },
+      createdAt: new Date('2026-03-28T00:00:00.000Z'),
+    };
+
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          orderStatus: 'paid',
+          ticketId: 'ticket_1',
+          revealedAt: null,
+          voidedAt: null,
+        },
+      ]),
+    );
+    mocks.db.update.mockReturnValue(createChain(undefined));
+    mocks.getGuestTicketViewByIdMock.mockResolvedValue(ticketView);
+
+    const { revealTicket } = await importFresh(() => import('../../src/services/orders'));
+    const result = await revealTicket('ord_launch', 'ticket_1');
+
+    expect(result).toEqual(ticketView);
+    expect(mocks.db.update).toHaveBeenCalledTimes(1);
+    expect(mocks.getGuestTicketViewByIdMock).toHaveBeenCalledWith('ord_launch', 'ticket_1');
+    expect(mocks.getOrderDetailByIdMock).not.toHaveBeenCalled();
+    expect(mocks.getGuestTicketViewMock).not.toHaveBeenCalled();
   });
 
   it('keeps voided tickets non-revealable', async () => {
-    mocks.db.select
-      .mockReturnValueOnce(createChain([{ status: 'paid' }]))
-      .mockReturnValueOnce(
-        createChain([
-          {
-            id: 'ticket_1',
-            orderId: 'ord_launch',
-            revealedAt: null,
-            voidedAt: new Date('2026-03-28T00:00:00.000Z'),
-          },
-        ]),
-      );
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          orderStatus: 'paid',
+          ticketId: 'ticket_1',
+          revealedAt: null,
+          voidedAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ]),
+    );
     mocks.db.update.mockReturnValue(createChain(undefined));
 
     const { revealTicket } = await importFresh(() => import('../../src/services/orders'));
@@ -634,6 +704,54 @@ describe('launch: order and payment safety invariants', () => {
       msg: 'Ticket is voided',
     });
     expect(mocks.db.update).not.toHaveBeenCalled();
+  });
+
+  it('reveals all non-voided unrevealed tickets and returns the order ticket collection', async () => {
+    const ticketView = {
+      id: 'ticket_1',
+      ticketNumber: 'PBX-TKT-1',
+      revealedAt: new Date('2026-03-28T00:00:00.000Z'),
+      voidedAt: null,
+      voidReason: null,
+      prize: {
+        id: 'prize_1',
+        name: 'Prize A',
+        description: null,
+        imageUrl: null,
+        prizeCode: 'A',
+      },
+      kujiProduct: {
+        id: 'product_1',
+        name: 'Kuji Box',
+        slug: 'kuji-box',
+        imageUrl: null,
+        imageAltText: 'Kuji Box',
+      },
+      createdAt: new Date('2026-03-28T00:00:00.000Z'),
+    };
+    const ticketCollection = {
+      tickets: [ticketView],
+      revealed: [ticketView],
+      unrevealed: [],
+      counts: {
+        total: 1,
+        revealed: 1,
+        unrevealed: 0,
+      },
+    };
+
+    mocks.db.select.mockReturnValueOnce(createChain([{ status: 'paid' }]));
+    mocks.db.update.mockReturnValue(createChain(undefined));
+    mocks.getGuestTicketViewByOrderIdMock.mockResolvedValue(ticketCollection);
+
+    const { revealAllTickets } = await importFresh(() => import('../../src/services/orders'));
+    const result = await revealAllTickets('ord_launch');
+
+    expect(result).toEqual(ticketCollection);
+    expect(mocks.db.update).toHaveBeenCalledTimes(1);
+    expect(mocks.getGuestTicketViewByOrderIdMock).toHaveBeenCalledWith('ord_launch');
+    expect(mocks.getOrderDetailByIdMock).not.toHaveBeenCalled();
+    expect(mocks.getGuestTicketViewMock).not.toHaveBeenCalled();
   });
 
   it('disallows admins from generically setting orders back to paid', async () => {
