@@ -1,9 +1,9 @@
 import { Server } from 'http';
-import type { Express } from 'express';
 import getEnvConfig from './config/env';
 import logger from './utils/logger';
 import { pgInit, pgStop } from './db';
 import { startBackgroundJobs } from './jobs';
+import { createApp } from './app';
 import { initSentry } from './integrations/sentry';
 
 /* -------------------------Setup variables------------------------- */
@@ -14,7 +14,6 @@ const HTTP_REQUEST_TIMEOUT_MS = 30000;
 const HTTP_HEADERS_TIMEOUT_MS = 35000;
 const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5000;
 initSentry();
-let appPromise: Promise<Express> | null = null;
 let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;
 let isShuttingDown = false;
@@ -27,18 +26,10 @@ const toError = (error: unknown) => {
   return new Error(typeof error === 'string' ? error : 'Unknown error');
 };
 
-const getApp = async () => {
-  if (!appPromise) {
-    appPromise = import('./app.js').then(({ createApp }) => createApp());
-  }
-
-  return appPromise;
-};
-
 /* -------------------------Init------------------------- */
 const listen = async () => {
   logger.info({ host: HTTP_HOST, port }, 'Server boot begin');
-  const app = await getApp();
+  const app = createApp();
 
   server = await new Promise<Server>((resolve, reject) => {
     const httpServer = app.listen(port, HTTP_HOST);
