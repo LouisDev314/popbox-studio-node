@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { requireGuestOrderAccess, exchangeGuestOrderAccess } from '../../../middleware/guest-order-access';
 import validateParams from '../../../middleware/request-param-validation';
 import validateQuery from '../../../middleware/request-query-validation';
-import { getGuestOrder, getGuestTickets, revealAllTickets, revealTicket } from '../../../services/orders';
+import { getGuestOrderById, getGuestTicketsByOrderId, revealAllTickets, revealTicket } from '../../../services/orders';
 import { readValidatedParams } from '../../../utils/validated-request';
 import { orderAccessQuerySchema, publicOrderParamsSchema, revealTicketParamsSchema } from '../../../schemas/order';
 
@@ -21,8 +21,13 @@ ordersRouter.get(
   validateParams(publicOrderParamsSchema, 'order public id'),
   requireGuestOrderAccess,
   async (req, res) => {
-    const params = readValidatedParams<z.infer<typeof publicOrderParamsSchema>>(req);
-    const result = await getGuestOrder(params.publicId);
+    void readValidatedParams<z.infer<typeof publicOrderParamsSchema>>(req);
+
+    if (!req.orderAccess) {
+      return res.send_unauthorized('Order access is required');
+    }
+
+    const result = await getGuestOrderById(req.orderAccess.orderId);
     return res.send_ok('Order retrieved', result);
   },
 );
@@ -32,8 +37,13 @@ ordersRouter.get(
   validateParams(publicOrderParamsSchema, 'order public id'),
   requireGuestOrderAccess,
   async (req, res) => {
-    const params = readValidatedParams<z.infer<typeof publicOrderParamsSchema>>(req);
-    const result = await getGuestTickets(params.publicId);
+    void readValidatedParams<z.infer<typeof publicOrderParamsSchema>>(req);
+
+    if (!req.orderAccess) {
+      return res.send_unauthorized('Order access is required');
+    }
+
+    const result = await getGuestTicketsByOrderId(req.orderAccess.orderId);
     return res.send_ok('Order tickets retrieved', result);
   },
 );

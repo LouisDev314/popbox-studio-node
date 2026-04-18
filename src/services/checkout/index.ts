@@ -1,9 +1,9 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import stripe from '../../integrations/stripe';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
-import { inventoryReservations, orderItems, orders, payments, productInventory } from '../../db/schema';
+import { inventoryReservations, orderItems, orders, payments } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { createGuestAccessToken, createPublicId, hashGuestAccessToken } from '../../utils/crypto';
@@ -11,23 +11,22 @@ import logger from '../../utils/logger';
 import { getGuestOrderView } from '../orders/helpers';
 import { CreateCheckoutSessionInput, LockedProductRow } from '../../types/checkout';
 import { buildClientOrderUrl } from '../../utils/guest-order-access';
+import { isCheckoutFinalizedOrderStatus } from '../../constants/order-status';
 import {
   createOrUpdateCustomer,
   ensurePaymentSessionMetadata,
-  lockProductForCheckout,
+  incrementReservedInventoryForCheckout,
+  lockProductsForCheckout,
   normalizeEmail,
   normalizeItems,
   releaseReservationsForOrder,
 } from './helpers';
 import { getCheckoutSessionExpiry } from '../../utils/checkout';
+import { CHECKOUT_MAX_LINE_ITEMS } from '../../constants/checkout';
+import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
-const FINALIZED_CHECKOUT_ORDER_STATUSES = ['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'] as const;
-const isFinalizedCheckoutOrderStatus = (
-  status: (typeof orders.$inferSelect)['status'],
-): status is (typeof FINALIZED_CHECKOUT_ORDER_STATUSES)[number] =>
-  FINALIZED_CHECKOUT_ORDER_STATUSES.some((finalizedStatus) => finalizedStatus === status);
 
 type CheckoutSuccessPendingResult = {
   pending: true;
@@ -96,6 +95,13 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   }
 
   const normalizedItems = normalizeItems(input.items);
+  if (normalizedItems.length > CHECKOUT_MAX_LINE_ITEMS) {
+    throw new Exception(
+      HttpStatusCode.BAD_REQUEST,
+      `Checkout can contain at most ${CHECKOUT_MAX_LINE_ITEMS} distinct items`,
+    );
+  }
+
   const guestAccessTokenHash = hashGuestAccessToken(createGuestAccessToken());
   const { reservationExpiresAt, stripeExpiresAt } = getCheckoutSessionExpiry(
     getEnvConfig().stripeCheckoutSessionReservationTtl,
@@ -109,12 +115,16 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
   try {
     ({ createdOrder, orderProducts } = await db.transaction(async (tx) => {
       const currentCustomer = await createOrUpdateCustomer(tx, input);
+      const lockedProductMap = await lockProductsForCheckout(
+        tx,
+        normalizedItems.map((item) => item.productId),
+      );
 
       const lockedProducts: Array<LockedProductRow & { quantity: number }> = [];
       let runningSubtotal = 0;
 
       for (const item of normalizedItems) {
-        const lockedProduct = await lockProductForCheckout(tx, item.productId);
+        const lockedProduct = lockedProductMap.get(item.productId);
 
         if (!lockedProduct) {
           throw new Exception(HttpStatusCode.NOT_FOUND, `Product ${item.productId} was not found`);
@@ -161,10 +171,10 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
         throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create order');
       }
 
-      for (const item of lockedProducts) {
-        const [createdOrderItem] = await tx
-          .insert(orderItems)
-          .values({
+      const createdOrderItems = await tx
+        .insert(orderItems)
+        .values(
+          lockedProducts.map((item) => ({
             orderId: orderRow.id,
             productId: item.productId,
             productName: item.name,
@@ -176,28 +186,42 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
               slug: item.slug,
               description: item.description,
             },
-          })
-          .returning();
-
-        await tx.insert(inventoryReservations).values({
-          orderId: orderRow.id,
-          productId: item.productId,
-          quantity: item.quantity,
-          status: 'active',
-          expiresAt: reservationExpiresAt,
+          })),
+        )
+        .returning({
+          id: orderItems.id,
         });
 
-        await tx
-          .update(productInventory)
-          .set({
-            reserved: sql`${productInventory.reserved} + ${item.quantity}`,
-          })
-          .where(eq(productInventory.productId, item.productId));
-
-        if (!createdOrderItem) {
-          throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create order items');
-        }
+      if (createdOrderItems.length !== lockedProducts.length) {
+        throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create order items');
       }
+
+      const createdReservations = await tx
+        .insert(inventoryReservations)
+        .values(
+          lockedProducts.map((item) => ({
+            orderId: orderRow.id,
+            productId: item.productId,
+            quantity: item.quantity,
+            status: 'active' as const,
+            expiresAt: reservationExpiresAt,
+          })),
+        )
+        .returning({
+          id: inventoryReservations.id,
+        });
+
+      if (createdReservations.length !== lockedProducts.length) {
+        throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to create inventory reservations');
+      }
+
+      await incrementReservedInventoryForCheckout(
+        tx,
+        lockedProducts.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+      );
 
       await tx.insert(payments).values({
         orderId: orderRow.id,
@@ -290,9 +314,13 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
       .set({
         providerCheckoutSessionId: session.id,
         providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
-        rawResponse: session as unknown as Record<string, unknown>,
+        rawResponse: buildStripeCheckoutSessionSnapshot(session),
       })
       .where(eq(payments.orderId, createdOrder.id));
+
+    if (!session.url) {
+      throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Stripe Checkout Session did not return a hosted checkout URL');
+    }
 
     return {
       checkoutUrl: session.url,
@@ -352,7 +380,7 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for checkout session');
   }
 
-  if (!isFinalizedCheckoutOrderStatus(order.status)) {
+  if (!isCheckoutFinalizedOrderStatus(order.status)) {
     return {
       pending: true,
       retryable: true,

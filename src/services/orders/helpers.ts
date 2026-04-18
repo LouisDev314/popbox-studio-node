@@ -9,21 +9,86 @@ import {
   tickets,
 } from '../../db/schema';
 import { and, asc, eq, sql } from 'drizzle-orm';
-import { OrderDetailView, OrderRecordRow, OrderTicketView } from '../../types/order';
+import { OrderDetailView, OrderTicketView } from '../../types/order';
 import { db } from '../../db';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { buildImageUrl } from '../../utils/product';
 
 type OrderItemWithImageRow = {
-  item: typeof orderItems.$inferSelect;
-  image: typeof productImages.$inferSelect | null;
+  item: {
+    id: string;
+    productId: string;
+    productName: string;
+    productType: string;
+    unitPriceCents: number;
+    quantity: number;
+    lineTotalCents: number;
+    metadata: Record<string, unknown> | null;
+  };
+  image: {
+    storageKey: string;
+    altText: string | null;
+  } | null;
 };
 
 type OrderTicketJoinRow = {
-  ticket: typeof tickets.$inferSelect;
-  prize: typeof kujiPrizes.$inferSelect;
-  product: typeof products.$inferSelect;
+  ticket: {
+    id: string;
+    ticketNumber: string;
+    revealedAt: Date | null;
+    voidedAt: Date | null;
+    voidReason: string | null;
+    createdAt: Date;
+  };
+  prize: {
+    id: string;
+    name: string;
+    description: string | null;
+    imageUrl: string | null;
+    prizeCode: string;
+  };
+  product: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+};
+
+type ShipmentRow = {
+  carrierName: string | null;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  shippedAt: Date | null;
+  deliveredAt: Date | null;
+};
+
+type OrderRecordRow = {
+  order: {
+    id: string;
+    publicId: string;
+    status: string;
+    includesLastOnePrize: boolean;
+    currency: string;
+    subtotalCents: number;
+    taxCents: number;
+    shippingCents: number;
+    totalCents: number;
+    customerDetailsJson: Record<string, unknown> | null;
+    shippingAddressJson: Record<string, unknown>;
+    billingAddressJson: Record<string, unknown> | null;
+    placedAt: Date | null;
+    paidAt: Date | null;
+    cancelledAt: Date | null;
+    refundedAt: Date | null;
+  };
+  customer: {
+    id: string;
+    email: string;
+    firstName: string | null;
+    lastName: string | null;
+    phone: string | null;
+  };
 };
 
 type PrimaryProductImageRow = {
@@ -145,7 +210,7 @@ const mapGuestOrderDetail = (detail: OrderDetailView): OrderDetailView => ({
 const mapOrderDetail = (
   row: OrderRecordRow,
   itemRows: OrderItemWithImageRow[],
-  shipmentRow: typeof shipments.$inferSelect | undefined,
+  shipmentRow: ShipmentRow | undefined,
   ticketRows: OrderTicketView[],
 ): OrderDetailView => {
   const customerSnapshot = row.order.customerDetailsJson ?? null;
@@ -205,8 +270,31 @@ const mapOrderDetail = (
 const loadOrderRecord = async (whereClause: ReturnType<typeof and> | ReturnType<typeof eq>) => {
   const [row] = await db
     .select({
-      order: orders,
-      customer: customers,
+      order: {
+        id: orders.id,
+        publicId: orders.publicId,
+        status: orders.status,
+        includesLastOnePrize: orders.includesLastOnePrize,
+        currency: orders.currency,
+        subtotalCents: orders.subtotalCents,
+        taxCents: orders.taxCents,
+        shippingCents: orders.shippingCents,
+        totalCents: orders.totalCents,
+        customerDetailsJson: orders.customerDetailsJson,
+        shippingAddressJson: orders.shippingAddressJson,
+        billingAddressJson: orders.billingAddressJson,
+        placedAt: orders.placedAt,
+        paidAt: orders.paidAt,
+        cancelledAt: orders.cancelledAt,
+        refundedAt: orders.refundedAt,
+      },
+      customer: {
+        id: customers.id,
+        email: customers.email,
+        firstName: customers.firstName,
+        lastName: customers.lastName,
+        phone: customers.phone,
+      },
     })
     .from(orders)
     .innerJoin(customers, eq(customers.id, orders.customerId))
@@ -223,9 +311,26 @@ const loadOrderRecord = async (whereClause: ReturnType<typeof and> | ReturnType<
 export const loadOrderTicketRows = async (orderId: string) => {
   const ticketJoinRows = (await db
     .select({
-      ticket: tickets,
-      prize: kujiPrizes,
-      product: products,
+      ticket: {
+        id: tickets.id,
+        ticketNumber: tickets.ticketNumber,
+        revealedAt: tickets.revealedAt,
+        voidedAt: tickets.voidedAt,
+        voidReason: tickets.voidReason,
+        createdAt: tickets.createdAt,
+      },
+      prize: {
+        id: kujiPrizes.id,
+        name: kujiPrizes.name,
+        description: kujiPrizes.description,
+        imageUrl: kujiPrizes.imageUrl,
+        prizeCode: kujiPrizes.prizeCode,
+      },
+      product: {
+        id: products.id,
+        name: products.name,
+        slug: products.slug,
+      },
     })
     .from(tickets)
     .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))
@@ -256,8 +361,20 @@ const loadOrderChildren = async (orderId: string) => {
   const [itemRows, shipmentRow, ticketRows] = await Promise.all([
     db
       .select({
-        item: orderItems,
-        image: productImages,
+        item: {
+          id: orderItems.id,
+          productId: orderItems.productId,
+          productName: orderItems.productName,
+          productType: orderItems.productType,
+          unitPriceCents: orderItems.unitPriceCents,
+          quantity: orderItems.quantity,
+          lineTotalCents: orderItems.lineTotalCents,
+          metadata: orderItems.metadata,
+        },
+        image: {
+          storageKey: productImages.storageKey,
+          altText: productImages.altText,
+        },
       })
       .from(orderItems)
       .innerJoin(products, eq(products.id, orderItems.productId))
@@ -265,7 +382,17 @@ const loadOrderChildren = async (orderId: string) => {
       .where(eq(orderItems.orderId, orderId))
       .orderBy(asc(orderItems.createdAt), asc(orderItems.id)),
 
-    db.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1),
+    db
+      .select({
+        carrierName: shipments.carrierName,
+        trackingNumber: shipments.trackingNumber,
+        trackingUrl: shipments.trackingUrl,
+        shippedAt: shipments.shippedAt,
+        deliveredAt: shipments.deliveredAt,
+      })
+      .from(shipments)
+      .where(eq(shipments.orderId, orderId))
+      .limit(1),
     loadOrderTicketRows(orderId),
   ]);
 
@@ -282,6 +409,11 @@ export const getOrderDetailById = async (orderId: string) => {
   return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);
 };
 
+export const getGuestOrderViewByOrderId = async (orderId: string) => {
+  const detail = await getOrderDetailById(orderId);
+  return mapGuestOrderDetail(detail);
+};
+
 const getOrderDetailByPublicId = async (publicId: string) => {
   const row = await loadOrderRecord(eq(orders.publicId, publicId));
   const children = await loadOrderChildren(row.order.id);
@@ -296,9 +428,26 @@ export const getGuestTicketViewByOrderId = async (orderId: string) => {
 export const getGuestTicketViewById = async (orderId: string, ticketId: string) => {
   const [row] = (await db
     .select({
-      ticket: tickets,
-      prize: kujiPrizes,
-      product: products,
+      ticket: {
+        id: tickets.id,
+        ticketNumber: tickets.ticketNumber,
+        revealedAt: tickets.revealedAt,
+        voidedAt: tickets.voidedAt,
+        voidReason: tickets.voidReason,
+        createdAt: tickets.createdAt,
+      },
+      prize: {
+        id: kujiPrizes.id,
+        name: kujiPrizes.name,
+        description: kujiPrizes.description,
+        imageUrl: kujiPrizes.imageUrl,
+        prizeCode: kujiPrizes.prizeCode,
+      },
+      product: {
+        id: products.id,
+        name: products.name,
+        slug: products.slug,
+      },
     })
     .from(tickets)
     .innerJoin(kujiPrizes, eq(kujiPrizes.id, tickets.kujiPrizeId))

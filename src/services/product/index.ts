@@ -120,22 +120,50 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
   // Runs all relation queries concurrently
   const [imagesRows, inventoryRows, tagMap, productCollectionRows, prizeRows] = await Promise.all([
     db
-      .select()
+      .select({
+        id: productImages.id,
+        productId: productImages.productId,
+        storageKey: productImages.storageKey,
+        altText: productImages.altText,
+        sortOrder: productImages.sortOrder,
+      })
       .from(productImages)
       .where(inArray(productImages.productId, productIds))
       .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
-    db.select().from(productInventory).where(inArray(productInventory.productId, productIds)),
+    db
+      .select({
+        productId: productInventory.productId,
+        onHand: productInventory.onHand,
+        reserved: productInventory.reserved,
+        lowStockThreshold: productInventory.lowStockThreshold,
+      })
+      .from(productInventory)
+      .where(inArray(productInventory.productId, productIds)),
     loadProductTagMap(productIds),
     db
       .select({
         productId: products.id,
-        collection: collections,
+        collection: {
+          id: collections.id,
+          name: collections.name,
+          slug: collections.slug,
+        },
       })
       .from(products)
       .innerJoin(collections, eq(collections.id, products.collectionId))
       .where(inArray(products.id, productIds)),
     db
-      .select()
+      .select({
+        id: kujiPrizes.id,
+        productId: kujiPrizes.productId,
+        prizeCode: kujiPrizes.prizeCode,
+        name: kujiPrizes.name,
+        description: kujiPrizes.description,
+        imageUrl: kujiPrizes.imageUrl,
+        remainingQuantity: kujiPrizes.remainingQuantity,
+        initialQuantity: kujiPrizes.initialQuantity,
+        sortOrder: kujiPrizes.sortOrder,
+      })
       .from(kujiPrizes)
       .where(inArray(kujiPrizes.productId, productIds))
       .orderBy(asc(kujiPrizes.sortOrder), asc(kujiPrizes.id)),
@@ -176,7 +204,12 @@ export const loadProductTagMap = async (productIds: string[]): Promise<Map<strin
   const rows = await db
     .select({
       productId: productTags.productId,
-      tag: tags,
+      tag: {
+        id: tags.id,
+        name: tags.name,
+        slug: tags.slug,
+        tagType: tags.tagType,
+      },
     })
     .from(productTags)
     .innerJoin(tags, eq(tags.id, productTags.tagId))
@@ -420,7 +453,24 @@ export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) 
 };
 
 export const getProductById = async (productId: string) => {
-  const [row] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+  const [row] = await db
+    .select({
+      id: products.id,
+      collectionId: products.collectionId,
+      name: products.name,
+      slug: products.slug,
+      description: products.description,
+      productType: products.productType,
+      status: products.status,
+      priceCents: products.priceCents,
+      currency: products.currency,
+      sku: products.sku,
+      createdAt: products.createdAt,
+      updatedAt: products.updatedAt,
+    })
+    .from(products)
+    .where(eq(products.id, productId))
+    .limit(1);
 
   if (!row) {
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Product not found');
@@ -432,7 +482,20 @@ export const getProductById = async (productId: string) => {
 
 export const getProductBySlug = async (slug: string) => {
   const [row] = await db
-    .select()
+    .select({
+      id: products.id,
+      collectionId: products.collectionId,
+      name: products.name,
+      slug: products.slug,
+      description: products.description,
+      productType: products.productType,
+      status: products.status,
+      priceCents: products.priceCents,
+      currency: products.currency,
+      sku: products.sku,
+      createdAt: products.createdAt,
+      updatedAt: products.updatedAt,
+    })
     .from(products)
     .where(and(eq(products.slug, slug), eq(products.status, 'active')))
     .limit(1);
@@ -585,7 +648,12 @@ export const listProducts = async (filters: ProductListFilters) => {
   }
 
   const rows = await db
-    .select()
+    .select({
+      id: products.id,
+      createdAt: products.createdAt,
+      priceCents: products.priceCents,
+      name: products.name,
+    })
     .from(products)
     .where(and(...conditions))
     .orderBy(...sortRows(sort))

@@ -14,6 +14,31 @@ export const ORDER_STATUS = {
 
 export type OrderStatus = (typeof ORDER_STATUS)[keyof typeof ORDER_STATUS];
 
+export const CHECKOUT_FINALIZED_ORDER_STATUSES = [
+  ORDER_STATUS.PAID,
+  ORDER_STATUS.PACKED,
+  ORDER_STATUS.SHIPPED,
+  ORDER_STATUS.REFUNDED,
+  ORDER_STATUS.PAID_NEEDS_ATTENTION,
+] as const;
+
+export const REFUNDABLE_ORDER_STATUSES = [
+  ORDER_STATUS.PAID,
+  ORDER_STATUS.PACKED,
+  ORDER_STATUS.SHIPPED,
+  ORDER_STATUS.PAID_NEEDS_ATTENTION,
+] as const;
+
+export const isCheckoutFinalizedOrderStatus = (
+  status: OrderStatus,
+): status is (typeof CHECKOUT_FINALIZED_ORDER_STATUSES)[number] =>
+  CHECKOUT_FINALIZED_ORDER_STATUSES.some((finalizedStatus) => finalizedStatus === status);
+
+export const isRefundableOrderStatus = (
+  status: OrderStatus,
+): status is (typeof REFUNDABLE_ORDER_STATUSES)[number] =>
+  REFUNDABLE_ORDER_STATUSES.some((refundableStatus) => refundableStatus === status);
+
 export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending_payment: ['paid', 'cancelled', 'expired', 'paid_needs_attention'],
   paid: ['packed', 'refunded', 'paid_needs_attention'],

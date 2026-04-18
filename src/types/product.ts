@@ -20,12 +20,24 @@ export type ProductListFilters = {
   status?: 'active' | 'draft' | 'archived';
 };
 
-export type ProductRow = typeof products.$inferSelect;
-export type ProductInventoryRow = typeof productInventory.$inferSelect;
-export type CollectionRow = typeof collections.$inferSelect;
-export type ProductImageRow = typeof productImages.$inferSelect;
-export type TagRow = typeof tags.$inferSelect;
-export type KujiPrizeRow = typeof kujiPrizes.$inferSelect;
+export type ProductRow = Pick<
+  typeof products.$inferSelect,
+  'id' | 'collectionId' | 'name' | 'slug' | 'description' | 'productType' | 'status' | 'priceCents' | 'currency' | 'sku' | 'createdAt' | 'updatedAt'
+>;
+export type ProductInventoryRow = Pick<
+  typeof productInventory.$inferSelect,
+  'productId' | 'onHand' | 'reserved' | 'lowStockThreshold'
+>;
+export type CollectionRow = Pick<typeof collections.$inferSelect, 'id' | 'name' | 'slug'>;
+export type ProductImageRow = Pick<
+  typeof productImages.$inferSelect,
+  'id' | 'productId' | 'storageKey' | 'altText' | 'sortOrder'
+>;
+export type TagRow = Pick<typeof tags.$inferSelect, 'id' | 'name' | 'slug' | 'tagType'>;
+export type KujiPrizeRow = Pick<
+  typeof kujiPrizes.$inferSelect,
+  'id' | 'productId' | 'prizeCode' | 'name' | 'description' | 'imageUrl' | 'remainingQuantity' | 'initialQuantity' | 'sortOrder'
+>;
 
 export type ProductRelationMaps = {
   images: Map<string, ProductImageRow[]>;

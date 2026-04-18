@@ -11,7 +11,7 @@
     "lint": "eslint --ext .js,.ts ./src",
     "lint:fix": "eslint --fix --ext .js,.ts ./src",
     "check": "pnpm lint:fix && pnpm typecheck && pnpm test",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.mts",
     "docker": "docker build -t popbox-studio-node . && docker run -p 3000:3000 popbox-studio-node"
   },
   "keywords": [],

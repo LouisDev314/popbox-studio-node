@@ -9,6 +9,9 @@ import { createApp } from './app';
 const { port } = getEnvConfig();
 const HTTP_HOST = '0.0.0.0';
 const DB_WARMUP_TIMEOUT_MS = 10000;
+const HTTP_REQUEST_TIMEOUT_MS = 30000;
+const HTTP_HEADERS_TIMEOUT_MS = 35000;
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5000;
 const app = createApp();
 let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;
@@ -30,6 +33,9 @@ const listen = async () => {
     const httpServer = app.listen(port, HTTP_HOST);
     const handleListen = () => {
       httpServer.off('error', handleError);
+      httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
+      httpServer.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+      httpServer.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
       logger.info({ host: HTTP_HOST, port }, 'HTTP listen success');
       resolve(httpServer);
     };
@@ -70,8 +76,8 @@ const warmDatabaseAndStartJobs = async () => {
 };
 
 const start = async () => {
-  await listen();
   await warmDatabaseAndStartJobs();
+  await listen();
 };
 
 /* -------------------------Graceful Shutdown------------------------- */
@@ -123,7 +129,8 @@ process.on('uncaughtException', (error) => {
   void stop('uncaughtException', 1);
 });
 process.on('unhandledRejection', (reason) => {
-  logger.error({ err: toError(reason), reason }, 'Unhandled promise rejection');
+  logger.fatal({ err: toError(reason), reason }, 'Unhandled promise rejection');
+  void stop('unhandledRejection', 1);
 });
 
 /* -------------------------------------------------------------------------- */

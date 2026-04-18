@@ -263,7 +263,17 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
 
   const rows = await db
     .select({
-      product: products,
+      product: {
+        id: products.id,
+        name: products.name,
+        slug: products.slug,
+        sku: products.sku,
+        status: products.status,
+        productType: products.productType,
+        priceCents: products.priceCents,
+        currency: products.currency,
+        updatedAt: products.updatedAt,
+      },
       inventorySortValue,
     })
     .from(products)
@@ -541,16 +551,21 @@ export const reorderProductImages = async (productId: string, imageIds: string[]
     throw new Exception(HttpStatusCode.NOT_FOUND, 'One or more product images were not found');
   }
 
-  await Promise.all(
-    imageIds.map((imageId, index) =>
-      db
-        .update(productImages)
-        .set({
-          sortOrder: index + 1,
-        })
-        .where(and(eq(productImages.id, imageId), eq(productImages.productId, productId))),
-    ),
+  const reorderValues = sql.join(
+    imageIds.map((imageId, index) => sql`(${imageId}::uuid, ${(index + 1).toString()}::int)`),
+    sql`, `,
   );
+
+  await db.execute(sql`
+    WITH reordered_images(id, sort_order) AS (
+      VALUES ${reorderValues}
+    )
+    UPDATE ${productImages} AS image
+    SET sort_order = reordered_images.sort_order
+    FROM reordered_images
+    WHERE image.id = reordered_images.id
+      AND image.product_id = ${productId}
+  `);
 
   const reorderedImages = await db
     .select()

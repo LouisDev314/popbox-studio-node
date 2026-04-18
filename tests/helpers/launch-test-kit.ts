@@ -14,6 +14,8 @@ type ChainMethodName =
   | 'limit'
   | 'values'
   | 'onConflictDoNothing'
+  | 'onConflictDoUpdate'
+  | 'groupBy'
   | 'set'
   | 'returning';
 
@@ -26,6 +28,8 @@ const DEFAULT_CHAIN_METHODS: ChainMethodName[] = [
   'limit',
   'values',
   'onConflictDoNothing',
+  'onConflictDoUpdate',
+  'groupBy',
   'set',
   'returning',
 ];

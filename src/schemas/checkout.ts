@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CHECKOUT_MAX_LINE_ITEMS } from '../constants/checkout';
 
 export const checkoutBodySchema = z.object({
   items: z
@@ -8,7 +9,8 @@ export const checkoutBodySchema = z.object({
         quantity: z.coerce.number().int().min(1).max(20),
       }),
     )
-    .min(1),
+    .min(1)
+    .max(CHECKOUT_MAX_LINE_ITEMS),
 });
 
 export const successQuerySchema = z.object({

@@ -1,6 +1,7 @@
 import { CheckoutItemInput, CreateCheckoutSessionInput, DbClient, LockedProductRow } from '../../types/checkout';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
+import { isCheckoutFinalizedOrderStatus } from '../../constants/order-status';
 import { db } from '../../db';
 import stripe from '../../integrations/stripe';
 import {
@@ -21,6 +22,7 @@ import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { isLastOnePrizeCode } from '../../utils/kuji';
+import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
 import { sendOrderConfirmationEmail, sendOrderNotificationEmail } from '../notifications';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
@@ -442,6 +444,63 @@ export const lockProductForCheckout = async (
   return result[0] as LockedProductRow | undefined;
 };
 
+export const lockProductsForCheckout = async (tx: DbClient, productIds: string[]): Promise<Map<string, LockedProductRow>> => {
+  if (productIds.length === 0) {
+    return new Map();
+  }
+
+  const requestedIds = sql.join(
+    [...new Set(productIds)].sort().map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await tx.execute(sql<LockedProductRow>`
+    SELECT
+      p.id AS "productId",
+      p.name,
+      p.slug,
+      p.description,
+      p.product_type AS "productType",
+      p.status,
+      p.price_cents AS "priceCents",
+      p.currency,
+      pi.on_hand AS "onHand",
+      pi.reserved
+    FROM products AS p
+    INNER JOIN product_inventory AS pi
+      ON pi.product_id = p.id
+    WHERE p.id IN (${requestedIds})
+    ORDER BY p.id
+    FOR UPDATE OF p, pi
+  `)) as LockedProductRow[];
+
+  return new Map<string, LockedProductRow>(rows.map((row) => [row.productId, row] as const));
+};
+
+export const incrementReservedInventoryForCheckout = async (
+  tx: DbClient,
+  items: Array<{ productId: string; quantity: number }>,
+) => {
+  if (!items.length) {
+    return;
+  }
+
+  const deltas = sql.join(
+    items.map((item) => sql`(${item.productId}::uuid, ${item.quantity}::int)`),
+    sql`, `,
+  );
+
+  await tx.execute(sql`
+    WITH inventory_deltas(product_id, quantity) AS (
+      VALUES ${deltas}
+    )
+    UPDATE product_inventory AS pi
+    SET reserved = pi.reserved + inventory_deltas.quantity
+    FROM inventory_deltas
+    WHERE pi.product_id = inventory_deltas.product_id
+  `);
+};
+
 export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckoutSessionInput) => {
   if (input.email) {
     const email = normalizeEmail(input.email);
@@ -687,7 +746,11 @@ export const expireStripeCheckoutSessionIfOpen = async (
 
 export const allocateKujiTickets = async (tx: DbClient, orderId: string, customerId: string) => {
   const kujiItems = await tx
-    .select()
+    .select({
+      id: orderItems.id,
+      productId: orderItems.productId,
+      quantity: orderItems.quantity,
+    })
     .from(orderItems)
     .where(and(eq(orderItems.orderId, orderId), eq(orderItems.productType, 'kuji')));
 
@@ -764,15 +827,17 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       lastOnePrize.remainingQuantity = 0;
     }
 
-    for (const kujiPrizeId of ticketPrizeIds) {
-      await tx.insert(tickets).values({
-        orderId,
-        orderItemId: item.id,
-        customerId,
-        kujiProductId: item.productId,
-        kujiPrizeId,
-        ticketNumber: createTicketNumber(),
-      });
+    if (ticketPrizeIds.length > 0) {
+      await tx.insert(tickets).values(
+        ticketPrizeIds.map((kujiPrizeId) => ({
+          orderId,
+          orderItemId: item.id,
+          customerId,
+          kujiProductId: item.productId,
+          kujiPrizeId,
+          ticketNumber: createTicketNumber(),
+        })),
+      );
     }
 
     for (const prize of prizePool) {
@@ -891,7 +956,7 @@ export const markOrderPaidNeedsAttention = async (
       customerId: finalizedCustomerId,
       status: 'paid_needs_attention',
       includesLastOnePrize: false,
-      currency: finalizedAmounts.currency || 'CAD',
+      currency: finalizedAmounts.currency,
       stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
       customerDetailsJson: finalizedSnapshots.customerDetailsJson,
@@ -912,9 +977,9 @@ export const markOrderPaidNeedsAttention = async (
       providerCheckoutSessionId: session.id,
       providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
       amountCents: finalizedAmounts.totalCents,
-      currency: finalizedAmounts.currency || 'CAD',
+      currency: finalizedAmounts.currency,
       status: 'paid',
-      rawResponse: session as unknown as Record<string, unknown>,
+      rawResponse: buildStripeCheckoutSessionSnapshot(session),
     })
     .where(eq(payments.orderId, orderId));
 };
@@ -1259,7 +1324,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
 
       orderPublicId = lockedOrder.publicId;
 
-      if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
+      if (isCheckoutFinalizedOrderStatus(lockedOrder.status)) {
         return {
           alreadyFinalized: true,
           needsAttention: lockedOrder.status === 'paid_needs_attention',
@@ -1323,7 +1388,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           amountCents: finalizedAmounts.totalCents,
           currency: finalizedAmounts.currency,
           status: 'paid',
-          rawResponse: hydratedSession as unknown as Record<string, unknown>,
+          rawResponse: buildStripeCheckoutSessionSnapshot(hydratedSession),
         })
         .where(eq(payments.orderId, orderId));
 

@@ -39,7 +39,9 @@ vi.mock('../../src/services/orders', async () => {
   return {
     ...actual,
     getGuestOrder: mocks.getGuestOrderMock,
+    getGuestOrderById: mocks.getGuestOrderMock,
     getGuestTickets: mocks.getGuestTicketsMock,
+    getGuestTicketsByOrderId: mocks.getGuestTicketsMock,
     revealTicket: mocks.revealTicketMock,
     revealAllTickets: mocks.revealAllTicketsMock,
   };
@@ -259,6 +261,6 @@ describe('launch: guest order access hardening', () => {
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
     expect(response.body.data.tickets[0]?.prize).toBeNull();
-    expect(mocks.getGuestTicketsMock).toHaveBeenCalledWith('PBX-LAUNCH');
+    expect(mocks.getGuestTicketsMock).toHaveBeenCalledWith('ord_launch');
   });
 });
