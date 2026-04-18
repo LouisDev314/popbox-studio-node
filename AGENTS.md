@@ -1,7 +1,6 @@
 # AGENTS.md
 
 When interacting with Postman resources, always use the Postman MCP server you have access to.
-Do not use curl or the Postman CLI unless I explicitly ask for it.
 
 ## What this repo is
 Backend-only repo for PopBox Studio, a single-vendor anime merchandise store.
@@ -54,6 +53,14 @@ Stack: Express + TypeScript + Supabase Postgres/Auth/Storage + Stripe + Resend.
 - Verify changed endpoints/flows
 - If Stripe code changed, verify raw-body webhook handling and idempotency
 - Keep diffs focused and minimal
+
+## Definition of done
+A task is done when:
+- it follows existing repo patterns
+- it is type-safe
+- it does not break current behavior unless intended
+- it is production-appropriate and explainable in an interview
+- pnpm check passes everything with no warning or errors or issues
 
 ## Planning rule
 Read `PLAN.md` before starting work if the task is multi-step, touches core commerce flows, or changes schema/payment/inventory/order logic.

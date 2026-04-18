@@ -8,7 +8,7 @@ import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { createGuestAccessToken, createPublicId, hashGuestAccessToken } from '../../utils/crypto';
 import logger from '../../utils/logger';
-import { getOrderDetailById } from '../orders/helpers';
+import { getGuestOrderView } from '../orders/helpers';
 import { CreateCheckoutSessionInput, LockedProductRow } from '../../types/checkout';
 import { buildClientOrderUrl } from '../../utils/guest-order-access';
 import {
@@ -40,7 +40,7 @@ type CheckoutSuccessFinalizedResult = {
   orderUrl: string;
   clientOrderUrl: string;
   needsAttention: boolean;
-  order: Awaited<ReturnType<typeof getOrderDetailById>>;
+  order: Awaited<ReturnType<typeof getGuestOrderView>>;
 };
 
 export type CheckoutSuccessResult = CheckoutSuccessPendingResult | CheckoutSuccessFinalizedResult;
@@ -342,6 +342,7 @@ export const getCheckoutSuccess = async (sessionId: string) => {
   const [order] = await db
     .select({
       status: orders.status,
+      publicId: orders.publicId,
     })
     .from(orders)
     .where(eq(orders.id, orderId))
@@ -358,7 +359,7 @@ export const getCheckoutSuccess = async (sessionId: string) => {
     } satisfies CheckoutSuccessPendingResult;
   }
 
-  const detail = await getOrderDetailById(orderId);
+  const detail = await getGuestOrderView(order.publicId);
   const clientOrderUrl = buildClientOrderUrl(detail.publicId);
 
   return {

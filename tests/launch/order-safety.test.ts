@@ -426,6 +426,116 @@ describe('launch: order and payment safety invariants', () => {
     );
     expect(tx.select).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it('sets the LO prize remaining quantity to zero when kuji allocation sells out the product', async () => {
+    const tx = createDbLikeMock();
+    const updateChains: Array<ReturnType<typeof createChain>> = [];
+
+    tx.select.mockReturnValueOnce(
+      createChain([
+        {
+          id: 'item_1',
+          orderId: 'ord_launch',
+          productId: 'prod_kuji',
+          quantity: 1,
+          productType: 'kuji',
+        },
+      ]),
+    );
+    tx.execute.mockResolvedValueOnce([
+      {
+        id: 'prize_normal',
+        prizeCode: 'A',
+        remainingQuantity: 1,
+        productId: 'prod_kuji',
+      },
+      {
+        id: 'prize_lo',
+        prizeCode: 'LO',
+        remainingQuantity: 1,
+        productId: 'prod_kuji',
+      },
+    ]);
+    tx.update.mockImplementation(() => {
+      const chain = createChain(undefined);
+      updateChains.push(chain);
+      return chain;
+    });
+    tx.insert.mockReturnValue(createChain(undefined));
+    tx.delete.mockReturnValue(createChain(undefined));
+
+    const { allocateKujiTickets } = await importFresh(() => import('../../src/services/checkout/helpers'));
+    const result = await allocateKujiTickets(tx, 'ord_launch', 'cust_1');
+
+    expect(result).toEqual({
+      includesLastOnePrize: true,
+    });
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(updateChains).toHaveLength(2);
+    expect(updateChains[0]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        remainingQuantity: 0,
+      }),
+    );
+    expect(updateChains[1]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        remainingQuantity: 0,
+      }),
+    );
+  });
+
+  it('keeps the LO prize quantity unchanged when kuji allocation does not sell out the product', async () => {
+    const tx = createDbLikeMock();
+    const updateChains: Array<ReturnType<typeof createChain>> = [];
+
+    tx.select.mockReturnValueOnce(
+      createChain([
+        {
+          id: 'item_1',
+          orderId: 'ord_launch',
+          productId: 'prod_kuji',
+          quantity: 1,
+          productType: 'kuji',
+        },
+      ]),
+    );
+    tx.execute.mockResolvedValueOnce([
+      {
+        id: 'prize_normal',
+        prizeCode: 'A',
+        remainingQuantity: 2,
+        productId: 'prod_kuji',
+      },
+      {
+        id: 'prize_lo',
+        prizeCode: 'LO',
+        remainingQuantity: 1,
+        productId: 'prod_kuji',
+      },
+    ]);
+    tx.update.mockImplementation(() => {
+      const chain = createChain(undefined);
+      updateChains.push(chain);
+      return chain;
+    });
+    tx.insert.mockReturnValue(createChain(undefined));
+    tx.delete.mockReturnValue(createChain(undefined));
+
+    const { allocateKujiTickets } = await importFresh(() => import('../../src/services/checkout/helpers'));
+    const result = await allocateKujiTickets(tx, 'ord_launch', 'cust_1');
+
+    expect(result).toEqual({
+      includesLastOnePrize: false,
+    });
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(updateChains).toHaveLength(1);
+    expect(updateChains[0]?.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        remainingQuantity: 1,
+      }),
+    );
   });
 
   it('does not block checkout finalization when order notification sending fails', async () => {

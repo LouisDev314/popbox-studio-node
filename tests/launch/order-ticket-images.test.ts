@@ -64,29 +64,33 @@ const buildOrderRecord = () => ({
 });
 
 const buildTicketJoinRow = (overrides?: {
+  ticketId?: string;
+  prizeId?: string;
+  prizeCode?: string;
+  prizeName?: string;
   revealedAt?: Date | null;
   productName?: string;
   productId?: string;
 }) => ({
   ticket: {
-    id: 'ticket_1',
+    id: overrides?.ticketId ?? 'ticket_1',
     orderId: 'ord_launch',
     orderItemId: 'item_1',
     customerId: 'cust_1',
     kujiProductId: overrides?.productId ?? 'prod_kuji',
-    kujiPrizeId: 'prize_1',
+    kujiPrizeId: overrides?.prizeId ?? 'prize_1',
     ticketNumber: 'PBX-TKT-1',
-    revealedAt: overrides?.revealedAt ?? new Date('2026-04-13T00:02:00.000Z'),
+    revealedAt: overrides && 'revealedAt' in overrides ? (overrides.revealedAt ?? null) : new Date('2026-04-13T00:02:00.000Z'),
     voidedAt: null,
     voidReason: null,
     createdAt: new Date('2026-04-13T00:00:30.000Z'),
     updatedAt: new Date('2026-04-13T00:02:00.000Z'),
   },
   prize: {
-    id: 'prize_1',
+    id: overrides?.prizeId ?? 'prize_1',
     productId: overrides?.productId ?? 'prod_kuji',
-    prizeCode: 'A',
-    name: 'Prize A',
+    prizeCode: overrides?.prizeCode ?? 'A',
+    name: overrides?.prizeName ?? 'Prize A',
     description: null,
     imageUrl: 'https://example.com/prize-a.png',
     initialQuantity: 10,
@@ -171,5 +175,83 @@ describe('launch: guest ticket kuji product images', () => {
 
     expect(result.tickets[0]?.kujiProduct.imageUrl).toBeNull();
     expect(result.tickets[0]?.kujiProduct.imageAltText).toBe('No Image Kuji');
+  });
+
+  it('masks unrevealed guest ticket prizes and keeps guest ticket collections internally consistent', async () => {
+    mocks.db.select
+      .mockReturnValueOnce(createChain([buildOrderRecord()]))
+      .mockReturnValueOnce(
+        createChain([
+          buildTicketJoinRow({
+            ticketId: 'ticket_unrevealed',
+            prizeId: 'prize_hidden',
+            prizeCode: 'B',
+            prizeName: 'Prize B',
+            revealedAt: null,
+          }),
+          buildTicketJoinRow({
+            ticketId: 'ticket_revealed',
+            prizeId: 'prize_visible',
+            prizeCode: 'A',
+            prizeName: 'Prize A',
+            revealedAt: new Date('2026-04-13T00:02:00.000Z'),
+          }),
+        ]),
+      );
+    mocks.db.execute.mockReturnValueOnce(createChain([buildProductImage()]));
+
+    const { getGuestTicketView } = await importFresh(() => import('../../src/services/orders/helpers'));
+    const result = await getGuestTicketView('PBX-LAUNCH');
+
+    expect(result.tickets).toHaveLength(2);
+    expect(result.tickets[0]).toEqual(
+      expect.objectContaining({
+        id: 'ticket_unrevealed',
+        revealedAt: null,
+        prize: null,
+      }),
+    );
+    expect(result.tickets[1]).toEqual(
+      expect.objectContaining({
+        id: 'ticket_revealed',
+        prize: expect.objectContaining({
+          id: 'prize_visible',
+          prizeCode: 'A',
+        }),
+      }),
+    );
+    expect(result.revealed.map((ticket) => ticket.id)).toEqual(['ticket_revealed']);
+    expect(result.unrevealed.map((ticket) => ticket.id)).toEqual(['ticket_unrevealed']);
+    expect(result.counts).toEqual({
+      total: 2,
+      revealed: 1,
+      unrevealed: 1,
+    });
+  });
+
+  it('masks unrevealed prize data in the guest ticket-by-id view', async () => {
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        buildTicketJoinRow({
+          ticketId: 'ticket_unrevealed',
+          prizeId: 'prize_hidden',
+          prizeCode: 'B',
+          prizeName: 'Prize B',
+          revealedAt: null,
+        }),
+      ]),
+    );
+    mocks.db.execute.mockReturnValueOnce(createChain([buildProductImage()]));
+
+    const { getGuestTicketViewById } = await importFresh(() => import('../../src/services/orders/helpers'));
+    const result = await getGuestTicketViewById('ord_launch', 'ticket_unrevealed');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'ticket_unrevealed',
+        revealedAt: null,
+        prize: null,
+      }),
+    );
   });
 });

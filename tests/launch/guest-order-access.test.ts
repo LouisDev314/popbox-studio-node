@@ -189,4 +189,76 @@ describe('launch: guest order access hardening', () => {
     expect(response.body.success).toBe(true);
     expect(response.body.data.publicId).toBe('PBX-LAUNCH');
   });
+
+  it('allows clean cookie-backed access on the guest tickets route', async () => {
+    mocks.db.select.mockReturnValue(
+      createChain([
+        {
+          id: 'ord_launch',
+          publicId: 'PBX-LAUNCH',
+          guestAccessTokenHash: 'legacy-hash',
+        },
+      ]),
+    );
+    mocks.getGuestTicketsMock.mockResolvedValue({
+      tickets: [
+        {
+          id: 'ticket_1',
+          ticketNumber: 'PBX-TKT-1',
+          revealedAt: null,
+          voidedAt: null,
+          voidReason: null,
+          prize: null,
+          kujiProduct: {
+            id: 'product_1',
+            name: 'Kuji Box',
+            slug: 'kuji-box',
+            imageUrl: null,
+            imageAltText: 'Kuji Box',
+          },
+          createdAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ],
+      revealed: [],
+      unrevealed: [
+        {
+          id: 'ticket_1',
+          ticketNumber: 'PBX-TKT-1',
+          revealedAt: null,
+          voidedAt: null,
+          voidReason: null,
+          prize: null,
+          kujiProduct: {
+            id: 'product_1',
+            name: 'Kuji Box',
+            slug: 'kuji-box',
+            imageUrl: null,
+            imageAltText: 'Kuji Box',
+          },
+          createdAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ],
+      counts: {
+        total: 1,
+        revealed: 0,
+        unrevealed: 1,
+      },
+    });
+
+    const {
+      GUEST_ORDER_SESSION_COOKIE_NAME,
+      createGuestOrderSessionToken,
+    } = await importFresh(() => import('../../src/utils/guest-order-access'));
+    const sessionToken = createGuestOrderSessionToken('PBX-LAUNCH');
+    const { createApp } = await importFresh(() => import('../../src/app'));
+
+    const response = await request(createApp())
+      .get('/api/v1/orders/PBX-LAUNCH/tickets')
+      .set('Cookie', `${GUEST_ORDER_SESSION_COOKIE_NAME}=${sessionToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.tickets[0]?.prize).toBeNull();
+    expect(mocks.getGuestTicketsMock).toHaveBeenCalledWith('PBX-LAUNCH');
+  });
 });

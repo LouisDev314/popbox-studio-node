@@ -715,6 +715,7 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       remainingQuantity: Number(row.remainingQuantity),
       productId: String(row.productId),
     }));
+    const lastOnePrize = prizePool.find((prize) => isLastOnePrizeCode(prize.prizeCode)) ?? null;
     const normalPrizePool = prizePool.filter((prize) => !isLastOnePrizeCode(prize.prizeCode));
     const totalRemaining = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
 
@@ -753,6 +754,16 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       ticketPrizeIds.push(selectedPrize.id);
     }
 
+    const shouldZeroLastOnePrize = Boolean(
+      lastOnePrize &&
+        lastOnePrize.remainingQuantity > 0 &&
+        normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0) === 0,
+    );
+
+    if (shouldZeroLastOnePrize && lastOnePrize) {
+      lastOnePrize.remainingQuantity = 0;
+    }
+
     for (const kujiPrizeId of ticketPrizeIds) {
       await tx.insert(tickets).values({
         orderId,
@@ -766,7 +777,9 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
     for (const prize of prizePool) {
       const drawnCount = selectedPrizeCounts.get(prize.id);
-      if (!drawnCount) continue;
+      const shouldSyncLastOne = shouldZeroLastOnePrize && lastOnePrize?.id === prize.id;
+
+      if (!drawnCount && !shouldSyncLastOne) continue;
 
       await tx
         .update(kujiPrizes)

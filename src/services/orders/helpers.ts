@@ -130,6 +130,18 @@ const mapTicketRows = async (ticketJoinRows: OrderTicketJoinRow[]) => {
   return ticketJoinRows.map((row) => mapTicketRow(row, primaryTicketImages));
 };
 
+const mapGuestTicket = (ticket: OrderTicketView): OrderTicketView => ({
+  ...ticket,
+  prize: ticket.revealedAt ? ticket.prize : null,
+});
+
+const mapGuestTickets = (ticketRows: OrderTicketView[]) => ticketRows.map((ticket) => mapGuestTicket(ticket));
+
+const mapGuestOrderDetail = (detail: OrderDetailView): OrderDetailView => ({
+  ...detail,
+  tickets: mapGuestTickets(detail.tickets),
+});
+
 const mapOrderDetail = (
   row: OrderRecordRow,
   itemRows: OrderItemWithImageRow[],
@@ -277,7 +289,7 @@ const getOrderDetailByPublicId = async (publicId: string) => {
 };
 
 export const getGuestTicketViewByOrderId = async (orderId: string) => {
-  const ticketRows = await loadOrderTicketRows(orderId);
+  const ticketRows = mapGuestTickets(await loadOrderTicketRows(orderId));
   return buildGuestTicketCollection(ticketRows);
 };
 
@@ -299,19 +311,12 @@ export const getGuestTicketViewById = async (orderId: string, ticketId: string) 
   }
 
   const primaryTicketImages = await loadPrimaryProductImages([row.product.id]);
-  return mapTicketRow(row, primaryTicketImages);
+  return mapGuestTicket(mapTicketRow(row, primaryTicketImages));
 };
 
 export const getGuestOrderView = async (publicId: string) => {
   const detail = await getOrderDetailByPublicId(publicId);
-
-  return {
-    ...detail,
-    tickets: detail.tickets.map((ticket) => ({
-      ...ticket,
-      prize: ticket.revealedAt ? ticket.prize : null,
-    })),
-  };
+  return mapGuestOrderDetail(detail);
 };
 
 export const getGuestTicketView = async (publicId: string) => {

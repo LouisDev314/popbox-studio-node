@@ -34,7 +34,7 @@ const mocks = vi.hoisted(() => {
       pgStop: vi.fn().mockResolvedValue(undefined),
     },
     stripe,
-    getOrderDetailByIdMock: vi.fn(),
+    getGuestOrderViewMock: vi.fn(),
   };
 });
 
@@ -43,7 +43,7 @@ vi.mock('../../src/integrations/stripe', () => ({
   default: mocks.stripe,
 }));
 vi.mock('../../src/services/orders/helpers', () => ({
-  getOrderDetailById: mocks.getOrderDetailByIdMock,
+  getGuestOrderView: mocks.getGuestOrderViewMock,
 }));
 
 describe('launch: checkout success', () => {
@@ -83,8 +83,8 @@ describe('launch: checkout success', () => {
         },
       }),
     );
-    mocks.db.select.mockReturnValue(createChain([{ status: 'paid' }]));
-    mocks.getOrderDetailByIdMock.mockResolvedValue({
+    mocks.db.select.mockReturnValue(createChain([{ status: 'paid', publicId: 'PBX-PAID' }]));
+    mocks.getGuestOrderViewMock.mockResolvedValue({
       id: 'ord_paid',
       publicId: 'PBX-PAID',
       status: 'paid',
@@ -92,7 +92,24 @@ describe('launch: checkout success', () => {
         email: 'customer@example.com',
       },
       items: [],
-      tickets: [],
+      tickets: [
+        {
+          id: 'ticket_1',
+          ticketNumber: 'PBX-TKT-1',
+          revealedAt: null,
+          voidedAt: null,
+          voidReason: null,
+          prize: null,
+          kujiProduct: {
+            id: 'product_1',
+            name: 'Kuji Box',
+            slug: 'kuji-box',
+            imageUrl: null,
+            imageAltText: 'Kuji Box',
+          },
+          createdAt: new Date('2026-03-28T00:00:00.000Z'),
+        },
+      ],
     });
 
     const { createApp } = await importFresh(() => import('../../src/app'));
@@ -103,6 +120,8 @@ describe('launch: checkout success', () => {
     expect(response.status).toBe(200);
     expect(response.body.data.pending).toBe(false);
     expect(response.body.data.clientOrderUrl).toBe(`${TEST_CLIENT_BASE_URL}/orders/PBX-PAID`);
+    expect(response.body.data.order.tickets[0]?.prize).toBeNull();
+    expect(mocks.getGuestOrderViewMock).toHaveBeenCalledWith('PBX-PAID');
     expect(readCookie(response, 'guest_order_session')).toContain('guest_order_session=');
   });
 
