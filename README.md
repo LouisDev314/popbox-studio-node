@@ -121,7 +121,7 @@ flowchart LR
 pnpm install
 ```
 
-Create a `.env` file (variables validated at startup—see below). Apply the SQL in `supabase/migrations/popbox_supabase_init_schema.sql` where required for auth sync, Kuji/search triggers, and related DB objects.
+Create a `.env` file (variables validated at startup—see below). Apply the SQL in `supabase/migrations/init.sql` where required for auth sync, Kuji/search triggers, and related DB objects.
 
 ```bash
 pnpm dev          # ts-node-dev → src/index.ts, listens on 0.0.0.0:$PORT (default 3000)

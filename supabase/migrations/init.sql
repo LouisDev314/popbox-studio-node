@@ -373,6 +373,24 @@ CREATE INDEX faq_items_published_sort_idx
 CREATE INDEX faq_items_category_sort_idx
   ON public.faq_items (category, sort_order, created_at, id);
 
+CREATE INDEX IF NOT EXISTS products_status_price_asc_idx
+    ON public.products (status, price_cents ASC, id DESC);
+
+CREATE INDEX IF NOT EXISTS products_status_price_desc_idx
+    ON public.products (status, price_cents DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS products_status_name_asc_idx
+    ON public.products (status, name ASC, id DESC);
+
+CREATE INDEX IF NOT EXISTS products_status_name_desc_idx
+    ON public.products (status, name DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS products_updated_idx
+    ON public.products (updated_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS orders_created_idx
+    ON public.orders (created_at DESC, id DESC);
+
 -- ============================================================================
 -- FUNCTIONS
 -- ============================================================================
@@ -732,3 +750,11 @@ DO UPDATE SET
     WHEN public.product_inventory.on_hand IS DISTINCT FROM EXCLUDED.on_hand THEN now()
     ELSE public.product_inventory.updated_at
   END;
+
+-- ============================================================================
+-- ORDERS NOTIFICATION COLUMNS (post-schema patch)
+-- ============================================================================
+
+ALTER TABLE public.orders
+    ADD COLUMN IF NOT EXISTS order_notification_sent_at timestamptz,
+    ADD COLUMN IF NOT EXISTS order_notification_error text;
