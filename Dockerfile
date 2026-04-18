@@ -7,17 +7,6 @@ RUN pnpm install --frozen-lockfile
 FROM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable
-
-ARG SENTRY_RELEASE
-ARG SENTRY_ORG
-ARG SENTRY_PROJECT
-ARG SENTRY_AUTH_TOKEN
-
-ENV SENTRY_RELEASE=$SENTRY_RELEASE
-ENV SENTRY_ORG=$SENTRY_ORG
-ENV SENTRY_PROJECT=$SENTRY_PROJECT
-ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
-
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm run build
