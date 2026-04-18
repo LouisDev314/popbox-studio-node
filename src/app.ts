@@ -12,6 +12,7 @@ import healthRouter from './routes/v1/health-router';
 import webhooksRouter from './routes/v1/webhooks-router';
 import { globalLimiter } from './middleware/rate-limit';
 import httpLogger from './utils/http-logger';
+import { Sentry } from './integrations/sentry';
 
 export const createApp = (): Express => {
   const { corsOrigin } = getEnvConfig();
@@ -21,6 +22,10 @@ export const createApp = (): Express => {
   app.disable('x-powered-by');
   // Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
   app.set('trust proxy', 1);
+  // TODO: testing
+  app.get('/debug-sentry', function mainHandler() {
+    throw new Error('My first Sentry error!');
+  });
   app.use(httpLogger);
   // Stripe webhook signature verification must see the untouched raw body.
   app.use('/api/v1/webhooks', webhooksRouter);
@@ -45,6 +50,9 @@ export const createApp = (): Express => {
   app.use('/api', rootRouter);
   app.use('/', healthRouter);
   app.use(notFoundHandler);
+
+  Sentry.setupExpressErrorHandler(app);
+
   app.use(exceptionHandler);
 
   return app;

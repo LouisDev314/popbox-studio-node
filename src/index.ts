@@ -4,6 +4,7 @@ import logger from './utils/logger';
 import { pgInit, pgStop } from './db';
 import { startBackgroundJobs } from './jobs';
 import { createApp } from './app';
+import { initSentry } from './integrations/sentry';
 
 /* -------------------------Setup variables------------------------- */
 const { port } = getEnvConfig();
@@ -12,6 +13,7 @@ const DB_WARMUP_TIMEOUT_MS = 10000;
 const HTTP_REQUEST_TIMEOUT_MS = 30000;
 const HTTP_HEADERS_TIMEOUT_MS = 35000;
 const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5000;
+initSentry();
 const app = createApp();
 let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;
