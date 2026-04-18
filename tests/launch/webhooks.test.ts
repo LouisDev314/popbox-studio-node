@@ -24,10 +24,17 @@ const mocks = vi.hoisted(() => {
     releaseAdvisoryLockMock: vi.fn(),
     finalizeCheckoutSessionMock: vi.fn(),
     releaseReservationsForOrderMock: vi.fn(),
+    captureExceptionMock: vi.fn(),
   };
 });
 
 vi.mock('../../src/db', () => mocks.dbModule);
+vi.mock('../../src/integrations/sentry', () => ({
+  Sentry: {
+    captureException: mocks.captureExceptionMock,
+    setupExpressErrorHandler: vi.fn(),
+  },
+}));
 vi.mock('../../src/jobs/advisory-lock', () => ({
   tryAcquireAdvisoryLock: mocks.tryAcquireAdvisoryLockMock,
   releaseAdvisoryLock: mocks.releaseAdvisoryLockMock,
@@ -134,5 +141,34 @@ describe('launch: Stripe webhooks', () => {
       duplicate: true,
     });
     expect(mocks.finalizeCheckoutSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('captures webhook processing failures before rethrowing them', async () => {
+    const { payload, signature } = buildWebhookRequest();
+    const failure = new Error('finalize exploded');
+
+    mocks.db.insert.mockReturnValue(createChain(undefined));
+    mocks.db.select.mockReturnValue(createChain([{ status: 'received' }]));
+    mocks.db.update.mockReturnValue(createChain([{ stripeEventId: 'evt_launch_1' }]));
+    mocks.finalizeCheckoutSessionMock.mockRejectedValue(failure);
+
+    const { handleStripeWebhook } = await importFresh(() => import('../../src/services/webhooks'));
+
+    await expect(handleStripeWebhook(signature, Buffer.from(payload, 'utf8'))).rejects.toThrow('finalize exploded');
+    expect(mocks.captureExceptionMock).toHaveBeenCalledWith(
+      failure,
+      expect.objectContaining({
+        tags: {
+          flow: 'stripe_webhook',
+        },
+        extra: expect.objectContaining({
+          stripeEventId: 'evt_launch_1',
+          eventType: 'checkout.session.completed',
+          stripeObjectId: 'cs_test_launch',
+          orderId: 'ord_launch',
+          orderPublicId: 'PBX-LAUNCH',
+        }),
+      }),
+    );
   });
 });

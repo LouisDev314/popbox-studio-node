@@ -10,6 +10,7 @@ import { finalizeCheckoutSession, releaseReservationsForOrder } from '../checkou
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 import logger from '../../utils/logger';
 import { buildStripeWebhookEventSnapshot } from '../../utils/stripe';
+import { Sentry } from '../../integrations/sentry';
 
 const getWebhookOrderContext = (event: Stripe.Event) => {
   const eventObject = event.data.object as {
@@ -127,6 +128,19 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
       duplicate: false,
     };
   } catch (error) {
+    Sentry.captureException(error, {
+      tags: {
+        flow: 'stripe_webhook',
+      },
+      extra: {
+        stripeEventId: event.id,
+        eventType: event.type,
+        stripeObjectId: webhookOrderContext.stripeObjectId,
+        orderId: webhookOrderContext.orderId,
+        orderPublicId: webhookOrderContext.orderPublicId,
+      },
+    });
+
     try {
       const updateResult = await db
         .update(stripeWebhookEvents)

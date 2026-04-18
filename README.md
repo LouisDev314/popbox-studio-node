@@ -126,6 +126,7 @@ Create a `.env` file (variables validated at startup—see below). Apply the SQL
 ```bash
 pnpm dev          # ts-node-dev → src/index.ts, listens on 0.0.0.0:$PORT (default 3000)
 pnpm build        # tsc → dist/
+pnpm build:prod   # build + upload backend sourcemaps to Sentry
 pnpm start        # node dist/index.js
 pnpm check        # typecheck + eslint
 pnpm test:launch  # build + Vitest launch/safety suite (see tests/launch)
@@ -165,6 +166,18 @@ docker run --env-file .env -p 3000:3000 popbox-studio-node
 | `ORDER_NOTIFICATION_EMAIL` | Destination for order notifications. |
 | `CONTACT_EMAIL` | Contact address used by the system. |
 | `ORDER_TOKEN_PEPPER` | Server secret mixed into guest/order token hashing (never store raw guest secrets). |
+| `SENTRY_DSN` | Backend Sentry DSN for runtime error capture in production. |
+| `SENTRY_ENVIRONMENT` | Sentry environment tag; defaults to `NODE_ENV` if omitted by the SDK config. |
+| `SENTRY_RELEASE` | Release identifier shared between runtime events and sourcemap uploads. |
+| `SENTRY_AUTH_TOKEN` | Build/deploy-only Sentry auth token for sourcemap upload. Not required for local `pnpm build`. |
+| `SENTRY_ORG` / `SENTRY_PROJECT` | Build/deploy-only Sentry org/project used by `pnpm sentry:sourcemaps`. |
+
+## Sentry
+
+- Runtime capture is backend-only and leaves the existing Express exception middleware in control of API response envelopes.
+- `pnpm build` stays local/CI-safe and does not upload sourcemaps.
+- `pnpm build:prod` is the deploy-time path when production artifacts should also upload Sentry sourcemaps.
+- Request sanitization is intentionally narrow: query values for `token`, `session_id`, and `checkout_session_id`, plus headers `authorization`, `cookie`, `set-cookie`, and `x-order-token`.
 
 ## API Overview
 

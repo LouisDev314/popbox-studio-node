@@ -22,10 +22,6 @@ export const createApp = (): Express => {
   app.disable('x-powered-by');
   // Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
   app.set('trust proxy', 1);
-  // TODO: testing
-  app.get('/debug-sentry', function mainHandler() {
-    throw new Error('My first Sentry error!');
-  });
   app.use(httpLogger);
   // Stripe webhook signature verification must see the untouched raw body.
   app.use('/api/v1/webhooks', webhooksRouter);

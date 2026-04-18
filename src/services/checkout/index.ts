@@ -24,6 +24,7 @@ import {
 import { getCheckoutSessionExpiry } from '../../utils/checkout';
 import { CHECKOUT_MAX_LINE_ITEMS } from '../../constants/checkout';
 import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
+import { Sentry } from '../../integrations/sentry';
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
@@ -329,6 +330,16 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
       orderId: createdOrder.id,
     };
   } catch (error) {
+    Sentry.captureException(error, {
+      tags: {
+        flow: 'checkout_session_create',
+      },
+      extra: {
+        orderId: createdOrder.id,
+        orderPublicId: createdOrder.publicId,
+      },
+    });
+
     logger.error({ error, orderId: createdOrder.id }, 'Checkout session creation failed, releasing reservations');
     await db.transaction(async (tx) => {
       await releaseReservationsForOrder(tx, createdOrder.id, 'released');

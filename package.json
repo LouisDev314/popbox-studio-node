@@ -7,20 +7,17 @@
     "build": "tsc -p tsconfig.json && pnpm sentry:sourcemaps",
     "start": "node dist/index.js",
     "dev": "ts-node-dev src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint --ext .js,.ts ./src",
-    "lint:fix": "eslint --fix --ext .js,.ts ./src",
-    "check": "pnpm lint:fix && pnpm typecheck && pnpm test",
+    "lint": "eslint --fix --ext .js,.ts ./src && tsc --noEmit",
     "test": "vitest run --config vitest.config.mts",
+    "check": "pnpm lint && pnpm test",
     "docker": "docker build -t popbox-studio-node . && docker run -p 3000:3000 popbox-studio-node",
-    "sentry:sourcemaps": "sentry-cli sourcemaps inject --org popbox-studio --project popbox-studio-node dist && sentry-cli sourcemaps upload --org popbox-studio --project popbox-studio-node dist"
+    "sentry:sourcemaps": "sentry-cli sourcemaps inject dist && sentry-cli sourcemaps upload --org \"$SENTRY_ORG\" --project \"$SENTRY_PROJECT\" --release \"$SENTRY_RELEASE\" dist"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.30.2",
   "dependencies": {
-    "@sentry/cli": "^2",
     "@sentry/node": "^10.49.0",
     "@supabase/supabase-js": "^2.99.0",
     "compression": "^1.8.1",
@@ -43,6 +40,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@sentry/cli": "^2",
     "@eslint/js": "^10.0.1",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
