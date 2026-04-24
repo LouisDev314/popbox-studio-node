@@ -158,7 +158,6 @@ docker run --env-file .env -p 3000:3000 popbox-studio-node
 | `SUPABASE_STORAGE_BUCKET` | Bucket name for product images. |
 | `STRIPE_SECRET_KEY` | Stripe secret API key. |
 | `STRIPE_WEBHOOK_SECRET` | Stripe signing secret for webhook verification. |
-| `STRIPE_SHIPPING_RATE_CENTS` | Flat shipping amount in cents (default **1500** if unset). |
 | `STRIPE_SUCCESS_URL` / `STRIPE_CANCEL_URL` | Stripe Checkout return URLs. |
 | `STRIPE_CHECK_SESSION_RESERVATION_TTL` | Must be **`600000`** (10 minutes) milliseconds if set; omitted uses the same default. |
 | `RESEND_API_KEY` | Resend API key. |
@@ -171,6 +170,8 @@ docker run --env-file .env -p 3000:3000 popbox-studio-node
 | `SENTRY_RELEASE` | Release identifier shared between runtime events and sourcemap uploads. |
 | `SENTRY_AUTH_TOKEN` | Build/deploy-only Sentry auth token for sourcemap upload. Not required for local `pnpm build`. |
 | `SENTRY_ORG` / `SENTRY_PROJECT` | Build/deploy-only Sentry org/project used by `pnpm sentry:sourcemaps`. |
+
+Checkout shipping pricing is stored in `public.store_settings` under the `shipping` key and managed through the admin settings API. `STRIPE_SHIPPING_RATE_CENTS` is deprecated and unused.
 
 ## Sentry
 

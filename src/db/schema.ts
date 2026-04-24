@@ -75,6 +75,12 @@ export const users = pgTable(
   (table) => [uniqueIndex('users_email_unique').on(table.email)],
 );
 
+export const storeSettings = pgTable('store_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<Record<string, unknown>>().notNull(),
+  updatedAt: updatedAtColumn(),
+});
+
 export const customers = pgTable(
   'customers',
   {

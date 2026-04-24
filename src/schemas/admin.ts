@@ -130,3 +130,9 @@ export const refundBodySchema = z.object({
   amountCents: z.coerce.number().int().min(1).optional(),
   reason: z.string().optional().nullable(),
 });
+
+export const shippingSettingsBodySchema = z.object({
+  flatShippingCents: z.number().int().min(0),
+  freeShippingThresholdCents: z.number().int().min(0),
+  currency: z.literal('CAD'),
+});

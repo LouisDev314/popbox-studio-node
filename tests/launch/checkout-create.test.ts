@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => {
     releaseReservationsForOrderMock: vi.fn(),
     getCheckoutSessionExpiryMock: vi.fn(),
     captureExceptionMock: vi.fn(),
+    getShippingSettingsMock: vi.fn(),
   };
 });
 
@@ -70,10 +71,29 @@ vi.mock('../../src/services/checkout/helpers', () => ({
   normalizeItems: mocks.normalizeItemsMock,
   releaseReservationsForOrder: mocks.releaseReservationsForOrderMock,
 }));
+vi.mock('../../src/services/settings', () => ({
+  getShippingSettings: mocks.getShippingSettingsMock,
+  calculateShippingCents: vi.fn(
+    ({
+      subtotalCents,
+      flatShippingCents,
+      freeShippingThresholdCents,
+    }: {
+      subtotalCents: number;
+      flatShippingCents: number;
+      freeShippingThresholdCents: number;
+    }) => (subtotalCents >= freeShippingThresholdCents ? 0 : flatShippingCents),
+  ),
+}));
 
 describe('launch: checkout session creation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getShippingSettingsMock.mockResolvedValue({
+      flatShippingCents: 1200,
+      freeShippingThresholdCents: 14900,
+      currency: 'CAD',
+    });
     mocks.createOrUpdateCustomerMock.mockResolvedValue({ id: 'cust_1' });
     mocks.normalizeItemsMock.mockReturnValue([{ productId: 'prod_1', quantity: 1 }]);
     mocks.lockProductsForCheckoutMock.mockResolvedValue(
@@ -99,6 +119,103 @@ describe('launch: checkout session creation', () => {
       reservationExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
       stripeExpiresAt: 4102444800,
     });
+  });
+
+  it('uses DB shipping settings for saved order, pending payment, and Stripe Checkout', async () => {
+    const orderInsertChain = createChain([
+      {
+        id: 'ord_1',
+        publicId: 'PBX-NEW',
+      },
+    ]);
+    const orderItemsInsertChain = createChain([{ id: 'item_1' }]);
+    const reservationsInsertChain = createChain([{ id: 'reservation_1' }]);
+    const paymentInsertChain = createChain(undefined);
+    const tx = {
+      insert: vi
+        .fn()
+        .mockReturnValueOnce(orderInsertChain)
+        .mockReturnValueOnce(orderItemsInsertChain)
+        .mockReturnValueOnce(reservationsInsertChain)
+        .mockReturnValueOnce(paymentInsertChain),
+      update: vi.fn(),
+    };
+
+    mocks.lockProductsForCheckoutMock.mockResolvedValue(
+      new Map([
+        [
+          'prod_1',
+          {
+            productId: 'prod_1',
+            slug: 'ichiban-figure',
+            name: 'Ichiban Figure',
+            description: 'Prize figure',
+            productType: 'standard',
+            status: 'active',
+            priceCents: 14900,
+            currency: 'CAD',
+            onHand: 3,
+            reserved: 0,
+          },
+        ],
+      ]),
+    );
+    tx.update.mockReturnValue(createChain(undefined));
+    mocks.db.transaction.mockImplementation(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+    mocks.db.update.mockReturnValue(createChain(undefined));
+    mocks.stripe.checkout.sessions.create.mockResolvedValue({
+      id: 'cs_test_shipping',
+      url: 'https://checkout.example.com/session',
+      payment_intent: 'pi_test_shipping',
+    });
+
+    const { createCheckoutSession } = await importFresh(() => import('../../src/services/checkout/index'));
+    const result = await createCheckoutSession(
+      {
+        email: 'customer@example.com',
+        items: [{ productId: 'prod_1', quantity: 1 }],
+      },
+      'idem_1',
+    );
+
+    expect(result).toEqual({
+      checkoutUrl: 'https://checkout.example.com/session',
+      sessionId: 'cs_test_shipping',
+      publicId: 'PBX-NEW',
+      orderId: 'ord_1',
+    });
+    expect(orderInsertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subtotalCents: 14900,
+        shippingCents: 0,
+        taxCents: 0,
+        totalCents: 14900,
+      }),
+    );
+    expect(paymentInsertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 14900,
+        currency: 'CAD',
+        status: 'pending',
+      }),
+    );
+    expect(mocks.stripe.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shipping_options: [
+          expect.objectContaining({
+            shipping_rate_data: expect.objectContaining({
+              fixed_amount: {
+                amount: 0,
+                currency: 'cad',
+              },
+            }),
+          }),
+        ],
+      }),
+      {
+        idempotencyKey: 'idem_1',
+      },
+    );
   });
 
   it('captures checkout session creation failures before rethrowing a gateway error', async () => {

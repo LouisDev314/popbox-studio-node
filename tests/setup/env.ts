@@ -12,7 +12,6 @@ process.env.SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY ?? 'supabase-s
 process.env.SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? 'product-images';
 process.env.STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? 'sk_test_launch';
 process.env.STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? 'whsec_launch_test';
-process.env.STRIPE_SHIPPING_RATE_CENTS = process.env.STRIPE_SHIPPING_RATE_CENTS ?? '1500';
 process.env.STRIPE_SUCCESS_URL =
   process.env.STRIPE_SUCCESS_URL ?? 'https://client.example.com/checkout/success?session_id={CHECKOUT_SESSION_ID}';
 process.env.STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL ?? 'https://client.example.com/cart';

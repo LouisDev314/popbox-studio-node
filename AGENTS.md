@@ -61,6 +61,7 @@ A task is done when:
 - it does not break current behavior unless intended
 - it is production-appropriate and explainable in an interview
 - pnpm check passes everything with no warning or errors or issues
+- give a commit message for the changes in the end
 
 ## Planning rule
 Read `PLAN.md` before starting work if the task is multi-step, touches core commerce flows, or changes schema/payment/inventory/order logic.

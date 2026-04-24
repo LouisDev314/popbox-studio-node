@@ -25,6 +25,7 @@ import { getCheckoutSessionExpiry } from '../../utils/checkout';
 import { CHECKOUT_MAX_LINE_ITEMS } from '../../constants/checkout';
 import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
 import { Sentry } from '../../integrations/sentry';
+import { calculateShippingCents, getShippingSettings } from '../settings';
 
 const isUniqueConstraintViolation = (error: unknown) =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
@@ -108,13 +109,14 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
     getEnvConfig().stripeCheckoutSessionReservationTtl,
   );
   const publicId = createPublicId('PBX');
-  const shippingCents = getEnvConfig().stripeShippingRateCents;
+  const shippingSettings = await getShippingSettings();
 
   let createdOrder: typeof orders.$inferSelect;
   let orderProducts: Array<LockedProductRow & { quantity: number }>;
+  let shippingCents: number;
 
   try {
-    ({ createdOrder, orderProducts } = await db.transaction(async (tx) => {
+    ({ createdOrder, orderProducts, shippingCents } = await db.transaction(async (tx) => {
       const currentCustomer = await createOrUpdateCustomer(tx, input);
       const lockedProductMap = await lockProductsForCheckout(
         tx,
@@ -150,6 +152,13 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
         });
       }
 
+      const calculatedShippingCents = calculateShippingCents({
+        subtotalCents: runningSubtotal,
+        flatShippingCents: shippingSettings.flatShippingCents,
+        freeShippingThresholdCents: shippingSettings.freeShippingThresholdCents,
+      });
+      const totalCents = runningSubtotal + calculatedShippingCents;
+
       const [orderRow] = await tx
         .insert(orders)
         .values({
@@ -159,8 +168,8 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
           currency: 'CAD',
           subtotalCents: runningSubtotal,
           taxCents: 0,
-          shippingCents,
-          totalCents: runningSubtotal + shippingCents,
+          shippingCents: calculatedShippingCents,
+          totalCents,
           checkoutIdempotencyKey: idempotencyKey,
           shippingAddressJson: {},
           billingAddressJson: null,
@@ -227,7 +236,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
       await tx.insert(payments).values({
         orderId: orderRow.id,
         provider: 'stripe',
-        amountCents: runningSubtotal + shippingCents,
+        amountCents: totalCents,
         currency: 'CAD',
         status: 'pending',
       });
@@ -237,6 +246,7 @@ export const createCheckoutSession = async (input: CreateCheckoutSessionInput, i
         customer: currentCustomer,
         orderProducts: lockedProducts,
         subtotalCents: runningSubtotal,
+        shippingCents: calculatedShippingCents,
       };
     }));
   } catch (error) {

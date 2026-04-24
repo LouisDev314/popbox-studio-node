@@ -45,6 +45,7 @@ import {
   publishLegalDocumentVersionFromExisting,
   updateFaqItem,
 } from '../../../services/legal';
+import { getShippingSettings, updateShippingSettings } from '../../../services/settings';
 import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 import {
   adminOrderParamsSchema,
@@ -67,6 +68,7 @@ import {
   productPatchBodySchema,
   refundBodySchema,
   shipmentBodySchema,
+  shippingSettingsBodySchema,
   tagBodySchema,
   tagPatchBodySchema,
 } from '../../../schemas/admin';
@@ -89,6 +91,17 @@ import {
 const adminRouter: Router = Router();
 
 adminRouter.use(requireAdminAuth);
+
+adminRouter.get('/settings/shipping', async (_req, res) => {
+  const result = await getShippingSettings();
+  return res.send_ok('Shipping settings retrieved', result);
+});
+
+adminRouter.put('/settings/shipping', validateBody(shippingSettingsBodySchema, 'shipping settings update'), async (req, res) => {
+  const body = readValidatedBody<z.infer<typeof shippingSettingsBodySchema>>(req);
+  const result = await updateShippingSettings(body);
+  return res.send_ok('Shipping settings updated', result);
+});
 
 adminRouter.get('/products', validateQuery(productListQuerySchema, 'admin product filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listAdminProducts>[0]>(req);

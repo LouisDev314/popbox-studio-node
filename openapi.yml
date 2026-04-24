@@ -25,6 +25,7 @@ tags:
   - name: Admin Orders
   - name: Admin Customers
   - name: Admin Legal
+  - name: Admin Settings
 paths:
   /health:
     get:
@@ -631,6 +632,63 @@ paths:
           $ref: '#/components/responses/ConflictError'
         '502':
           $ref: '#/components/responses/BadGatewayError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/settings/shipping:
+    get:
+      tags: [Admin Settings]
+      summary: Get shipping settings
+      description: Returns the DB-backed checkout shipping settings used for new orders.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Shipping settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShippingSettings'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Admin Settings]
+      summary: Update shipping settings
+      description: Updates flat-rate CAD shipping settings for future checkout sessions.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShippingSettings'
+      responses:
+        '200':
+          description: Shipping settings updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShippingSettings'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products:
@@ -2702,6 +2760,22 @@ components:
         orderId:
           type: string
       required: [checkoutUrl, sessionId, publicId, orderId]
+    ShippingSettings:
+      type: object
+      properties:
+        flatShippingCents:
+          type: integer
+          minimum: 0
+        freeShippingThresholdCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          const: CAD
+      required:
+        - flatShippingCents
+        - freeShippingThresholdCents
+        - currency
     OrderStatus:
       type: string
       enum:
