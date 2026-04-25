@@ -45,7 +45,12 @@ import {
   publishLegalDocumentVersionFromExisting,
   updateFaqItem,
 } from '../../../services/legal';
-import { getShippingSettings, updateShippingSettings } from '../../../services/settings';
+import {
+  getShippingSettings,
+  getStoreBannerSettings,
+  updateShippingSettings,
+  updateStoreBannerSettings,
+} from '../../../services/settings';
 import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 import {
   adminOrderParamsSchema,
@@ -69,6 +74,7 @@ import {
   refundBodySchema,
   shipmentBodySchema,
   shippingSettingsBodySchema,
+  storeBannerSettingsBodySchema,
   tagBodySchema,
   tagPatchBodySchema,
 } from '../../../schemas/admin';
@@ -102,6 +108,21 @@ adminRouter.put('/settings/shipping', validateBody(shippingSettingsBodySchema, '
   const result = await updateShippingSettings(body);
   return res.send_ok('Shipping settings updated', result);
 });
+
+adminRouter.get('/settings/store-banner', async (_req, res) => {
+  const result = await getStoreBannerSettings();
+  return res.send_ok('Store banner settings retrieved', result);
+});
+
+adminRouter.put(
+  '/settings/store-banner',
+  validateBody(storeBannerSettingsBodySchema, 'store banner settings update'),
+  async (req, res) => {
+    const body = readValidatedBody<z.infer<typeof storeBannerSettingsBodySchema>>(req);
+    const result = await updateStoreBannerSettings(body);
+    return res.send_ok('Store banner settings updated', result);
+  },
+);
 
 adminRouter.get('/products', validateQuery(productListQuerySchema, 'admin product filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listAdminProducts>[0]>(req);

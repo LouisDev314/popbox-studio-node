@@ -173,6 +173,8 @@ docker run --env-file .env -p 3000:3000 popbox-studio-node
 
 Checkout shipping pricing is stored in `public.store_settings` under the `shipping` key and managed through the admin settings API. `STRIPE_SHIPPING_RATE_CENTS` is deprecated and unused.
 
+Storefront banner content is stored in `public.store_settings` under the `store_banner` key. Admins manage it through `GET /api/v1/admin/settings/store-banner` and `PUT /api/v1/admin/settings/store-banner`; the storefront can read only this setting through `GET /api/v1/settings/store-banner`. The default banner is enabled with `Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99`, `Shipping details`, and `/legal/shipping-returns`. Banner updates trim strings, save empty optional link fields as `null`, require a non-empty message when enabled, require `linkHref` when `linkLabel` is set, and accept only internal `/...` paths or `https://` URLs.
+
 ## Sentry
 
 - Runtime capture is backend-only and leaves the existing Express exception middleware in control of API response envelopes.

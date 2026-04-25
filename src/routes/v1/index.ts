@@ -9,6 +9,7 @@ import adminRouter from './admin-router';
 import checkoutRouter from './checkout-router';
 import legalRouter from './legal-router';
 import contactRouter from './contact-router';
+import settingsRouter from './settings-router';
 
 const v1Router: Router = Router();
 
@@ -22,5 +23,6 @@ v1Router.use('/legal', legalRouter);
 v1Router.use('/admin', adminRouter);
 v1Router.use('/checkout', checkoutRouter);
 v1Router.use('/contact', contactRouter);
+v1Router.use('/settings', settingsRouter);
 
 export default v1Router;

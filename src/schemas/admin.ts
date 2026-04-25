@@ -136,3 +136,10 @@ export const shippingSettingsBodySchema = z.object({
   freeShippingThresholdCents: z.number().int().min(0),
   currency: z.literal('CAD'),
 });
+
+export const storeBannerSettingsBodySchema = z.object({
+  enabled: z.boolean(),
+  message: z.string().max(160),
+  linkLabel: z.string().max(40).optional().nullable(),
+  linkHref: z.string().max(300).optional().nullable(),
+});

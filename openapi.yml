@@ -19,6 +19,7 @@ tags:
   - name: Orders
   - name: Checkout
   - name: Legal
+  - name: Settings
   - name: Admin Products
   - name: Admin Collections
   - name: Admin Tags
@@ -634,6 +635,27 @@ paths:
           $ref: '#/components/responses/BadGatewayError'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/settings/store-banner:
+    get:
+      tags: [Settings]
+      summary: Get storefront banner settings
+      description: |
+        Returns the public storefront utility banner settings only. This endpoint
+        does not expose shipping or other admin-managed settings.
+      responses:
+        '200':
+          description: Store banner settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/settings/shipping:
     get:
       tags: [Admin Settings]
@@ -683,6 +705,70 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/ShippingSettings'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/settings/store-banner:
+    get:
+      tags: [Admin Settings]
+      summary: Get store banner settings
+      description: |
+        Returns the DB-backed storefront utility banner settings stored in
+        `public.store_settings` under the `store_banner` key.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Store banner settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Admin Settings]
+      summary: Update store banner settings
+      description: |
+        Updates the storefront utility banner settings. Strings are trimmed,
+        empty optional link fields are saved as null, enabled banners require a
+        non-empty message, and link hrefs must be either internal paths beginning
+        with `/` or valid `https://` URLs. The default value is enabled with:
+        `Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99`.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreBannerSettings'
+      responses:
+        '200':
+          description: Store banner settings updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
         '400':
           $ref: '#/components/responses/BadRequestError'
         '401':
@@ -2776,6 +2862,34 @@ components:
         - flatShippingCents
         - freeShippingThresholdCents
         - currency
+    StoreBannerSettings:
+      type: object
+      description: |
+        Storefront utility banner settings stored as `store_banner` in
+        `public.store_settings`. Default message: "Free shipping across Canada
+        on orders $149+ CAD · Otherwise flat rate $15.99".
+      properties:
+        enabled:
+          type: boolean
+        message:
+          type: string
+          maxLength: 160
+          description: Required to be non-empty after trimming when enabled is true.
+        linkLabel:
+          type:
+            - string
+            - 'null'
+          maxLength: 40
+          description: Optional; empty strings are saved as null and a value requires linkHref.
+        linkHref:
+          type:
+            - string
+            - 'null'
+          maxLength: 300
+          description: Optional internal path beginning with `/` or valid `https://` URL.
+      required:
+        - enabled
+        - message
     OrderStatus:
       type: string
       enum:
