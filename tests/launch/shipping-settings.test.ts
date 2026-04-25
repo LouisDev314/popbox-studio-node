@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createChain, importFresh } from '../helpers/launch-test-kit';
@@ -132,9 +134,16 @@ describe('launch: shipping settings', () => {
 describe('launch: store banner settings', () => {
   const defaultBannerSettings = {
     enabled: true,
-    message: 'Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99',
-    linkLabel: 'Shipping details',
-    linkHref: '/legal/shipping-returns',
+    items: [
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        message: 'Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99',
+        linkLabel: 'Shipping details',
+        linkHref: '/legal/shipping-returns',
+        sortOrder: 0,
+        isActive: true,
+      },
+    ],
   };
 
   beforeEach(() => {
@@ -152,23 +161,107 @@ describe('launch: store banner settings', () => {
     expect(mocks.db.insert).toHaveBeenCalledTimes(1);
   });
 
-  it('saves normalized store banner settings', async () => {
+  it('converts legacy flat store banner settings when reading', async () => {
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          value: {
+            enabled: true,
+            message: '  Free shipping today  ',
+            linkLabel: '  Details  ',
+            linkHref: '  /legal/shipping-returns  ',
+          },
+        },
+      ]),
+    );
+
+    const { getStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
+    const result = await getStoreBannerSettings();
+
+    expect(result).toEqual({
+      enabled: true,
+      items: [
+        {
+          id: expect.any(String),
+          message: 'Free shipping today',
+          linkLabel: 'Details',
+          linkHref: '/legal/shipping-returns',
+          sortOrder: 0,
+          isActive: true,
+        },
+      ],
+    });
+  });
+
+  it('converts legacy blank store banner messages to an empty items array', async () => {
+    mocks.db.select.mockReturnValueOnce(
+      createChain([
+        {
+          value: {
+            enabled: true,
+            message: '   ',
+            linkLabel: null,
+            linkHref: null,
+          },
+        },
+      ]),
+    );
+
+    const { getStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
+    const result = await getStoreBannerSettings();
+
+    expect(result).toEqual({
+      enabled: true,
+      items: [],
+    });
+  });
+
+  it('saves normalized store banner settings with sorted items', async () => {
     const normalizedSettings = {
       enabled: true,
-      message: 'Free shipping today',
-      linkLabel: 'Details',
-      linkHref: '/legal/shipping-returns',
+      items: [
+        {
+          id: 'first',
+          message: 'First banner',
+          linkLabel: 'Details',
+          linkHref: '/legal/shipping-returns',
+          sortOrder: 1,
+          isActive: true,
+        },
+        {
+          id: 'second',
+          message: 'Second banner',
+          linkLabel: null,
+          linkHref: null,
+          sortOrder: 2,
+          isActive: false,
+        },
+      ],
     };
     const insertChain = createChain([{ value: normalizedSettings }]);
-
     mocks.db.insert.mockReturnValueOnce(insertChain);
 
     const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
     const result = await updateStoreBannerSettings({
       enabled: true,
-      message: '  Free shipping today  ',
-      linkLabel: '  Details  ',
-      linkHref: '  /legal/shipping-returns  ',
+      items: [
+        {
+          id: ' second ',
+          message: '  Second banner  ',
+          linkLabel: '  ',
+          linkHref: '',
+          sortOrder: 2,
+          isActive: false,
+        },
+        {
+          id: ' first ',
+          message: '  First banner  ',
+          linkLabel: '  Details  ',
+          linkHref: '  /legal/shipping-returns  ',
+          sortOrder: 1,
+          isActive: true,
+        },
+      ],
     });
 
     expect(result).toEqual(normalizedSettings);
@@ -178,52 +271,67 @@ describe('launch: store banner settings', () => {
     });
   });
 
+  it('generates missing store banner item ids before saving', async () => {
+    const insertChain = createChain([{ value: { enabled: true, items: [] } }]);
+    mocks.db.insert.mockReturnValueOnce(insertChain);
+
+    const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
+    await updateStoreBannerSettings({
+      enabled: true,
+      items: [
+        {
+          message: 'Banner message',
+          linkLabel: null,
+          linkHref: null,
+          sortOrder: 0,
+          isActive: true,
+        },
+      ],
+    });
+
+    expect(insertChain.values.mock.calls[0]?.[0]?.value).toEqual({
+      enabled: true,
+      items: [
+        {
+          id: expect.any(String),
+          message: 'Banner message',
+          linkLabel: null,
+          linkHref: null,
+          sortOrder: 0,
+          isActive: true,
+        },
+      ],
+    });
+  });
+
+  it('allows enabled store banner settings with no items', async () => {
+    const emptySettings = {
+      enabled: true,
+      items: [],
+    };
+    const insertChain = createChain([{ value: emptySettings }]);
+
+    mocks.db.insert.mockReturnValueOnce(insertChain);
+
+    const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
+    const result = await updateStoreBannerSettings(emptySettings);
+
+    expect(result).toEqual(emptySettings);
+  });
+
   it('returns disabled banner settings with enabled false', async () => {
     const disabledSettings = {
       enabled: false,
-      message: '',
-      linkLabel: null,
-      linkHref: null,
+      items: [],
     };
     const insertChain = createChain([{ value: disabledSettings }]);
 
     mocks.db.insert.mockReturnValueOnce(insertChain);
 
     const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
-    const result = await updateStoreBannerSettings({
-      enabled: false,
-      message: '   ',
-      linkLabel: null,
-      linkHref: null,
-    });
+    const result = await updateStoreBannerSettings(disabledSettings);
 
     expect(result).toEqual(disabledSettings);
-  });
-
-  it('trims strings and converts empty optional strings to null', async () => {
-    const normalizedSettings = {
-      enabled: true,
-      message: 'Banner message',
-      linkLabel: null,
-      linkHref: null,
-    };
-    const insertChain = createChain([{ value: normalizedSettings }]);
-
-    mocks.db.insert.mockReturnValueOnce(insertChain);
-
-    const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
-    const result = await updateStoreBannerSettings({
-      enabled: true,
-      message: '  Banner message  ',
-      linkLabel: '  ',
-      linkHref: '',
-    });
-
-    expect(result).toEqual(normalizedSettings);
-    expect(insertChain.values).toHaveBeenCalledWith({
-      key: 'store_banner',
-      value: normalizedSettings,
-    });
   });
 
   it('rejects unsafe javascript store banner links before writing to the database', async () => {
@@ -232,9 +340,16 @@ describe('launch: store banner settings', () => {
     await expect(
       updateStoreBannerSettings({
         enabled: true,
-        message: 'Banner message',
-        linkLabel: 'Details',
-        linkHref: 'javascript:alert(1)',
+        items: [
+          {
+            id: 'banner-1',
+            message: 'Banner message',
+            linkLabel: 'Details',
+            linkHref: 'javascript:alert(1)',
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
       }),
     ).rejects.toMatchObject({
       code: 400,
@@ -251,9 +366,16 @@ describe('launch: store banner settings', () => {
       await expect(
         updateStoreBannerSettings({
           enabled: true,
-          message: 'Banner message',
-          linkLabel: 'Details',
-          linkHref,
+          items: [
+            {
+              id: 'banner-1',
+              message: 'Banner message',
+              linkLabel: 'Details',
+              linkHref,
+              sortOrder: 0,
+              isActive: true,
+            },
+          ],
         }),
       ).rejects.toMatchObject({
         code: 400,
@@ -269,9 +391,16 @@ describe('launch: store banner settings', () => {
     await expect(
       updateStoreBannerSettings({
         enabled: true,
-        message: 'Banner message',
-        linkLabel: 'Details',
-        linkHref: '',
+        items: [
+          {
+            id: 'banner-1',
+            message: 'Banner message',
+            linkLabel: 'Details',
+            linkHref: '',
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
       }),
     ).rejects.toMatchObject({
       code: 400,
@@ -280,15 +409,58 @@ describe('launch: store banner settings', () => {
     expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 
-  it('rejects enabled store banner with empty message', async () => {
+  it('rejects invalid store banner items before writing to the database', async () => {
     const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
 
     await expect(
       updateStoreBannerSettings({
         enabled: true,
-        message: '   ',
-        linkLabel: null,
-        linkHref: null,
+        items: [
+          {
+            id: 'banner-1',
+            message: '   ',
+            linkLabel: null,
+            linkHref: null,
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 400,
+    });
+
+    await expect(
+      updateStoreBannerSettings({
+        enabled: true,
+        items: [
+          {
+            id: 'banner-1',
+            message: 'Banner message',
+            linkLabel: null,
+            linkHref: null,
+            sortOrder: -1,
+            isActive: true,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 400,
+    });
+
+    await expect(
+      updateStoreBannerSettings({
+        enabled: true,
+        items: [
+          {
+            id: 'banner-1',
+            message: 'Banner message',
+            linkLabel: null,
+            linkHref: null,
+            sortOrder: 0,
+            isActive: 'true',
+          },
+        ],
       }),
     ).rejects.toMatchObject({
       code: 400,
@@ -303,9 +475,16 @@ describe('launch: store banner settings', () => {
     await expect(
       updateStoreBannerSettings({
         enabled: true,
-        message: 'a'.repeat(161),
-        linkLabel: null,
-        linkHref: null,
+        items: [
+          {
+            id: 'banner-1',
+            message: 'a'.repeat(161),
+            linkLabel: null,
+            linkHref: null,
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
       }),
     ).rejects.toMatchObject({
       code: 400,
@@ -314,9 +493,47 @@ describe('launch: store banner settings', () => {
     await expect(
       updateStoreBannerSettings({
         enabled: true,
-        message: 'Banner message',
-        linkLabel: 'a'.repeat(41),
-        linkHref: '/legal/shipping-returns',
+        items: [
+          {
+            id: 'banner-1',
+            message: 'Banner message',
+            linkLabel: 'a'.repeat(41),
+            linkHref: '/legal/shipping-returns',
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 400,
+    });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-array and too many store banner items before writing to the database', async () => {
+    const { updateStoreBannerSettings } = await importFresh(() => import('../../src/services/settings'));
+
+    await expect(
+      updateStoreBannerSettings({
+        enabled: true,
+        items: null,
+      }),
+    ).rejects.toMatchObject({
+      code: 400,
+    });
+
+    await expect(
+      updateStoreBannerSettings({
+        enabled: true,
+        items: Array.from({ length: 6 }, (_, index) => ({
+          id: `banner-${index}`,
+          message: `Banner ${index}`,
+          linkLabel: null,
+          linkHref: null,
+          sortOrder: index,
+          isActive: true,
+        })),
       }),
     ).rejects.toMatchObject({
       code: 400,
@@ -329,25 +546,47 @@ describe('launch: store banner settings', () => {
     expect(
       storeBannerSettingsBodySchema.safeParse({
         enabled: true,
-        message: 'a'.repeat(161),
-        linkLabel: null,
-        linkHref: null,
+        items: [
+          {
+            message: 'a'.repeat(161),
+            linkLabel: null,
+            linkHref: null,
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
       }).success,
     ).toBe(false);
     expect(
       storeBannerSettingsBodySchema.safeParse({
         enabled: true,
-        message: 'Banner message',
-        linkLabel: 'a'.repeat(41),
-        linkHref: '/legal/shipping-returns',
+        items: [
+          {
+            message: 'Banner message',
+            linkLabel: 'a'.repeat(41),
+            linkHref: '/legal/shipping-returns',
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
       }).success,
     ).toBe(false);
     expect(
       storeBannerSettingsBodySchema.safeParse({
         enabled: 'true',
-        message: 'Banner message',
-        linkLabel: null,
-        linkHref: null,
+        items: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      storeBannerSettingsBodySchema.safeParse({
+        enabled: true,
+        items: Array.from({ length: 6 }, (_, index) => ({
+          message: `Banner ${index}`,
+          linkLabel: null,
+          linkHref: null,
+          sortOrder: index,
+          isActive: true,
+        })),
       }).success,
     ).toBe(false);
   });
@@ -373,9 +612,16 @@ describe('launch: store banner settings', () => {
   it('updates store banner settings through the admin route', async () => {
     const normalizedSettings = {
       enabled: true,
-      message: 'Free shipping today',
-      linkLabel: 'Details',
-      linkHref: 'https://example.com/shipping',
+      items: [
+        {
+          id: 'banner-1',
+          message: 'Free shipping today',
+          linkLabel: 'Details',
+          linkHref: 'https://example.com/shipping',
+          sortOrder: 0,
+          isActive: true,
+        },
+      ],
     };
     const insertChain = createChain([{ value: normalizedSettings }]);
 
@@ -384,9 +630,16 @@ describe('launch: store banner settings', () => {
     const { createApp } = await importFresh(() => import('../../src/app'));
     const response = await request(createApp()).put('/api/v1/admin/settings/store-banner').send({
       enabled: true,
-      message: '  Free shipping today  ',
-      linkLabel: '  Details  ',
-      linkHref: '  https://example.com/shipping  ',
+      items: [
+        {
+          id: 'banner-1',
+          message: '  Free shipping today  ',
+          linkLabel: '  Details  ',
+          linkHref: '  https://example.com/shipping  ',
+          sortOrder: 0,
+          isActive: true,
+        },
+      ],
     });
 
     expect(response.status).toBe(200);
@@ -395,5 +648,20 @@ describe('launch: store banner settings', () => {
       key: 'store_banner',
       value: normalizedSettings,
     });
+  });
+
+  it('includes a safe migration from legacy store banner settings to item settings', () => {
+    const migration = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/20260425010000_store_banner_items.sql'),
+      'utf8',
+    );
+
+    expect(migration).toContain("INSERT INTO public.store_settings (key, value)");
+    expect(migration).toContain('ON CONFLICT (key) DO NOTHING');
+    expect(migration).toContain("'store_banner'");
+    expect(migration).toContain("value ? 'message'");
+    expect(migration).toContain("NOT value ? 'items'");
+    expect(migration).toContain('gen_random_uuid()::text');
+    expect(migration).toContain('jsonb_build_array');
   });
 });

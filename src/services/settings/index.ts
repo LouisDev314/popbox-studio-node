@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { storeSettings } from '../../db/schema';
@@ -9,6 +10,7 @@ const STORE_BANNER_SETTINGS_KEY = 'store_banner';
 const STORE_BANNER_MESSAGE_MAX_LENGTH = 160;
 const STORE_BANNER_LINK_LABEL_MAX_LENGTH = 40;
 const STORE_BANNER_LINK_HREF_MAX_LENGTH = 300;
+const STORE_BANNER_MAX_ITEMS = 5;
 
 export type ShippingSettings = {
   flatShippingCents: number;
@@ -16,11 +18,18 @@ export type ShippingSettings = {
   currency: 'CAD';
 };
 
-export type StoreBannerSettings = {
-  enabled: boolean;
+export type StoreBannerItem = {
+  id: string;
   message: string;
   linkLabel: string | null;
   linkHref: string | null;
+  sortOrder: number;
+  isActive: boolean;
+};
+
+export type StoreBannerSettings = {
+  enabled: boolean;
+  items: StoreBannerItem[];
 };
 
 export type CalculateShippingInput = {
@@ -37,9 +46,16 @@ export const DEFAULT_SHIPPING_SETTINGS = {
 
 export const DEFAULT_STORE_BANNER_SETTINGS = {
   enabled: true,
-  message: 'Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99',
-  linkLabel: 'Shipping details',
-  linkHref: '/legal/shipping-returns',
+  items: [
+    {
+      id: '00000000-0000-4000-8000-000000000001',
+      message: 'Free shipping across Canada on orders $149+ CAD · Otherwise flat rate $15.99',
+      linkLabel: 'Shipping details',
+      linkHref: '/legal/shipping-returns',
+      sortOrder: 0,
+      isActive: true,
+    },
+  ],
 } satisfies StoreBannerSettings;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -88,6 +104,124 @@ const isSafeStoreBannerHref = (value: string) => {
   }
 };
 
+const normalizeStoreBannerItem = (value: unknown, code: number): StoreBannerItem => {
+  if (!isRecord(value)) {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item must be an object');
+  }
+
+  const rawId = value.id;
+  const id = rawId === undefined || rawId === null ? randomUUID() : rawId;
+
+  if (typeof id !== 'string') {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item id must be a string');
+  }
+
+  const normalizedId = id.trim() || randomUUID();
+
+  if (typeof value.message !== 'string') {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item message must be a string');
+  }
+
+  const message = value.message.trim();
+
+  if (!message) {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item message is required');
+  }
+
+  if (message.length > STORE_BANNER_MESSAGE_MAX_LENGTH) {
+    return throwInvalidStoreBannerSettings(
+      code,
+      `Store banner item message must be ${STORE_BANNER_MESSAGE_MAX_LENGTH} characters or fewer`,
+    );
+  }
+
+  const linkLabel = normalizeOptionalString(
+    value.linkLabel,
+    'Store banner item link label',
+    STORE_BANNER_LINK_LABEL_MAX_LENGTH,
+    code,
+  );
+  const linkHref = normalizeOptionalString(
+    value.linkHref,
+    'Store banner item link href',
+    STORE_BANNER_LINK_HREF_MAX_LENGTH,
+    code,
+  );
+
+  if (linkLabel && !linkHref) {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item link href is required when link label is provided');
+  }
+
+  if (linkHref && !isSafeStoreBannerHref(linkHref)) {
+    return throwInvalidStoreBannerSettings(
+      code,
+      'Store banner item link href must be an internal path or a valid https URL',
+    );
+  }
+
+  if (typeof value.sortOrder !== 'number' || !Number.isInteger(value.sortOrder) || value.sortOrder < 0) {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item sort order must be an integer 0 or greater');
+  }
+
+  if (typeof value.isActive !== 'boolean') {
+    return throwInvalidStoreBannerSettings(code, 'Store banner item active state must be a boolean');
+  }
+
+  return {
+    id: normalizedId,
+    message,
+    linkLabel,
+    linkHref,
+    sortOrder: value.sortOrder,
+    isActive: value.isActive,
+  };
+};
+
+const normalizeLegacyStoreBannerSettings = (
+  value: Record<string, unknown>,
+  enabled: boolean,
+  code: number,
+): StoreBannerSettings => {
+  const rawMessage = value.message;
+
+  if (rawMessage === undefined || rawMessage === null) {
+    return {
+      enabled,
+      items: [],
+    };
+  }
+
+  if (typeof rawMessage !== 'string') {
+    return throwInvalidStoreBannerSettings(code, 'Store banner message must be a string');
+  }
+
+  const message = rawMessage.trim();
+
+  if (!message) {
+    return {
+      enabled,
+      items: [],
+    };
+  }
+
+  return {
+    enabled,
+    items: [
+      normalizeStoreBannerItem(
+        {
+          id: value.id,
+          message,
+          linkLabel: value.linkLabel,
+          linkHref: value.linkHref,
+          sortOrder: 0,
+          isActive: true,
+        },
+        code,
+      ),
+    ],
+  };
+};
+
 const normalizeShippingSettings = (value: unknown, code: number): ShippingSettings => {
   if (!isRecord(value)) {
     return throwInvalidShippingSettings(code, 'Shipping settings must be an object');
@@ -127,58 +261,34 @@ const normalizeStoreBannerSettings = (value: unknown, code: number): StoreBanner
   }
 
   const enabled = value.enabled;
-  const rawMessage = value.message;
 
   if (typeof enabled !== 'boolean') {
     return throwInvalidStoreBannerSettings(code, 'Store banner enabled must be a boolean');
   }
 
-  if (typeof rawMessage !== 'string') {
-    return throwInvalidStoreBannerSettings(code, 'Store banner message must be a string');
+  if (!('items' in value) && 'message' in value) {
+    return normalizeLegacyStoreBannerSettings(value, enabled, code);
   }
 
-  const message = rawMessage.trim();
-
-  if (message.length > STORE_BANNER_MESSAGE_MAX_LENGTH) {
-    return throwInvalidStoreBannerSettings(
-      code,
-      `Store banner message must be ${STORE_BANNER_MESSAGE_MAX_LENGTH} characters or fewer`,
-    );
+  if (!Array.isArray(value.items)) {
+    return throwInvalidStoreBannerSettings(code, 'Store banner items must be an array');
   }
 
-  if (enabled && !message) {
-    return throwInvalidStoreBannerSettings(code, 'Store banner message is required when enabled');
+  if (value.items.length > STORE_BANNER_MAX_ITEMS) {
+    return throwInvalidStoreBannerSettings(code, `Store banner items must include ${STORE_BANNER_MAX_ITEMS} items or fewer`);
   }
 
-  const linkLabel = normalizeOptionalString(
-    value.linkLabel,
-    'Store banner link label',
-    STORE_BANNER_LINK_LABEL_MAX_LENGTH,
-    code,
-  );
-  const linkHref = normalizeOptionalString(
-    value.linkHref,
-    'Store banner link href',
-    STORE_BANNER_LINK_HREF_MAX_LENGTH,
-    code,
-  );
-
-  if (linkLabel && !linkHref) {
-    return throwInvalidStoreBannerSettings(code, 'Store banner link href is required when link label is provided');
-  }
-
-  if (linkHref && !isSafeStoreBannerHref(linkHref)) {
-    return throwInvalidStoreBannerSettings(
-      code,
-      'Store banner link href must be an internal path or a valid https URL',
-    );
-  }
+  const items = value.items
+    .map((item, index) => ({
+      item: normalizeStoreBannerItem(item, code),
+      index,
+    }))
+    .sort((left, right) => left.item.sortOrder - right.item.sortOrder || left.index - right.index)
+    .map(({ item }) => item);
 
   return {
     enabled,
-    message,
-    linkLabel,
-    linkHref,
+    items,
   };
 };
 

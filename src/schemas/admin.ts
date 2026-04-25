@@ -139,7 +139,16 @@ export const shippingSettingsBodySchema = z.object({
 
 export const storeBannerSettingsBodySchema = z.object({
   enabled: z.boolean(),
-  message: z.string().max(160),
-  linkLabel: z.string().max(40).optional().nullable(),
-  linkHref: z.string().max(300).optional().nullable(),
+  items: z
+    .array(
+      z.object({
+        id: z.string().optional().nullable(),
+        message: z.string().max(160),
+        linkLabel: z.string().max(40).optional().nullable(),
+        linkHref: z.string().max(300).optional().nullable(),
+        sortOrder: z.number().int().min(0),
+        isActive: z.boolean(),
+      }),
+    )
+    .max(5),
 });
