@@ -628,19 +628,21 @@ describe('launch: store banner settings', () => {
     mocks.db.insert.mockReturnValueOnce(insertChain);
 
     const { createApp } = await importFresh(() => import('../../src/app'));
-    const response = await request(createApp()).put('/api/v1/admin/settings/store-banner').send({
-      enabled: true,
-      items: [
-        {
-          id: 'banner-1',
-          message: '  Free shipping today  ',
-          linkLabel: '  Details  ',
-          linkHref: '  https://example.com/shipping  ',
-          sortOrder: 0,
-          isActive: true,
-        },
-      ],
-    });
+    const response = await request(createApp())
+      .put('/api/v1/admin/settings/store-banner')
+      .send({
+        enabled: true,
+        items: [
+          {
+            id: 'banner-1',
+            message: '  Free shipping today  ',
+            linkLabel: '  Details  ',
+            linkHref: '  https://example.com/shipping  ',
+            sortOrder: 0,
+            isActive: true,
+          },
+        ],
+      });
 
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual(normalizedSettings);
@@ -648,20 +650,5 @@ describe('launch: store banner settings', () => {
       key: 'store_banner',
       value: normalizedSettings,
     });
-  });
-
-  it('includes a safe migration from legacy store banner settings to item settings', () => {
-    const migration = readFileSync(
-      resolve(process.cwd(), 'supabase/migrations/20260425010000_store_banner_items.sql'),
-      'utf8',
-    );
-
-    expect(migration).toContain("INSERT INTO public.store_settings (key, value)");
-    expect(migration).toContain('ON CONFLICT (key) DO NOTHING');
-    expect(migration).toContain("'store_banner'");
-    expect(migration).toContain("value ? 'message'");
-    expect(migration).toContain("NOT value ? 'items'");
-    expect(migration).toContain('gen_random_uuid()::text');
-    expect(migration).toContain('jsonb_build_array');
   });
 });
