@@ -87,9 +87,11 @@ const buildProductCardRow = (
     status: 'draft' | 'active' | 'archived';
     priceCents: number;
     currency: string;
-    collectionId: string | null;
-    collectionName: string | null;
-    collectionSlug: string | null;
+    collections: Array<{
+      id: string;
+      name: string;
+      slug: string;
+    }>;
     imageId: string | null;
     imageStorageKey: string | null;
     imageAltText: string | null;
@@ -107,9 +109,13 @@ const buildProductCardRow = (
   status: 'active' as const,
   priceCents: 4999,
   currency: 'CAD',
-  collectionId: 'col_1',
-  collectionName: 'One Piece',
-  collectionSlug: 'one-piece',
+  collections: [
+    {
+      id: 'col_1',
+      name: 'One Piece',
+      slug: 'one-piece',
+    },
+  ],
   imageId: 'img_1',
   imageStorageKey: 'products/one-piece-figure/main.webp',
   imageAltText: 'One Piece Figure',
@@ -198,11 +204,13 @@ describe('launch: admin product list contract', () => {
         productType: 'standard',
         priceCents: 4999,
         currency: 'CAD',
-        collection: {
-          id: 'col_1',
-          name: 'One Piece',
-          slug: 'one-piece',
-        },
+        collections: [
+          {
+            id: 'col_1',
+            name: 'One Piece',
+            slug: 'one-piece',
+          },
+        ],
         inventory: {
           onHand: 12,
           reserved: 2,
@@ -262,9 +270,7 @@ describe('launch: admin product list contract', () => {
         id: 'prod_3',
         name: 'Mystery Item',
         slug: 'mystery-item',
-        collectionId: null,
-        collectionName: null,
-        collectionSlug: null,
+        collections: [],
         imageId: null,
         imageStorageKey: null,
         imageAltText: null,
@@ -290,7 +296,7 @@ describe('launch: admin product list contract', () => {
         productType: 'standard',
         priceCents: 4999,
         currency: 'CAD',
-        collection: null,
+        collections: [],
         inventory: null,
         tags: [],
         primaryImage: null,

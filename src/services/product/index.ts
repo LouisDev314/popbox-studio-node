@@ -1,6 +1,15 @@
 import { and, asc, desc, eq, inArray, lt, gt, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { collections, kujiPrizes, productImages, productInventory, productTags, products, tags } from '../../db/schema';
+import {
+  collections,
+  kujiPrizes,
+  productCollections,
+  productImages,
+  productInventory,
+  productTags,
+  products,
+  tags,
+} from '../../db/schema';
 import { PRODUCT_RECOMMENDATIONS_DEFAULT_LIMIT, PRODUCT_RECOMMENDATIONS_MAX_LIMIT } from '../../constants/product';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import Exception from '../../utils/Exception';
@@ -43,7 +52,7 @@ const clampRecommendationLimit = (limit?: number) => {
   return Math.min(Math.max(limit, 1), PRODUCT_RECOMMENDATIONS_MAX_LIMIT);
 };
 
-const buildCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): SQL | undefined => {
+const buildProductSortCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): SQL | undefined => {
   if (!cursor) return undefined;
 
   switch (sort) {
@@ -102,6 +111,29 @@ const buildCursorCondition = (sort: ProductSort, cursor: ProductCursor | null): 
   }
 };
 
+const buildCursorCondition = (
+  sort: ProductSort,
+  cursor: ProductCursor | null,
+  collectionSortOrder?: SQL,
+): SQL | undefined => {
+  if (!collectionSortOrder) {
+    return buildProductSortCursorCondition(sort, cursor);
+  }
+
+  if (!cursor || typeof cursor.collectionSortOrder !== 'number' || Number.isNaN(cursor.collectionSortOrder)) {
+    return undefined;
+  }
+
+  const productSortCondition = buildProductSortCursorCondition(sort, cursor);
+
+  return productSortCondition
+    ? or(
+        sql`${collectionSortOrder} > ${cursor.collectionSortOrder}`,
+        and(sql`${collectionSortOrder} = ${cursor.collectionSortOrder}`, productSortCondition),
+      )
+    : sql`${collectionSortOrder} > ${cursor.collectionSortOrder}`;
+};
+
 export const loadProductRelations = async (productIds: string[]): Promise<ProductRelationMaps> => {
   // Init map to avoid N+1
   const maps: ProductRelationMaps = {
@@ -142,16 +174,17 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
     loadProductTagMap(productIds),
     db
       .select({
-        productId: products.id,
+        productId: productCollections.productId,
         collection: {
           id: collections.id,
           name: collections.name,
           slug: collections.slug,
         },
       })
-      .from(products)
-      .innerJoin(collections, eq(collections.id, products.collectionId))
-      .where(inArray(products.id, productIds)),
+      .from(productCollections)
+      .innerJoin(collections, eq(collections.id, productCollections.collectionId))
+      .where(inArray(productCollections.productId, productIds))
+      .orderBy(asc(productCollections.sortOrder), asc(collections.name), asc(collections.id)),
     db
       .select({
         id: kujiPrizes.id,
@@ -182,7 +215,9 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
   }
 
   for (const row of productCollectionRows) {
-    maps.collections.set(row.collection.id, row.collection);
+    const items = maps.collections.get(row.productId) ?? [];
+    items.push(row.collection);
+    maps.collections.set(row.productId, items);
   }
 
   for (const row of prizeRows) {
@@ -234,14 +269,7 @@ export const mapProductCard = (row: ProductCardQueryRow): ProductCard => ({
   status: row.status,
   priceCents: row.priceCents,
   currency: row.currency,
-  collection:
-    row.collectionId && row.collectionName && row.collectionSlug
-      ? {
-          id: row.collectionId,
-          name: row.collectionName,
-          slug: row.collectionSlug,
-        }
-      : null,
+  collections: row.collections ?? [],
   images:
     row.imageId && row.imageStorageKey && row.imageSortOrder !== null
       ? [
@@ -302,9 +330,7 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       p.status AS "status",
       p.price_cents AS "priceCents",
       p.currency AS "currency",
-      c.id AS "collectionId",
-      c.name AS "collectionName",
-      c.slug AS "collectionSlug",
+      collection_rows.collections AS "collections",
       image.id AS "imageId",
       image.storage_key AS "imageStorageKey",
       image.alt_text AS "imageAltText",
@@ -315,8 +341,24 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       ticket_summary."remainingTickets" AS "remainingTickets",
       ticket_summary."totalTickets" AS "totalTickets"
     FROM ${products} AS p
-    LEFT JOIN ${collections} AS c
-      ON c.id = p.collection_id
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'id', c.id,
+            'name', c.name,
+            'slug', c.slug
+          )
+          ORDER BY pc.sort_order ASC, c.name ASC, c.id ASC
+        ),
+        '[]'::jsonb
+      ) AS collections
+      FROM ${productCollections} AS pc
+      INNER JOIN ${collections} AS c
+        ON c.id = pc.collection_id
+      WHERE pc.product_id = p.id
+    ) AS collection_rows
+      ON true
     LEFT JOIN ${productInventory} AS inventory
       ON inventory.product_id = p.id
     LEFT JOIN LATERAL (
@@ -393,7 +435,7 @@ export const getProductSuggestionsByIds = async (productIds: string[]): Promise<
 // Convert into API response shape
 export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) => {
   const inventory = relations.inventory.get(product.id);
-  const collection = product.collectionId ? relations.collections.get(product.collectionId) : undefined;
+  const productCollectionRows = relations.collections.get(product.id) ?? [];
   const kujiPrizeRows = relations.kujiPrizes.get(product.id) ?? [];
 
   return {
@@ -406,13 +448,11 @@ export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) 
     priceCents: product.priceCents,
     currency: product.currency,
     sku: product.sku,
-    collection: collection
-      ? {
-          id: collection.id,
-          name: collection.name,
-          slug: collection.slug,
-        }
-      : null,
+    collections: productCollectionRows.map((collection) => ({
+      id: collection.id,
+      name: collection.name,
+      slug: collection.slug,
+    })),
     images: (relations.images.get(product.id) ?? []).map((image) => ({
       id: image.id,
       storageKey: image.storageKey,
@@ -456,7 +496,6 @@ export const getProductById = async (productId: string) => {
   const [row] = await db
     .select({
       id: products.id,
-      collectionId: products.collectionId,
       name: products.name,
       slug: products.slug,
       description: products.description,
@@ -484,7 +523,6 @@ export const getProductBySlug = async (slug: string) => {
   const [row] = await db
     .select({
       id: products.id,
-      collectionId: products.collectionId,
       name: products.name,
       slug: products.slug,
       description: products.description,
@@ -516,7 +554,6 @@ export const getProductRecommendationsBySlug = async (
   const [sourceProduct] = await db
     .select({
       id: products.id,
-      collectionId: products.collectionId,
       productType: products.productType,
       priceCents: products.priceCents,
       currency: products.currency,
@@ -537,6 +574,11 @@ export const getProductRecommendationsBySlug = async (
       FROM ${productTags}
       WHERE ${productTags.productId} = ${sourceProduct.id}::uuid
     ),
+    source_collections AS (
+      SELECT ${productCollections.collectionId} AS collection_id
+      FROM ${productCollections}
+      WHERE ${productCollections.productId} = ${sourceProduct.id}::uuid
+    ),
     tag_overlap AS (
       SELECT ${productTags.productId} AS product_id,
         COUNT(*)::int AS shared_tag_count
@@ -550,7 +592,13 @@ export const getProductRecommendationsBySlug = async (
       p.id AS "id",
       (
         CASE
-          WHEN ${sourceProduct.collectionId}::uuid IS NOT NULL AND p.collection_id = ${sourceProduct.collectionId}::uuid
+          WHEN EXISTS (
+            SELECT 1
+            FROM ${productCollections}
+            INNER JOIN source_collections
+              ON source_collections.collection_id = ${productCollections.collectionId}
+            WHERE ${productCollections.productId} = p.id
+          )
             THEN 40
           ELSE 0
         END +
@@ -616,15 +664,28 @@ export const listProducts = async (filters: ProductListFilters) => {
   }
 
   const conditions: SQL[] = [eq(products.status, filters.status ?? 'active')];
+  const collectionSortOrder = filters.collection
+    ? sql<number>`(
+        SELECT ${productCollections.sortOrder}
+        FROM ${productCollections}
+        INNER JOIN ${collections}
+          ON ${collections.id} = ${productCollections.collectionId}
+        WHERE ${productCollections.productId} = ${products.id}
+          AND ${collections.slug} = ${filters.collection}
+        ORDER BY ${productCollections.sortOrder} ASC, ${productCollections.productId} ASC
+        LIMIT 1
+      )`
+    : undefined;
 
   if (filters.collection) {
-    conditions.push(
-      sql`${products.collectionId} IN (
-        SELECT ${collections.id}
-        FROM ${collections}
-        WHERE ${collections.slug} = ${filters.collection}
-      )`,
-    );
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${productCollections}
+      INNER JOIN ${collections}
+        ON ${collections.id} = ${productCollections.collectionId}
+      WHERE ${productCollections.productId} = ${products.id}
+        AND ${collections.slug} = ${filters.collection}
+    )`);
   }
 
   if (filters.type) {
@@ -642,7 +703,7 @@ export const listProducts = async (filters: ProductListFilters) => {
     );
   }
 
-  const cursorCondition = buildCursorCondition(sort, cursor);
+  const cursorCondition = buildCursorCondition(sort, cursor, collectionSortOrder);
   if (cursorCondition) {
     conditions.push(cursorCondition);
   }
@@ -653,10 +714,11 @@ export const listProducts = async (filters: ProductListFilters) => {
       createdAt: products.createdAt,
       priceCents: products.priceCents,
       name: products.name,
+      collectionSortOrder: collectionSortOrder ?? sql<number>`0`,
     })
     .from(products)
     .where(and(...conditions))
-    .orderBy(...sortRows(sort))
+    .orderBy(...(collectionSortOrder ? [asc(collectionSortOrder), ...sortRows(sort)] : sortRows(sort)))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
@@ -672,15 +734,18 @@ export const listProducts = async (filters: ProductListFilters) => {
               ? {
                   id: lastItem.id,
                   priceCents: lastItem.priceCents,
+                  ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
                 }
               : sort === 'name_asc' || sort === 'name_desc'
                 ? {
                     id: lastItem.id,
                     name: lastItem.name,
+                    ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
                   }
                 : {
                     id: lastItem.id,
                     createdAt: lastItem.createdAt.toISOString(),
+                    ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
                   },
           )
         : null,

@@ -2545,10 +2545,10 @@ components:
           type: integer
         currency:
           type: string
-        collection:
-          allOf:
-            - $ref: '#/components/schemas/ProductCollection'
-          nullable: true
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
         images:
           type: array
           items:
@@ -2573,6 +2573,7 @@ components:
         - status
         - priceCents
         - currency
+        - collections
         - images
     AdminProductListItem:
       type: object
@@ -2597,10 +2598,10 @@ components:
           type: integer
         currency:
           type: string
-        collection:
-          allOf:
-            - $ref: '#/components/schemas/ProductCollection'
-          nullable: true
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
         inventory:
           allOf:
             - $ref: '#/components/schemas/ProductInventory'
@@ -2625,7 +2626,7 @@ components:
         - productType
         - priceCents
         - currency
-        - collection
+        - collections
         - inventory
         - tags
         - primaryImage
@@ -2656,10 +2657,10 @@ components:
         sku:
           type: string
           nullable: true
-        collection:
-          allOf:
-            - $ref: '#/components/schemas/ProductCollection'
-          nullable: true
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
         images:
           type: array
           items:
@@ -2690,6 +2691,7 @@ components:
         - status
         - priceCents
         - currency
+        - collections
         - images
         - tags
         - kujiPrizes
@@ -3405,10 +3407,11 @@ components:
     AdminProductCreate:
       type: object
       properties:
-        collectionId:
-          type: string
-          format: uuid
-          nullable: true
+        collectionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         description:
@@ -3441,6 +3444,7 @@ components:
           type: integer
           minimum: 0
       required:
+        - collectionIds
         - name
         - productType
         - status
@@ -3448,10 +3452,11 @@ components:
     AdminProductUpdate:
       type: object
       properties:
-        collectionId:
-          type: string
-          format: uuid
-          nullable: true
+        collectionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         description:

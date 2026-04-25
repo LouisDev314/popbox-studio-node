@@ -155,6 +155,8 @@ export const products = pgTable(
   'products',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Deprecated: products.collectionId is retained only for deploy/rollback safety.
+    // New application reads and writes must use productCollections.
     collectionId: uuid('collection_id').references(() => collections.id, { onDelete: 'set null' }),
     name: varchar('name', { length: 200 }).notNull(),
     slug: varchar('slug', { length: 220 }).notNull(),
@@ -199,6 +201,29 @@ export const productTags = pgTable(
   (table) => [
     primaryKey({ columns: [table.productId, table.tagId], name: 'product_tags_pk' }),
     index('product_tags_tag_id_idx').on(table.tagId, table.productId),
+  ],
+);
+
+export const productCollections = pgTable(
+  'product_collections',
+  {
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    collectionId: uuid('collection_id')
+      .notNull()
+      .references(() => collections.id, { onDelete: 'cascade' }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.productId, table.collectionId],
+      name: 'product_collections_pk',
+    }),
+    index('product_collections_collection_sort_idx').on(table.collectionId, table.sortOrder, table.productId),
+    index('product_collections_product_id_idx').on(table.productId, table.collectionId),
+    check('product_collections_sort_order_check', sql`${table.sortOrder} >= 0`),
   ],
 );
 

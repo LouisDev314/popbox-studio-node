@@ -34,9 +34,11 @@ const buildProductCardRow = (
     status: 'draft' | 'active' | 'archived';
     priceCents: number;
     currency: string;
-    collectionId: string | null;
-    collectionName: string | null;
-    collectionSlug: string | null;
+    collections: Array<{
+      id: string;
+      name: string;
+      slug: string;
+    }>;
     imageId: string | null;
     imageStorageKey: string | null;
     imageAltText: string | null;
@@ -56,9 +58,13 @@ const buildProductCardRow = (
   status: 'active' as const,
   priceCents: 4999,
   currency: 'CAD',
-  collectionId: 'col_1',
-  collectionName: 'Featured',
-  collectionSlug: 'featured',
+  collections: [
+    {
+      id: 'col_1',
+      name: 'Featured',
+      slug: 'featured',
+    },
+  ],
   imageId: 'img_1',
   imageStorageKey: 'products/in-stock-figure/main.webp',
   imageAltText: 'In Stock Figure',
@@ -105,7 +111,6 @@ describe('launch: product recommendations', () => {
       createChain([
         {
           id: 'prod_source',
-          collectionId: 'col_1',
           productType: 'standard',
           priceCents: 5000,
           currency: 'CAD',
@@ -157,11 +162,13 @@ describe('launch: product recommendations', () => {
           status: 'active',
           priceCents: 4999,
           currency: 'CAD',
-          collection: {
-            id: 'col_1',
-            name: 'Featured',
-            slug: 'featured',
-          },
+          collections: [
+            {
+              id: 'col_1',
+              name: 'Featured',
+              slug: 'featured',
+            },
+          ],
           images: [
             {
               id: 'img_1',
@@ -187,11 +194,13 @@ describe('launch: product recommendations', () => {
           status: 'active',
           priceCents: 3999,
           currency: 'CAD',
-          collection: {
-            id: 'col_1',
-            name: 'Featured',
-            slug: 'featured',
-          },
+          collections: [
+            {
+              id: 'col_1',
+              name: 'Featured',
+              slug: 'featured',
+            },
+          ],
           images: [
             {
               id: 'img_1',
@@ -223,6 +232,8 @@ describe('launch: product recommendations', () => {
     const normalizedQuery = flattenSql(recommendationQuery).replace(/\s+/g, ' ').trim();
 
     expect(normalizedQuery).toContain("WHERE p.status = 'active' AND p.id <> ");
+    expect(normalizedQuery).toContain('source_collections AS');
+    expect(normalizedQuery).not.toContain('p.collection_id');
     expect(normalizedQuery).toContain('AND COALESCE(inventory.on_hand - inventory.reserved, 0) > 0');
     expect(normalizedQuery).toContain('ORDER BY "score" DESC, "inStock" DESC, p.created_at DESC, p.id DESC');
 
@@ -231,6 +242,7 @@ describe('launch: product recommendations', () => {
 
     expect(normalizedProductCardQuery).toContain('ticket_summary."remainingTickets" AS "remainingTickets"');
     expect(normalizedProductCardQuery).toContain('ticket_summary."totalTickets" AS "totalTickets"');
+    expect(normalizedProductCardQuery).toContain('collection_rows.collections AS "collections"');
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.remaining_quantity, 0)), 0)::int');
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.initial_quantity, 0)), 0)::int');
     expect(normalizedProductCardQuery).toContain('UPPER(BTRIM(kp.prize_code)) <>');

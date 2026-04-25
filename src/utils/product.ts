@@ -1,12 +1,13 @@
 import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
-import { and, eq, sql } from 'drizzle-orm';
-import { collections, kujiPrizes, productInventory, products, productTags, tags } from '../db/schema';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { collections, kujiPrizes, productCollections, productInventory, products, productTags, tags } from '../db/schema';
 import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
 import { LAST_ONE_PRIZE_CODE } from './kuji';
+import type { DbClient } from '../types/checkout';
 
 const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
   if (onHand < reserved) {
@@ -125,12 +126,57 @@ export const assertProductExists = async (productId: string) => {
   return product;
 };
 
-export const replaceProductTags = async (productId: string, tagIds: string[]) => {
-  await db.delete(productTags).where(eq(productTags.productId, productId));
+export const normalizeProductCollectionIds = (collectionIds: string[]) => [...new Set(collectionIds)];
+
+export const assertCollectionsExist = async (client: DbClient, collectionIds: string[]) => {
+  const normalizedCollectionIds = normalizeProductCollectionIds(collectionIds);
+
+  if (!normalizedCollectionIds.length) {
+    return normalizedCollectionIds;
+  }
+
+  const rows = await client
+    .select({
+      id: collections.id,
+    })
+    .from(collections)
+    .where(inArray(collections.id, normalizedCollectionIds));
+  const existingIds = new Set(rows.map((row) => row.id));
+  const missingIds = normalizedCollectionIds.filter((collectionId) => !existingIds.has(collectionId));
+
+  if (missingIds.length) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'One or more collections do not exist', {
+      data: {
+        collectionIds: missingIds,
+      },
+    });
+  }
+
+  return normalizedCollectionIds;
+};
+
+export const replaceProductCollections = async (client: DbClient, productId: string, collectionIds: string[]) => {
+  const normalizedCollectionIds = await assertCollectionsExist(client, collectionIds);
+
+  await client.delete(productCollections).where(eq(productCollections.productId, productId));
+
+  if (!normalizedCollectionIds.length) return;
+
+  await client.insert(productCollections).values(
+    normalizedCollectionIds.map((collectionId, index) => ({
+      productId,
+      collectionId,
+      sortOrder: index,
+    })),
+  );
+};
+
+export const replaceProductTags = async (productId: string, tagIds: string[], client: DbClient = db) => {
+  await client.delete(productTags).where(eq(productTags.productId, productId));
 
   if (!tagIds.length) return;
 
-  await db.insert(productTags).values(
+  await client.insert(productTags).values(
     tagIds.map((tagId) => ({
       productId,
       tagId,

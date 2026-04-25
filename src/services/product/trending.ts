@@ -5,6 +5,7 @@ import {
   inventoryReservations,
   orderItems,
   orders,
+  productCollections,
   productInventory,
   productTags,
   products,
@@ -90,8 +91,10 @@ const buildTrendingFilterConditions = (options: TrendingProductListOptions) => {
   if (options.collection) {
     conditions.push(sql`EXISTS (
       SELECT 1
-      FROM ${collections} AS c
-      WHERE c.id = p.collection_id
+      FROM ${productCollections} AS pc
+      INNER JOIN ${collections} AS c
+        ON c.id = pc.collection_id
+      WHERE pc.product_id = p.id
         AND c.slug = ${options.collection}
     )`);
   }

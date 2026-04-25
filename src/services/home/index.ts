@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { collections, products } from '../../db/schema';
+import { collections, productCollections, products } from '../../db/schema';
 import { HOMEPAGE_LIMIT } from '../../constants/pagination';
 import { getProductCardsByIds } from '../product';
 import { getTrendingProductIds } from '../product/trending';
@@ -10,16 +10,15 @@ export const getHomepageData = async () => {
     db
       .select({ id: products.id })
       .from(products)
+      .innerJoin(productCollections, eq(productCollections.productId, products.id))
+      .innerJoin(collections, eq(collections.id, productCollections.collectionId))
       .where(
         and(
           eq(products.status, 'active'),
-          eq(
-            products.collectionId,
-            db.select({ id: collections.id }).from(collections).where(eq(collections.slug, 'featured')).limit(1),
-          ),
+          eq(collections.slug, 'featured'),
         ),
       )
-      .orderBy(desc(products.createdAt), desc(products.id))
+      .orderBy(productCollections.sortOrder, desc(products.createdAt), desc(products.id))
       .limit(HOMEPAGE_LIMIT),
     getTrendingProductIds({
       limit: HOMEPAGE_LIMIT,

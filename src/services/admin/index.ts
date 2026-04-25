@@ -2,8 +2,17 @@ import { and, asc, desc, eq, gt, inArray, lt, or, sql, type SQL } from 'drizzle-
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
-import { DbClient } from '../../types/checkout';
-import { collections, kujiPrizes, productImages, productInventory, productTags, products, tags } from '../../db/schema';
+import type { DbClient } from '../../types/checkout';
+import {
+  collections,
+  kujiPrizes,
+  productCollections,
+  productImages,
+  productInventory,
+  productTags,
+  products,
+  tags,
+} from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
@@ -13,8 +22,8 @@ import {
   assertProductExists,
   buildStoragePath,
   buildImageUrl,
-  ensureKujiInventoryRecord,
   ensureUniqueSlug,
+  replaceProductCollections,
   replaceProductTags,
   throwStorageFailure,
 } from '../../utils/product';
@@ -48,11 +57,11 @@ type AdminProductListItem = {
   productType: 'standard' | 'kuji';
   priceCents: number;
   currency: string;
-  collection: {
+  collections: Array<{
     id: string;
     name: string;
     slug: string;
-  } | null;
+  }>;
   inventory: {
     onHand: number;
     reserved: number;
@@ -243,7 +252,12 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
   }
 
   if (filters.collectionId) {
-    conditions.push(eq(products.collectionId, filters.collectionId));
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${productCollections}
+      WHERE ${productCollections.productId} = ${products.id}
+        AND ${productCollections.collectionId} = ${filters.collectionId}
+    )`);
   }
 
   if (normalizedTagIds?.length) {
@@ -301,7 +315,7 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
       status: row.product.status,
       priceCents: row.product.priceCents,
       currency: row.product.currency,
-      collection: productCard?.collection ?? null,
+      collections: productCard?.collections ?? [],
       inventory: productCard?.inventory ?? null,
       tags: (tagMap.get(row.product.id) ?? []).map((tag) => ({
         id: tag.id,
@@ -339,7 +353,7 @@ export const listAdminProducts = async (filters: AdminProductListFilters) => {
 };
 
 export const createProduct = async (payload: {
-  collectionId?: string | null;
+  collectionIds: string[];
   name: string;
   description?: string | null;
   productType: 'standard' | 'kuji';
@@ -353,34 +367,38 @@ export const createProduct = async (payload: {
 }) => {
   const slug = await ensureUniqueSlug(products, payload.name);
 
-  const [product] = await db
-    .insert(products)
-    .values({
-      collectionId: payload.collectionId ?? null,
-      name: payload.name,
-      slug,
-      description: payload.description ?? null,
-      productType: payload.productType,
-      status: payload.status,
-      priceCents: payload.priceCents,
-      currency: payload.currency ?? 'CAD',
-      sku: payload.sku ?? null,
-    })
-    .returning();
+  const product = await db.transaction(async (tx) => {
+    const [product] = await tx
+      .insert(products)
+      .values({
+        name: payload.name,
+        slug,
+        description: payload.description ?? null,
+        productType: payload.productType,
+        status: payload.status,
+        priceCents: payload.priceCents,
+        currency: payload.currency ?? 'CAD',
+        sku: payload.sku ?? null,
+      })
+      .returning();
 
-  if (!product) {
-    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Product creation failed');
-  }
+    if (!product) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Product creation failed');
+    }
 
-  await replaceProductTags(product.id, payload.tagIds ?? []);
-  await db.insert(productInventory).values({
-    productId: product.id,
-    onHand: payload.productType === 'kuji' ? 0 : Math.max(payload.onHand ?? 0, 0),
-    reserved: 0,
-    lowStockThreshold: Math.max(payload.lowStockThreshold ?? 0, 0),
+    await replaceProductCollections(tx, product.id, payload.collectionIds);
+    await replaceProductTags(product.id, payload.tagIds ?? [], tx);
+    await tx.insert(productInventory).values({
+      productId: product.id,
+      onHand: payload.productType === 'kuji' ? 0 : Math.max(payload.onHand ?? 0, 0),
+      reserved: 0,
+      lowStockThreshold: Math.max(payload.lowStockThreshold ?? 0, 0),
+    });
+
+    return product;
   });
 
-  return product;
+  return getProductById(product.id);
 };
 
 export const getAdminProduct = async (productId: string) => {
@@ -390,7 +408,7 @@ export const getAdminProduct = async (productId: string) => {
 export const updateProduct = async (
   productId: string,
   payload: Partial<{
-    collectionId: string | null;
+    collectionIds: string[];
     name: string;
     description: string | null;
     productType: 'standard' | 'kuji';
@@ -405,40 +423,47 @@ export const updateProduct = async (
   const existingProduct = await assertProductExists(productId);
   const nextSlug = payload.name ? await ensureUniqueSlug(products, payload.name, productId) : existingProduct.slug;
 
-  const [updated] = await db
-    .update(products)
-    .set({
-      collectionId: payload.collectionId === undefined ? existingProduct.collectionId : payload.collectionId,
-      name: payload.name ?? existingProduct.name,
-      slug: nextSlug,
-      description: payload.description === undefined ? existingProduct.description : payload.description,
-      productType: payload.productType ?? existingProduct.productType,
-      status: payload.status ?? existingProduct.status,
-      priceCents: payload.priceCents ?? existingProduct.priceCents,
-      currency: payload.currency ?? existingProduct.currency,
-      sku: payload.sku === undefined ? existingProduct.sku : payload.sku,
-    })
-    .where(eq(products.id, productId))
-    .returning();
-
-  if (payload.tagIds) {
-    await replaceProductTags(productId, payload.tagIds);
-  }
-
-  if (payload.lowStockThreshold !== undefined) {
-    await db
-      .update(productInventory)
+  await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(products)
       .set({
-        lowStockThreshold: Math.max(payload.lowStockThreshold, 0),
+        name: payload.name ?? existingProduct.name,
+        slug: nextSlug,
+        description: payload.description === undefined ? existingProduct.description : payload.description,
+        productType: payload.productType ?? existingProduct.productType,
+        status: payload.status ?? existingProduct.status,
+        priceCents: payload.priceCents ?? existingProduct.priceCents,
+        currency: payload.currency ?? existingProduct.currency,
+        sku: payload.sku === undefined ? existingProduct.sku : payload.sku,
       })
-      .where(eq(productInventory.productId, productId));
-  }
+      .where(eq(products.id, productId))
+      .returning();
 
-  if ((payload.productType ?? existingProduct.productType) === 'kuji') {
-    await ensureKujiInventoryRecord(productId);
-  }
+    if (payload.collectionIds !== undefined) {
+      await replaceProductCollections(tx, productId, payload.collectionIds);
+    }
 
-  return updated;
+    if (payload.tagIds) {
+      await replaceProductTags(productId, payload.tagIds, tx);
+    }
+
+    if (payload.lowStockThreshold !== undefined) {
+      await tx
+        .update(productInventory)
+        .set({
+          lowStockThreshold: Math.max(payload.lowStockThreshold, 0),
+        })
+        .where(eq(productInventory.productId, productId));
+    }
+
+    if ((payload.productType ?? existingProduct.productType) === 'kuji') {
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+    }
+
+    return updated;
+  });
+
+  return getProductById(productId);
 };
 
 export const uploadProductImages = async (

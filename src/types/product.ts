@@ -8,6 +8,7 @@ export type ProductCursor = {
   priceCents?: number;
   name?: string;
   score?: number;
+  collectionSortOrder?: number;
 };
 
 export type ProductListFilters = {
@@ -22,7 +23,7 @@ export type ProductListFilters = {
 
 export type ProductRow = Pick<
   typeof products.$inferSelect,
-  'id' | 'collectionId' | 'name' | 'slug' | 'description' | 'productType' | 'status' | 'priceCents' | 'currency' | 'sku' | 'createdAt' | 'updatedAt'
+  'id' | 'name' | 'slug' | 'description' | 'productType' | 'status' | 'priceCents' | 'currency' | 'sku' | 'createdAt' | 'updatedAt'
 >;
 export type ProductInventoryRow = Pick<
   typeof productInventory.$inferSelect,
@@ -43,7 +44,7 @@ export type ProductRelationMaps = {
   images: Map<string, ProductImageRow[]>;
   tags: Map<string, TagRow[]>;
   inventory: Map<string, ProductInventoryRow>;
-  collections: Map<string, CollectionRow>;
+  collections: Map<string, CollectionRow[]>;
   kujiPrizes: Map<string, KujiPrizeRow[]>;
 };
 
@@ -56,7 +57,7 @@ export type ProductCard = {
   status: ProductRow['status'];
   priceCents: number;
   currency: string;
-  collection: Pick<CollectionRow, 'id' | 'name' | 'slug'> | null;
+  collections: Array<Pick<CollectionRow, 'id' | 'name' | 'slug'>>;
   images: Array<{
     id: ProductImageRow['id'];
     storageKey: ProductImageRow['storageKey'];
@@ -85,9 +86,7 @@ export type ProductCardQueryRow = {
   status: ProductRow['status'];
   priceCents: number;
   currency: string;
-  collectionId: string | null;
-  collectionName: string | null;
-  collectionSlug: string | null;
+  collections: CollectionRow[] | null;
   imageId: string | null;
   imageStorageKey: string | null;
   imageAltText: string | null;

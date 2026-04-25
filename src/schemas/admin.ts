@@ -28,7 +28,8 @@ export const productListQuerySchema = paginationQuerySchema.extend({
 });
 
 export const productBodySchema = z.object({
-  collectionId: z.uuid().optional().nullable(),
+  collectionIds: z.array(z.uuid()),
+  collectionId: z.never().optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   productType: z.enum(['standard', 'kuji']),
