@@ -3057,6 +3057,13 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        imageAltText:
+          type: string
+          nullable: true
       required:
         - id
         - productId
@@ -3065,6 +3072,8 @@ components:
         - unitPriceCents
         - quantity
         - lineTotalCents
+        - imageUrl
+        - imageAltText
     Shipment:
       type: object
       properties:

@@ -15,21 +15,15 @@ import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { buildImageUrl } from '../../utils/product';
 
-type OrderItemWithImageRow = {
-  item: {
-    id: string;
-    productId: string;
-    productName: string;
-    productType: string;
-    unitPriceCents: number;
-    quantity: number;
-    lineTotalCents: number;
-    metadata: Record<string, unknown> | null;
-  };
-  image: {
-    storageKey: string;
-    altText: string | null;
-  } | null;
+type OrderItemRow = {
+  id: string;
+  productId: string;
+  productName: string;
+  productType: string;
+  unitPriceCents: number;
+  quantity: number;
+  lineTotalCents: number;
+  metadata: Record<string, unknown> | null;
 };
 
 type OrderTicketJoinRow = {
@@ -124,6 +118,11 @@ const resolveImage = (
   imageAltText: image?.altText ?? fallbackAltText,
 });
 
+const resolveNullableImage = (image: Pick<typeof productImages.$inferSelect, 'storageKey' | 'altText'> | null) => ({
+  imageUrl: image?.storageKey ? buildImageUrl(image.storageKey) : null,
+  imageAltText: image?.storageKey ? image.altText : null,
+});
+
 const loadPrimaryProductImages = async (productIds: string[]) => {
   if (!productIds.length) {
     return new Map<string, PrimaryProductImageRow>();
@@ -209,7 +208,8 @@ const mapGuestOrderDetail = (detail: OrderDetailView): OrderDetailView => ({
 
 const mapOrderDetail = (
   row: OrderRecordRow,
-  itemRows: OrderItemWithImageRow[],
+  itemRows: OrderItemRow[],
+  primaryItemImages: Map<string, PrimaryProductImageRow>,
   shipmentRow: ShipmentRow | undefined,
   ticketRows: OrderTicketView[],
 ): OrderDetailView => {
@@ -248,22 +248,49 @@ const mapOrderDetail = (
         }
       : null,
     items: itemRows.map((itemRow) => {
-      const image = resolveImage(itemRow.image, itemRow.item.productName);
+      // Product image is resolved from current product media for display only;
+      // order item name/price remain historical order snapshots.
+      const image = resolveNullableImage(primaryItemImages.get(itemRow.productId) ?? null);
 
       return {
-        id: itemRow.item.id,
-        productId: itemRow.item.productId,
-        productName: itemRow.item.productName,
-        productType: itemRow.item.productType,
-        unitPriceCents: itemRow.item.unitPriceCents,
-        quantity: itemRow.item.quantity,
-        lineTotalCents: itemRow.item.lineTotalCents,
-        metadata: itemRow.item.metadata ?? null,
+        id: itemRow.id,
+        productId: itemRow.productId,
+        productName: itemRow.productName,
+        productType: itemRow.productType,
+        unitPriceCents: itemRow.unitPriceCents,
+        quantity: itemRow.quantity,
+        lineTotalCents: itemRow.lineTotalCents,
+        metadata: itemRow.metadata ?? null,
         imageUrl: image.imageUrl,
         imageAltText: image.imageAltText,
       };
     }),
     tickets: ticketRows,
+  };
+};
+
+const loadOrderItemRows = async (orderId: string) => {
+  const itemRows = await db
+    .select({
+      id: orderItems.id,
+      productId: orderItems.productId,
+      productName: orderItems.productName,
+      productType: orderItems.productType,
+      unitPriceCents: orderItems.unitPriceCents,
+      quantity: orderItems.quantity,
+      lineTotalCents: orderItems.lineTotalCents,
+      metadata: orderItems.metadata,
+    })
+    .from(orderItems)
+    .where(eq(orderItems.orderId, orderId))
+    .orderBy(asc(orderItems.createdAt), asc(orderItems.id));
+
+  const productIds = [...new Set(itemRows.map((item) => item.productId))];
+  const primaryItemImages = await loadPrimaryProductImages(productIds);
+
+  return {
+    itemRows,
+    primaryItemImages,
   };
 };
 
@@ -358,30 +385,8 @@ export const buildGuestTicketCollection = (ticketRows: OrderTicketView[]): Guest
 };
 
 const loadOrderChildren = async (orderId: string) => {
-  const [itemRows, shipmentRow, ticketRows] = await Promise.all([
-    db
-      .select({
-        item: {
-          id: orderItems.id,
-          productId: orderItems.productId,
-          productName: orderItems.productName,
-          productType: orderItems.productType,
-          unitPriceCents: orderItems.unitPriceCents,
-          quantity: orderItems.quantity,
-          lineTotalCents: orderItems.lineTotalCents,
-          metadata: orderItems.metadata,
-        },
-        image: {
-          storageKey: productImages.storageKey,
-          altText: productImages.altText,
-        },
-      })
-      .from(orderItems)
-      .innerJoin(products, eq(products.id, orderItems.productId))
-      .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.sortOrder, 0)))
-      .where(eq(orderItems.orderId, orderId))
-      .orderBy(asc(orderItems.createdAt), asc(orderItems.id)),
-
+  const [itemResult, shipmentRow, ticketRows] = await Promise.all([
+    loadOrderItemRows(orderId),
     db
       .select({
         carrierName: shipments.carrierName,
@@ -397,7 +402,8 @@ const loadOrderChildren = async (orderId: string) => {
   ]);
 
   return {
-    itemRows,
+    itemRows: itemResult.itemRows,
+    primaryItemImages: itemResult.primaryItemImages,
     shipmentRow: shipmentRow[0],
     ticketRows,
   };
@@ -406,7 +412,7 @@ const loadOrderChildren = async (orderId: string) => {
 export const getOrderDetailById = async (orderId: string) => {
   const row = await loadOrderRecord(eq(orders.id, orderId));
   const children = await loadOrderChildren(orderId);
-  return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);
+  return mapOrderDetail(row, children.itemRows, children.primaryItemImages, children.shipmentRow, children.ticketRows);
 };
 
 export const getGuestOrderViewByOrderId = async (orderId: string) => {
@@ -417,7 +423,7 @@ export const getGuestOrderViewByOrderId = async (orderId: string) => {
 const getOrderDetailByPublicId = async (publicId: string) => {
   const row = await loadOrderRecord(eq(orders.publicId, publicId));
   const children = await loadOrderChildren(row.order.id);
-  return mapOrderDetail(row, children.itemRows, children.shipmentRow, children.ticketRows);
+  return mapOrderDetail(row, children.itemRows, children.primaryItemImages, children.shipmentRow, children.ticketRows);
 };
 
 export const getGuestTicketViewByOrderId = async (orderId: string) => {
