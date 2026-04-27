@@ -1,19 +1,12 @@
 import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
-import { and, eq, inArray, sql } from 'drizzle-orm';
-import { collections, kujiPrizes, productCollections, productInventory, products, productTags, tags } from '../db/schema';
+import { eq, inArray } from 'drizzle-orm';
+import { collections, productCollections, products, productTags, tags } from '../db/schema';
 import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
-import { LAST_ONE_PRIZE_CODE } from './kuji';
 import type { DbClient } from '../types/checkout';
-
-const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
-  if (onHand < reserved) {
-    throw new Exception(HttpStatusCode.CONFLICT, 'Inventory onHand cannot be lower than reserved inventory');
-  }
-};
 
 export const buildStoragePath = (
   productId: string,
@@ -81,39 +74,6 @@ export const ensureUniqueSlug = async (
     attempt += 1;
     nextSlug = `${base}-${attempt}`;
   }
-};
-
-export const ensureKujiInventoryRecord = async (productId: string) => {
-  const [sumRow] = await db
-    .select({
-      remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
-    })
-    .from(kujiPrizes)
-    .where(
-      and(
-        eq(kujiPrizes.productId, productId),
-        sql`UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}`,
-      ),
-    );
-
-  const totalRemaining = sumRow?.remaining ?? 0;
-  const [existingInventory] = await db
-    .select()
-    .from(productInventory)
-    .where(eq(productInventory.productId, productId))
-    .limit(1);
-
-  if (existingInventory) {
-    assertInventoryNotBelowReserved(totalRemaining, existingInventory.reserved);
-    return;
-  }
-
-  await db.insert(productInventory).values({
-    productId,
-    onHand: 0,
-    reserved: 0,
-    lowStockThreshold: 0,
-  });
 };
 
 export const assertProductExists = async (productId: string) => {

@@ -419,31 +419,6 @@ export const normalizeItems = (items: CheckoutItemInput[]) => {
     .map(([productId, quantity]) => ({ productId, quantity }));
 };
 
-export const lockProductForCheckout = async (
-  tx: DbClient,
-  productId: string,
-): Promise<LockedProductRow | undefined> => {
-  const result = await tx.execute(sql<LockedProductRow>`
-    SELECT
-      p.id AS "productId",
-      p.name,
-      p.slug,
-      p.description,
-      p.product_type AS "productType",
-      p.status,
-      p.price_cents AS "priceCents",
-      p.currency,
-      pi.on_hand AS "onHand",
-      pi.reserved
-      FROM products p
-      JOIN product_inventory pi ON pi.product_id = p.id
-      WHERE p.id = ${productId}
-    FOR UPDATE
-  `);
-
-  return result[0] as LockedProductRow | undefined;
-};
-
 export const lockProductsForCheckout = async (tx: DbClient, productIds: string[]): Promise<Map<string, LockedProductRow>> => {
   if (productIds.length === 0) {
     return new Map();

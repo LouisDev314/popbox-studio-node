@@ -25,8 +25,8 @@ const mocks = vi.hoisted(() => {
       pgInit: vi.fn().mockResolvedValue(undefined),
       pgStop: vi.fn().mockResolvedValue(undefined),
     },
-    getGuestOrderMock: vi.fn(),
-    getGuestTicketsMock: vi.fn(),
+    getGuestOrderByIdMock: vi.fn(),
+    getGuestTicketsByOrderIdMock: vi.fn(),
     revealTicketMock: vi.fn(),
     revealAllTicketsMock: vi.fn(),
   };
@@ -38,10 +38,8 @@ vi.mock('../../src/services/orders', async () => {
 
   return {
     ...actual,
-    getGuestOrder: mocks.getGuestOrderMock,
-    getGuestOrderById: mocks.getGuestOrderMock,
-    getGuestTickets: mocks.getGuestTicketsMock,
-    getGuestTicketsByOrderId: mocks.getGuestTicketsMock,
+    getGuestOrderById: mocks.getGuestOrderByIdMock,
+    getGuestTicketsByOrderId: mocks.getGuestTicketsByOrderIdMock,
     revealTicket: mocks.revealTicketMock,
     revealAllTickets: mocks.revealAllTicketsMock,
   };
@@ -50,7 +48,7 @@ vi.mock('../../src/services/orders', async () => {
 describe('launch: guest order access hardening', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getGuestOrderMock.mockResolvedValue({
+    mocks.getGuestOrderByIdMock.mockResolvedValue({
       id: 'ord_launch',
       publicId: 'PBX-LAUNCH',
       status: 'paid',
@@ -202,7 +200,7 @@ describe('launch: guest order access hardening', () => {
         },
       ]),
     );
-    mocks.getGuestTicketsMock.mockResolvedValue({
+    mocks.getGuestTicketsByOrderIdMock.mockResolvedValue({
       tickets: [
         {
           id: 'ticket_1',
@@ -261,6 +259,6 @@ describe('launch: guest order access hardening', () => {
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
     expect(response.body.data.tickets[0]?.prize).toBeNull();
-    expect(mocks.getGuestTicketsMock).toHaveBeenCalledWith('ord_launch');
+    expect(mocks.getGuestTicketsByOrderIdMock).toHaveBeenCalledWith('ord_launch');
   });
 });

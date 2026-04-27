@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import type Stripe from 'stripe';
 import stripe from '../../integrations/stripe';
 import { db } from '../../db';
-import { customers, orderItems, orders, paymentRefunds, payments, shipments, tickets } from '../../db/schema';
+import { customers, orders, paymentRefunds, payments, shipments, tickets } from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
@@ -12,9 +12,7 @@ import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
 import { buildStripeRefundSnapshot } from '../../utils/stripe';
 import { sendRefundEmail, sendShipmentEmail, sendShipmentUpdateEmail } from '../notifications';
 import {
-  getGuestOrderView,
   getGuestOrderViewByOrderId,
-  getGuestTicketView,
   getGuestTicketViewById,
   getGuestTicketViewByOrderId,
   getOrderDetailById,
@@ -469,16 +467,8 @@ const getRefundContext = async (orderId: string) => {
   };
 };
 
-export const getGuestOrder = async (publicId: string) => {
-  return getGuestOrderView(publicId);
-};
-
 export const getGuestOrderById = async (orderId: string) => {
   return getGuestOrderViewByOrderId(orderId);
-};
-
-export const getGuestTickets = async (publicId: string) => {
-  return getGuestTicketView(publicId);
 };
 
 export const getGuestTicketsByOrderId = async (orderId: string) => {
@@ -1207,17 +1197,5 @@ export const listCustomers = async (filters: { cursor?: string; limit?: number }
             createdAt: lastRow.createdAt.toISOString(),
           })
         : null,
-  };
-};
-
-export const getOrderStats = async () => {
-  const [orderCount, itemCount] = await Promise.all([
-    db.select({ count: count(orders.id) }).from(orders),
-    db.select({ count: count(orderItems.id) }).from(orderItems),
-  ]);
-
-  return {
-    orderCount: orderCount[0]?.count ?? 0,
-    itemCount: itemCount[0]?.count ?? 0,
   };
 };
