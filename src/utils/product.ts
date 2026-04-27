@@ -1,12 +1,17 @@
 import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
-import { eq, inArray } from 'drizzle-orm';
-import { collections, productCollections, products, productTags, tags } from '../db/schema';
+import { eq, inArray, sql } from 'drizzle-orm';
+import { collections, productCollections, productImages, products, productTags, tags } from '../db/schema';
 import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
 import type { DbClient } from '../types/checkout';
+
+export type PrimaryProductImage = Pick<
+  typeof productImages.$inferSelect,
+  'id' | 'productId' | 'storageKey' | 'altText' | 'sortOrder'
+>;
 
 export const buildStoragePath = (
   productId: string,
@@ -74,6 +79,35 @@ export const ensureUniqueSlug = async (
     attempt += 1;
     nextSlug = `${base}-${attempt}`;
   }
+};
+
+export const loadPrimaryProductImageMap = async (productIds: string[]) => {
+  if (!productIds.length) {
+    return new Map<string, PrimaryProductImage>();
+  }
+
+  const requestedIds = sql.join(
+    [...new Set(productIds)].map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await db.execute(sql<PrimaryProductImage>`
+    SELECT DISTINCT ON (pi.product_id)
+      pi.id AS "id",
+      pi.product_id AS "productId",
+      pi.storage_key AS "storageKey",
+      pi.alt_text AS "altText",
+      pi.sort_order AS "sortOrder"
+    FROM ${productImages} AS pi
+    WHERE pi.product_id IN (${requestedIds})
+    ORDER BY
+      pi.product_id ASC,
+      pi.sort_order ASC,
+      pi.created_at ASC,
+      pi.id ASC
+  `)) as PrimaryProductImage[];
+
+  return new Map(rows.map((row) => [row.productId, row]));
 };
 
 export const assertProductExists = async (productId: string) => {

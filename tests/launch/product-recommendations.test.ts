@@ -146,6 +146,22 @@ describe('launch: product recommendations', () => {
           totalTickets: 80,
         }),
         buildProductCardRow(),
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'img_kuji',
+          productId: 'prod_kuji_in_stock',
+          storageKey: 'products/in-stock-kuji/main.webp',
+          altText: 'In Stock Kuji',
+          sortOrder: 1,
+        },
+        {
+          id: 'img_1',
+          productId: 'prod_in_stock',
+          storageKey: 'products/in-stock-figure/main.webp',
+          altText: 'In Stock Figure',
+          sortOrder: 1,
+        },
       ]);
 
     const { getProductRecommendationsBySlug } = await importFresh(() => import('../../src/services/product'));
@@ -203,7 +219,7 @@ describe('launch: product recommendations', () => {
           ],
           images: [
             {
-              id: 'img_1',
+              id: 'img_kuji',
               storageKey: 'products/in-stock-kuji/main.webp',
               altText: 'In Stock Kuji',
               sortOrder: 1,
@@ -246,5 +262,79 @@ describe('launch: product recommendations', () => {
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.remaining_quantity, 0)), 0)::int');
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.initial_quantity, 0)), 0)::int');
     expect(normalizedProductCardQuery).toContain('UPPER(BTRIM(kp.prize_code)) <>');
+    expect(normalizedProductCardQuery).not.toContain('image.storage_key AS "imageStorageKey"');
+
+    const primaryImageQuery = mocks.db.execute.mock.calls[2]?.[0];
+    const normalizedPrimaryImageQuery = flattenSql(primaryImageQuery).replace(/\s+/g, ' ').trim();
+
+    expect(normalizedPrimaryImageQuery).toContain('SELECT DISTINCT ON (pi.product_id)');
+    expect(normalizedPrimaryImageQuery).toContain('pi.product_id ASC');
+    expect(normalizedPrimaryImageQuery).toContain('pi.sort_order ASC');
+    expect(normalizedPrimaryImageQuery).toContain('pi.created_at ASC');
+    expect(normalizedPrimaryImageQuery).toContain('pi.id ASC');
+  });
+
+  it('maps primary images for product cards and suggestions through the shared loader', async () => {
+    mocks.db.execute
+      .mockResolvedValueOnce([
+        buildProductCardRow({
+          id: 'prod_card',
+          name: 'Card Product',
+          slug: 'card-product',
+          imageStorageKey: null,
+          imageAltText: null,
+          imageSortOrder: null,
+        }),
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'img_card',
+          productId: 'prod_card',
+          storageKey: 'products/card-product/primary.webp',
+          altText: 'Card primary',
+          sortOrder: 2,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'prod_suggestion',
+          name: 'Suggestion Product',
+          slug: 'suggestion-product',
+          priceCents: 2999,
+          currency: 'CAD',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'img_suggestion',
+          productId: 'prod_suggestion',
+          storageKey: 'products/suggestion-product/primary.webp',
+          altText: null,
+          sortOrder: 1,
+        },
+      ]);
+
+    const { getProductCardsByIds, getProductSuggestionsByIds } = await importFresh(() => import('../../src/services/product'));
+    const cards = await getProductCardsByIds(['prod_card']);
+    const suggestions = await getProductSuggestionsByIds(['prod_suggestion']);
+
+    expect(cards[0]?.images).toEqual([
+      {
+        id: 'img_card',
+        storageKey: 'products/card-product/primary.webp',
+        altText: 'Card primary',
+        sortOrder: 2,
+        url: 'https://supabase.example.com/storage/v1/object/public/product-images/products/card-product/primary.webp',
+      },
+    ]);
+    expect(suggestions[0]).toEqual({
+      id: 'prod_suggestion',
+      name: 'Suggestion Product',
+      slug: 'suggestion-product',
+      thumbnailUrl:
+        'https://supabase.example.com/storage/v1/object/public/product-images/products/suggestion-product/primary.webp',
+      priceCents: 2999,
+      currency: 'CAD',
+    });
   });
 });

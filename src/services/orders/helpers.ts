@@ -3,17 +3,16 @@ import {
   kujiPrizes,
   orderItems,
   orders,
-  productImages,
   products,
   shipments,
   tickets,
 } from '../../db/schema';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { OrderDetailView, OrderTicketView } from '../../types/order';
 import { db } from '../../db';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
-import { buildImageUrl } from '../../utils/product';
+import { buildImageUrl, loadPrimaryProductImageMap, type PrimaryProductImage } from '../../utils/product';
 
 type OrderItemRow = {
   id: string;
@@ -85,12 +84,6 @@ type OrderRecordRow = {
   };
 };
 
-type PrimaryProductImageRow = {
-  productId: string;
-  storageKey: string;
-  altText: string | null;
-};
-
 type GuestTicketCollectionView = {
   tickets: OrderTicketView[];
   revealed: OrderTicketView[];
@@ -111,54 +104,19 @@ const readCustomerSnapshotField = (
 };
 
 const resolveImage = (
-  image: Pick<typeof productImages.$inferSelect, 'storageKey' | 'altText'> | null,
+  image: Pick<PrimaryProductImage, 'storageKey' | 'altText'> | null,
   fallbackAltText: string,
 ) => ({
   imageUrl: image?.storageKey ? buildImageUrl(image.storageKey) : null,
   imageAltText: image?.altText ?? fallbackAltText,
 });
 
-const resolveNullableImage = (image: Pick<typeof productImages.$inferSelect, 'storageKey' | 'altText'> | null) => ({
+const resolveNullableImage = (image: Pick<PrimaryProductImage, 'storageKey' | 'altText'> | null) => ({
   imageUrl: image?.storageKey ? buildImageUrl(image.storageKey) : null,
   imageAltText: image?.storageKey ? image.altText : null,
 });
 
-const loadPrimaryProductImages = async (productIds: string[]) => {
-  if (!productIds.length) {
-    return new Map<string, PrimaryProductImageRow>();
-  }
-
-  const requestedIds = sql.join(
-    productIds.map((productId) => sql`${productId}::uuid`),
-    sql`, `,
-  );
-
-  const rows = (await db.execute(sql<PrimaryProductImageRow>`
-    SELECT DISTINCT ON (pi.product_id)
-      pi.product_id AS "productId",
-      pi.storage_key AS "storageKey",
-      pi.alt_text AS "altText"
-    FROM ${productImages} AS pi
-    WHERE pi.product_id IN (${requestedIds})
-    ORDER BY
-      pi.product_id ASC,
-      pi.sort_order ASC,
-      pi.created_at ASC,
-      pi.id ASC
-  `)) as PrimaryProductImageRow[];
-
-  const primaryImages = new Map<string, PrimaryProductImageRow>();
-
-  for (const row of rows) {
-    if (!primaryImages.has(row.productId)) {
-      primaryImages.set(row.productId, row);
-    }
-  }
-
-  return primaryImages;
-};
-
-const mapTicketRow = (row: OrderTicketJoinRow, primaryTicketImages: Map<string, PrimaryProductImageRow>) => {
+const mapTicketRow = (row: OrderTicketJoinRow, primaryTicketImages: Map<string, PrimaryProductImage>) => {
   const image = resolveImage(primaryTicketImages.get(row.product.id) ?? null, row.product.name);
 
   return {
@@ -189,7 +147,7 @@ const mapTicketRows = async (ticketJoinRows: OrderTicketJoinRow[]) => {
   if (!ticketJoinRows.length) return [];
 
   const ticketProductIds = [...new Set(ticketJoinRows.map((row) => row.product.id))];
-  const primaryTicketImages = await loadPrimaryProductImages(ticketProductIds);
+  const primaryTicketImages = await loadPrimaryProductImageMap(ticketProductIds);
 
   return ticketJoinRows.map((row) => mapTicketRow(row, primaryTicketImages));
 };
@@ -209,7 +167,7 @@ const mapGuestOrderDetail = (detail: OrderDetailView): OrderDetailView => ({
 const mapOrderDetail = (
   row: OrderRecordRow,
   itemRows: OrderItemRow[],
-  primaryItemImages: Map<string, PrimaryProductImageRow>,
+  primaryItemImages: Map<string, PrimaryProductImage>,
   shipmentRow: ShipmentRow | undefined,
   ticketRows: OrderTicketView[],
 ): OrderDetailView => {
@@ -286,7 +244,7 @@ const loadOrderItemRows = async (orderId: string) => {
     .orderBy(asc(orderItems.createdAt), asc(orderItems.id));
 
   const productIds = [...new Set(itemRows.map((item) => item.productId))];
-  const primaryItemImages = await loadPrimaryProductImages(productIds);
+  const primaryItemImages = await loadPrimaryProductImageMap(productIds);
 
   return {
     itemRows,
@@ -465,7 +423,7 @@ export const getGuestTicketViewById = async (orderId: string, ticketId: string) 
     throw new Exception(HttpStatusCode.NOT_FOUND, 'Ticket not found');
   }
 
-  const primaryTicketImages = await loadPrimaryProductImages([row.product.id]);
+  const primaryTicketImages = await loadPrimaryProductImageMap([row.product.id]);
   return mapGuestTicket(mapTicketRow(row, primaryTicketImages));
 };
 

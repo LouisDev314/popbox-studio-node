@@ -29,7 +29,7 @@ import {
   TagRow,
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
-import { buildImageUrl } from '../../utils/product';
+import { buildImageUrl, loadPrimaryProductImageMap } from '../../utils/product';
 import { LAST_ONE_PRIZE_CODE } from '../../utils/kuji';
 import { listTrendingProductIds } from './trending';
 
@@ -43,6 +43,13 @@ const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
 };
 
 const sortRows = (sort: ProductSort) => SORT_MAP[sort] ?? SORT_MAP.newest;
+
+type ProductCardBaseQueryRow = Omit<
+  ProductCardQueryRow,
+  'imageId' | 'imageStorageKey' | 'imageAltText' | 'imageSortOrder'
+>;
+
+type ProductSuggestionBaseQueryRow = Omit<ProductSuggestionQueryRow, 'imageStorageKey'>;
 
 const clampRecommendationLimit = (limit?: number) => {
   if (!limit || Number.isNaN(limit)) {
@@ -320,7 +327,8 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
     sql`, `,
   );
 
-  const rows = (await db.execute(sql<ProductCardQueryRow>`
+  const [rows, primaryImageMap] = await Promise.all([
+    db.execute(sql<ProductCardBaseQueryRow>`
     SELECT
       p.id AS "id",
       p.name AS "name",
@@ -331,10 +339,6 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       p.price_cents AS "priceCents",
       p.currency AS "currency",
       collection_rows.collections AS "collections",
-      image.id AS "imageId",
-      image.storage_key AS "imageStorageKey",
-      image.alt_text AS "imageAltText",
-      image.sort_order AS "imageSortOrder",
       inventory.on_hand AS "inventoryOnHand",
       inventory.reserved AS "inventoryReserved",
       inventory.low_stock_threshold AS "inventoryLowStockThreshold",
@@ -363,18 +367,6 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       ON inventory.product_id = p.id
     LEFT JOIN LATERAL (
       SELECT
-        pi.id,
-        pi.storage_key,
-        pi.alt_text,
-        pi.sort_order
-      FROM ${productImages} AS pi
-      WHERE pi.product_id = p.id
-      ORDER BY pi.sort_order ASC, pi.id ASC
-      LIMIT 1
-    ) AS image
-      ON true
-    LEFT JOIN LATERAL (
-      SELECT
         COALESCE(sum(GREATEST(kp.remaining_quantity, 0)), 0)::int AS "remainingTickets",
         COALESCE(sum(GREATEST(kp.initial_quantity, 0)), 0)::int AS "totalTickets"
       FROM ${kujiPrizes} AS kp
@@ -384,9 +376,25 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
     ) AS ticket_summary
       ON true
     WHERE p.id IN (${requestedIds})
-  `)) as ProductCardQueryRow[];
+  `) as Promise<ProductCardBaseQueryRow[]>,
+    loadPrimaryProductImageMap(productIds),
+  ]);
 
-  const rowMap = new Map(rows.map((row) => [row.id, mapProductCard(row)]));
+  const rowMap = new Map(
+    rows.map((row) => {
+      const image = primaryImageMap.get(row.id);
+      return [
+        row.id,
+        mapProductCard({
+          ...row,
+          imageId: image?.id ?? null,
+          imageStorageKey: image?.storageKey ?? null,
+          imageAltText: image?.altText ?? null,
+          imageSortOrder: image?.sortOrder ?? null,
+        }),
+      ] as const;
+    }),
+  );
 
   return productIds.flatMap((productId) => {
     const productCard = rowMap.get(productId);
@@ -404,27 +412,29 @@ export const getProductSuggestionsByIds = async (productIds: string[]): Promise<
     sql`, `,
   );
 
-  const rows = (await db.execute(sql<ProductSuggestionQueryRow>`
+  const [rows, primaryImageMap] = await Promise.all([
+    db.execute(sql<ProductSuggestionBaseQueryRow>`
     SELECT
       p.id AS "id",
       p.name AS "name",
       p.slug AS "slug",
       p.price_cents AS "priceCents",
-      p.currency AS "currency",
-      image.storage_key AS "imageStorageKey"
+      p.currency AS "currency"
     FROM ${products} AS p
-    LEFT JOIN LATERAL (
-      SELECT pi.storage_key
-      FROM ${productImages} AS pi
-      WHERE pi.product_id = p.id
-      ORDER BY pi.sort_order ASC, pi.id ASC
-      LIMIT 1
-    ) AS image
-      ON true
     WHERE p.id IN (${requestedIds})
-  `)) as ProductSuggestionQueryRow[];
+  `) as Promise<ProductSuggestionBaseQueryRow[]>,
+    loadPrimaryProductImageMap(productIds),
+  ]);
 
-  const rowMap = new Map(rows.map((row) => [row.id, mapProductSuggestion(row)]));
+  const rowMap = new Map(
+    rows.map((row) => [
+      row.id,
+      mapProductSuggestion({
+        ...row,
+        imageStorageKey: primaryImageMap.get(row.id)?.storageKey ?? null,
+      }),
+    ]),
+  );
 
   return productIds.flatMap((productId) => {
     const suggestion = rowMap.get(productId);

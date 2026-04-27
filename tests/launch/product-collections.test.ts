@@ -228,7 +228,7 @@ describe('launch: product collection queries', () => {
     ]);
 
     mocks.db.select.mockReturnValueOnce(productListChain);
-    mocks.db.execute.mockResolvedValueOnce([buildProductCardRow()]);
+    mocks.db.execute.mockResolvedValueOnce([buildProductCardRow()]).mockResolvedValueOnce([]);
 
     const { listProducts } = await importFresh(() => import('../../src/services/product'));
     const result = await listProducts({

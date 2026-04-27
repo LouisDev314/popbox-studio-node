@@ -180,12 +180,19 @@ describe('launch: admin product list contract', () => {
     mocks.db.execute.mockResolvedValueOnce([
       buildProductCardRow({
         id: 'prod_1',
-        imageStorageKey: 'products/one-piece-figure/main.webp',
-        imageAltText: 'One Piece Figure',
         inventoryOnHand: 12,
         inventoryReserved: 2,
         inventoryLowStockThreshold: 3,
       }),
+    ]);
+    mocks.db.execute.mockResolvedValueOnce([
+      {
+        id: 'img_1',
+        productId: 'prod_1',
+        storageKey: 'products/one-piece-figure/main.webp',
+        altText: 'One Piece Figure',
+        sortOrder: 1,
+      },
     ]);
 
     const { listAdminProducts } = await importFresh(() => import('../../src/services/admin'));
@@ -271,15 +278,12 @@ describe('launch: admin product list contract', () => {
         name: 'Mystery Item',
         slug: 'mystery-item',
         collections: [],
-        imageId: null,
-        imageStorageKey: null,
-        imageAltText: null,
-        imageSortOrder: null,
         inventoryOnHand: null,
         inventoryReserved: null,
         inventoryLowStockThreshold: null,
       }),
     ]);
+    mocks.db.execute.mockResolvedValueOnce([]);
 
     const { listAdminProducts } = await importFresh(() => import('../../src/services/admin'));
     const result = await listAdminProducts({
