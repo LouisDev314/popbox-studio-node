@@ -51,6 +51,14 @@ type ProductCardBaseQueryRow = Omit<
 
 type ProductSuggestionBaseQueryRow = Omit<ProductSuggestionQueryRow, 'imageStorageKey'>;
 
+type ProductListQueryRow = {
+  id: string;
+  createdAt: Date;
+  priceCents: number;
+  name: string;
+  collectionSortOrder?: number;
+};
+
 const clampRecommendationLimit = (limit?: number) => {
   if (!limit || Number.isNaN(limit)) {
     return PRODUCT_RECOMMENDATIONS_DEFAULT_LIMIT;
@@ -139,6 +147,53 @@ const buildCursorCondition = (
         and(sql`${collectionSortOrder} = ${cursor.collectionSortOrder}`, productSortCondition),
       )
     : sql`${collectionSortOrder} > ${cursor.collectionSortOrder}`;
+};
+
+const buildProductListNextCursor = (
+  sort: ProductSort,
+  hasMore: boolean,
+  lastItem: ProductListQueryRow | undefined,
+) => {
+  if (!hasMore || !lastItem) {
+    return null;
+  }
+
+  const collectionCursor =
+    typeof lastItem.collectionSortOrder === 'number'
+      ? { collectionSortOrder: lastItem.collectionSortOrder }
+      : {};
+
+  if (sort === 'price_asc' || sort === 'price_desc') {
+    return encodeCursor({
+      id: lastItem.id,
+      priceCents: lastItem.priceCents,
+      ...collectionCursor,
+    });
+  }
+
+  if (sort === 'name_asc' || sort === 'name_desc') {
+    return encodeCursor({
+      id: lastItem.id,
+      name: lastItem.name,
+      ...collectionCursor,
+    });
+  }
+
+  return encodeCursor({
+    id: lastItem.id,
+    createdAt: lastItem.createdAt.toISOString(),
+    ...collectionCursor,
+  });
+};
+
+const buildProductListResult = async (rows: ProductListQueryRow[], limit: number, sort: ProductSort) => {
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+
+  return {
+    items: await getProductCardsByIds(pageRows.map((row) => row.id)),
+    nextCursor: buildProductListNextCursor(sort, hasMore, pageRows.at(-1)),
+  };
 };
 
 export const loadProductRelations = async (productIds: string[]): Promise<ProductRelationMaps> => {
@@ -673,30 +728,51 @@ export const listProducts = async (filters: ProductListFilters) => {
     };
   }
 
-  const conditions: SQL[] = [eq(products.status, filters.status ?? 'active')];
-  const collectionSortOrder = filters.collection
-    ? sql<number>`(
-        SELECT ${productCollections.sortOrder}
-        FROM ${productCollections}
-        INNER JOIN ${collections}
-          ON ${collections.id} = ${productCollections.collectionId}
-        WHERE ${productCollections.productId} = ${products.id}
-          AND ${collections.slug} = ${filters.collection}
-        ORDER BY ${productCollections.sortOrder} ASC, ${productCollections.productId} ASC
-        LIMIT 1
-      )`
-    : undefined;
-
   if (filters.collection) {
-    conditions.push(sql`EXISTS (
-      SELECT 1
-      FROM ${productCollections}
-      INNER JOIN ${collections}
-        ON ${collections.id} = ${productCollections.collectionId}
-      WHERE ${productCollections.productId} = ${products.id}
-        AND ${collections.slug} = ${filters.collection}
-    )`);
+    const collectionConditions: SQL[] = [
+      eq(collections.slug, filters.collection),
+      eq(products.status, filters.status ?? 'active'),
+    ];
+
+    if (filters.type) {
+      collectionConditions.push(eq(products.productType, filters.type));
+    }
+
+    if (filters.tag) {
+      collectionConditions.push(
+        sql`${products.id} IN (
+          SELECT ${productTags.productId}
+          FROM ${productTags}
+          JOIN ${tags} ON ${tags.id} = ${productTags.tagId}
+          WHERE ${tags.slug} = ${filters.tag}
+        )`,
+      );
+    }
+
+    const cursorCondition = buildCursorCondition(sort, cursor, sql`${productCollections.sortOrder}`);
+    if (cursorCondition) {
+      collectionConditions.push(cursorCondition);
+    }
+
+    const rows = await db
+      .select({
+        id: products.id,
+        createdAt: products.createdAt,
+        priceCents: products.priceCents,
+        name: products.name,
+        collectionSortOrder: productCollections.sortOrder,
+      })
+      .from(collections)
+      .innerJoin(productCollections, eq(productCollections.collectionId, collections.id))
+      .innerJoin(products, eq(products.id, productCollections.productId))
+      .where(and(...collectionConditions))
+      .orderBy(asc(productCollections.sortOrder), ...sortRows(sort))
+      .limit(limit + 1);
+
+    return buildProductListResult(rows, limit, sort);
   }
+
+  const conditions: SQL[] = [eq(products.status, filters.status ?? 'active')];
 
   if (filters.type) {
     conditions.push(eq(products.productType, filters.type));
@@ -713,7 +789,7 @@ export const listProducts = async (filters: ProductListFilters) => {
     );
   }
 
-  const cursorCondition = buildCursorCondition(sort, cursor, collectionSortOrder);
+  const cursorCondition = buildCursorCondition(sort, cursor);
   if (cursorCondition) {
     conditions.push(cursorCondition);
   }
@@ -724,40 +800,11 @@ export const listProducts = async (filters: ProductListFilters) => {
       createdAt: products.createdAt,
       priceCents: products.priceCents,
       name: products.name,
-      collectionSortOrder: collectionSortOrder ?? sql<number>`0`,
     })
     .from(products)
     .where(and(...conditions))
-    .orderBy(...(collectionSortOrder ? [asc(collectionSortOrder), ...sortRows(sort)] : sortRows(sort)))
+    .orderBy(...sortRows(sort))
     .limit(limit + 1);
 
-  const hasMore = rows.length > limit;
-  const pageRows = rows.slice(0, limit);
-  const lastItem = pageRows.at(-1);
-
-  return {
-    items: await getProductCardsByIds(pageRows.map((row) => row.id)),
-    nextCursor:
-      hasMore && lastItem
-        ? encodeCursor(
-            sort === 'price_asc' || sort === 'price_desc'
-              ? {
-                  id: lastItem.id,
-                  priceCents: lastItem.priceCents,
-                  ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
-                }
-              : sort === 'name_asc' || sort === 'name_desc'
-                ? {
-                    id: lastItem.id,
-                    name: lastItem.name,
-                    ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
-                  }
-                : {
-                    id: lastItem.id,
-                    createdAt: lastItem.createdAt.toISOString(),
-                    ...(collectionSortOrder ? { collectionSortOrder: lastItem.collectionSortOrder } : {}),
-                  },
-          )
-        : null,
-  };
+  return buildProductListResult(rows, limit, sort);
 };

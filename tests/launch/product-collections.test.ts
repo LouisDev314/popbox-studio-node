@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createChain, importFresh } from '../helpers/launch-test-kit';
 import HttpStatusCode from '../../src/constants/http-status-code';
 import { productBodySchema, productPatchBodySchema } from '../../src/schemas/admin';
+import { decodeCursor, encodeCursor } from '../../src/utils/cursor';
 
 const mocks = vi.hoisted(() => {
   const db = {
@@ -82,6 +83,15 @@ const flattenSql = (value: unknown): string => {
     return '';
   }
 
+  if ('name' in value && typeof value.name === 'string') {
+    return value.name;
+  }
+
+  const tableName = getDrizzleName(value);
+  if (tableName) {
+    return tableName;
+  }
+
   if ('queryChunks' in value) {
     return flattenSql((value as { queryChunks: unknown[] }).queryChunks);
   }
@@ -91,6 +101,20 @@ const flattenSql = (value: unknown): string => {
   }
 
   return '';
+};
+
+const getDrizzleName = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const nameSymbol = Object.getOwnPropertySymbols(value).find((symbol) => symbol.description === 'drizzle:Name');
+  if (!nameSymbol) {
+    return null;
+  }
+
+  const name = (value as Record<symbol, unknown>)[nameSymbol];
+  return typeof name === 'string' ? name : null;
 };
 
 const mockProductReadAfterWrite = (productRow = buildProductRow()) => {
@@ -216,6 +240,10 @@ describe('launch: product collection queries', () => {
     vi.clearAllMocks();
   });
 
+  const mockCardHydration = () => {
+    mocks.db.execute.mockResolvedValueOnce([buildProductCardRow()]).mockResolvedValueOnce([]);
+  };
+
   it('filters public collection pages through product_collections and returns product collections', async () => {
     const productListChain = createChain([
       {
@@ -228,7 +256,7 @@ describe('launch: product collection queries', () => {
     ]);
 
     mocks.db.select.mockReturnValueOnce(productListChain);
-    mocks.db.execute.mockResolvedValueOnce([buildProductCardRow()]).mockResolvedValueOnce([]);
+    mockCardHydration();
 
     const { listProducts } = await importFresh(() => import('../../src/services/product'));
     const result = await listProducts({
@@ -249,10 +277,167 @@ describe('launch: product collection queries', () => {
     const normalizedWhere = flattenSql(whereClause).replace(/\s+/g, ' ').trim();
     const normalizedOrder = flattenSql(orderArgs).replace(/\s+/g, ' ').trim();
 
-    expect(normalizedWhere).toContain('EXISTS ( SELECT 1');
+    expect(getDrizzleName(productListChain.from.mock.calls[0]?.[0])).toBe('collections');
+    expect(getDrizzleName(productListChain.innerJoin.mock.calls[0]?.[0])).toBe('product_collections');
+    expect(getDrizzleName(productListChain.innerJoin.mock.calls[1]?.[0])).toBe('products');
+    expect(normalizedWhere).not.toContain('EXISTS (');
+    expect(normalizedWhere).not.toContain('SELECT product_collections.sort_order');
     expect(normalizedWhere).toContain('featured');
     expect(orderArgs).toHaveLength(3);
-    expect(normalizedOrder).toContain('featured');
+    expect(normalizedOrder).toContain('sort_order');
+    expect(normalizedOrder).toContain('created_at');
+    expect(normalizedOrder).toContain('id');
+    expect(normalizedOrder).not.toContain('featured');
+  });
+
+  it('uses collection sort order with the newest cursor tuple', async () => {
+    const productListChain = createChain([
+      {
+        id: 'prod_1',
+        createdAt: new Date('2026-04-12T11:00:00.000Z'),
+        priceCents: 4999,
+        name: 'One Piece Figure',
+        collectionSortOrder: 3,
+      },
+      {
+        id: 'prod_2',
+        createdAt: new Date('2026-04-12T10:00:00.000Z'),
+        priceCents: 3999,
+        name: 'Second Figure',
+        collectionSortOrder: 4,
+      },
+    ]);
+
+    mocks.db.select.mockReturnValueOnce(productListChain);
+    mockCardHydration();
+
+    const { listProducts } = await importFresh(() => import('../../src/services/product'));
+    const result = await listProducts({
+      collection: 'featured',
+      limit: 1,
+      cursor: encodeCursor({
+        id: 'prod_cursor',
+        createdAt: '2026-04-12T12:00:00.000Z',
+        collectionSortOrder: 3,
+      }),
+    });
+
+    const whereClause = productListChain.where.mock.calls[0]?.[0];
+    const normalizedWhere = flattenSql(whereClause).replace(/\s+/g, ' ').trim();
+
+    expect(normalizedWhere).toContain('sort_order');
+    expect(normalizedWhere).toContain('created_at');
+    expect(normalizedWhere).toContain('id');
+    expect(normalizedWhere).not.toContain('EXISTS (');
+    expect(decodeCursor(result.nextCursor)).toEqual({
+      id: 'prod_1',
+      createdAt: '2026-04-12T11:00:00.000Z',
+      collectionSortOrder: 3,
+    });
+  });
+
+  it('keeps collection sort order in price and name cursors', async () => {
+    const priceListChain = createChain([
+      {
+        id: 'prod_1',
+        createdAt: new Date('2026-04-12T11:00:00.000Z'),
+        priceCents: 4999,
+        name: 'One Piece Figure',
+        collectionSortOrder: 2,
+      },
+      {
+        id: 'prod_2',
+        createdAt: new Date('2026-04-12T10:00:00.000Z'),
+        priceCents: 5999,
+        name: 'Second Figure',
+        collectionSortOrder: 2,
+      },
+    ]);
+    const nameListChain = createChain([
+      {
+        id: 'prod_1',
+        createdAt: new Date('2026-04-12T11:00:00.000Z'),
+        priceCents: 4999,
+        name: 'One Piece Figure',
+        collectionSortOrder: 2,
+      },
+      {
+        id: 'prod_2',
+        createdAt: new Date('2026-04-12T10:00:00.000Z'),
+        priceCents: 5999,
+        name: 'Second Figure',
+        collectionSortOrder: 2,
+      },
+    ]);
+
+    mocks.db.select.mockReturnValueOnce(priceListChain).mockReturnValueOnce(nameListChain);
+    mockCardHydration();
+    mockCardHydration();
+
+    const { listProducts } = await importFresh(() => import('../../src/services/product'));
+    const priceResult = await listProducts({
+      collection: 'featured',
+      sort: 'price_asc',
+      limit: 1,
+    });
+    const nameResult = await listProducts({
+      collection: 'featured',
+      sort: 'name_asc',
+      limit: 1,
+    });
+
+    expect(decodeCursor(priceResult.nextCursor)).toEqual({
+      id: 'prod_1',
+      priceCents: 4999,
+      collectionSortOrder: 2,
+    });
+    expect(decodeCursor(nameResult.nextCursor)).toEqual({
+      id: 'prod_1',
+      name: 'One Piece Figure',
+      collectionSortOrder: 2,
+    });
+  });
+
+  it('returns an empty collection page without hydrating product cards', async () => {
+    mocks.db.select.mockReturnValueOnce(createChain([]));
+
+    const { listProducts } = await importFresh(() => import('../../src/services/product'));
+    const result = await listProducts({
+      collection: 'missing',
+      limit: 10,
+    });
+
+    expect(result).toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect(mocks.db.execute).not.toHaveBeenCalled();
+  });
+
+  it('keeps collection type and tag filters on product listings', async () => {
+    const typeListChain = createChain([]);
+    const tagListChain = createChain([]);
+    mocks.db.select.mockReturnValueOnce(typeListChain).mockReturnValueOnce(tagListChain);
+
+    const { listProducts } = await importFresh(() => import('../../src/services/product'));
+    await listProducts({
+      collection: 'featured',
+      type: 'kuji',
+      limit: 10,
+    });
+    await listProducts({
+      collection: 'featured',
+      tag: 'figure',
+      limit: 10,
+    });
+
+    const typeWhere = flattenSql(typeListChain.where.mock.calls[0]?.[0]).replace(/\s+/g, ' ').trim();
+    const tagWhere = flattenSql(tagListChain.where.mock.calls[0]?.[0]).replace(/\s+/g, ' ').trim();
+
+    expect(typeWhere).toContain('kuji');
+    expect(tagWhere).toContain('figure');
+    expect(tagWhere).toContain('product_tags');
+    expect(tagWhere).toContain('tags');
   });
 });
 
