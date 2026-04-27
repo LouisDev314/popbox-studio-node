@@ -13,6 +13,7 @@ import webhooksRouter from './routes/v1/webhooks-router';
 import { globalLimiter } from './middleware/rate-limit';
 import httpLogger from './utils/http-logger';
 import { Sentry } from './integrations/sentry';
+import { shouldReportErrorToSentry } from './utils/sentry';
 
 export const createApp = (): Express => {
   const { corsOrigin } = getEnvConfig();
@@ -47,7 +48,9 @@ export const createApp = (): Express => {
   app.use('/', healthRouter);
   app.use(notFoundHandler);
 
-  Sentry.setupExpressErrorHandler(app);
+  Sentry.setupExpressErrorHandler(app, {
+    shouldHandleError: shouldReportErrorToSentry,
+  });
 
   app.use(exceptionHandler);
 

@@ -1,3 +1,6 @@
+import express from 'express';
+import request from 'supertest';
+import type { ErrorRequestHandler, Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { importFresh } from '../helpers/launch-test-kit';
 
@@ -19,6 +22,25 @@ vi.mock('@sentry/node', () => ({
   captureException: mocks.captureException,
 }));
 
+type SentryExpressHandlerOptions = {
+  shouldHandleError?: (error: unknown) => boolean;
+};
+
+const installMockSentryErrorHandler = () => {
+  mocks.setupExpressErrorHandler.mockImplementation((app: Express, options?: SentryExpressHandlerOptions) => {
+    const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
+      if (options?.shouldHandleError?.(error) ?? true) {
+        mocks.captureException(error);
+        res.sentry = 'test-event-id';
+      }
+
+      next(error);
+    };
+
+    app.use(errorHandler);
+  });
+};
+
 describe('launch: sentry integration', () => {
   const originalEnv = {
     NODE_ENV: process.env.NODE_ENV,
@@ -34,6 +56,8 @@ describe('launch: sentry integration', () => {
   });
 
   afterEach(() => {
+    vi.doUnmock('../../src/routes');
+
     for (const [key, value] of Object.entries(originalEnv)) {
       if (typeof value === 'undefined') {
         delete process.env[key];
@@ -160,5 +184,63 @@ describe('launch: sentry integration', () => {
     expect(sanitizedMinimalEvent.request.url).toBe('https://api.example.com/orders?token=%5BREDACTED%5D');
     expect(sanitizedMinimalEvent.request).not.toHaveProperty('headers');
     expect(sanitizedMinimalEvent.request).not.toHaveProperty('query_string');
+  });
+
+  it('returns a clean unmatched-route 404 without reporting to Sentry', async () => {
+    installMockSentryErrorHandler();
+
+    const { createApp } = await importFresh(() => import('../../src/app'));
+    const response = await request(createApp()).get('/api/v1/does-not-exist');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        code: 404,
+        success: false,
+        message: 'Route not found',
+        errors: {
+          path: '/api/v1/does-not-exist',
+        },
+      }),
+    );
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('does not report expected Exception 4xx errors to Sentry', async () => {
+    const { createApp } = await importFresh(() => import('../../src/app'));
+    const { default: Exception } = await import('../../src/utils/Exception');
+
+    createApp();
+
+    const options = mocks.setupExpressErrorHandler.mock.calls[0]?.[1] as SentryExpressHandlerOptions | undefined;
+
+    expect(options?.shouldHandleError?.(Exception.notFound('Missing product'))).toBe(false);
+    expect(options?.shouldHandleError?.(Exception.internal('Database failed'))).toBe(true);
+    expect(options?.shouldHandleError?.(new Error('boom'))).toBe(true);
+  });
+
+  it('still reports real unhandled 5xx exceptions to Sentry', async () => {
+    installMockSentryErrorHandler();
+
+    const testRouter = express.Router();
+    testRouter.get('/v1/boom', () => {
+      throw new Error('boom');
+    });
+    vi.doMock('../../src/routes', () => ({
+      default: testRouter,
+    }));
+
+    const { createApp } = await importFresh(() => import('../../src/app'));
+    const response = await request(createApp()).get('/api/v1/boom');
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        code: 500,
+        success: false,
+        message: 'Internal server error',
+      }),
+    );
+    expect(mocks.captureException).toHaveBeenCalledWith(expect.any(Error));
   });
 });

@@ -1,6 +1,6 @@
 -- ============================================================================
 -- PopBox Studio - Initial schema migration
--- Combined initial state from core schema + legal documents + FAQ content tables
+-- Combined initial state from core schema + legal documents + FAQ content tables + many-to-many product collections
 -- Target: Supabase/Postgres (assumes auth.users exists)
 -- ============================================================================
 
@@ -91,7 +91,6 @@ CREATE TABLE public.tags (
 
 CREATE TABLE public.products (
                                  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-                                 collection_id uuid REFERENCES public.collections(id) ON DELETE SET NULL,
                                  name varchar(200) NOT NULL,
                                  slug varchar(220) NOT NULL UNIQUE,
                                  description text,
@@ -110,6 +109,14 @@ CREATE TABLE public.product_tags (
                                      tag_id uuid NOT NULL REFERENCES public.tags(id) ON DELETE CASCADE,
                                      created_at timestamptz NOT NULL DEFAULT now(),
                                      CONSTRAINT product_tags_pk PRIMARY KEY (product_id, tag_id)
+);
+
+CREATE TABLE public.product_collections (
+                                            product_id uuid NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+                                            collection_id uuid NOT NULL REFERENCES public.collections(id) ON DELETE CASCADE,
+                                            sort_order integer NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
+                                            created_at timestamptz NOT NULL DEFAULT now(),
+                                            PRIMARY KEY (product_id, collection_id)
 );
 
 CREATE TABLE public.product_images (
@@ -313,10 +320,15 @@ CREATE INDEX collections_active_sort_idx ON public.collections (is_active, sort_
 CREATE INDEX tags_tag_type_idx ON public.tags (tag_type, name);
 
 CREATE INDEX products_status_created_idx ON public.products (status, created_at DESC, id DESC);
-CREATE INDEX products_collection_status_created_idx ON public.products (collection_id, status, created_at DESC, id DESC);
 CREATE INDEX products_type_status_created_idx ON public.products (product_type, status, created_at DESC, id DESC);
 
 CREATE INDEX product_tags_tag_id_idx ON public.product_tags (tag_id, product_id);
+
+CREATE INDEX product_collections_collection_sort_idx
+    ON public.product_collections (collection_id, sort_order, product_id);
+
+CREATE INDEX product_collections_product_id_idx
+    ON public.product_collections (product_id, collection_id);
 
 CREATE INDEX product_images_product_sort_idx ON public.product_images (product_id, sort_order, id);
 

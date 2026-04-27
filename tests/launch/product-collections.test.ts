@@ -151,18 +151,6 @@ describe('launch: product collections migration and validation', () => {
     vi.clearAllMocks();
   });
 
-  it('adds the product_collections join table and backfills legacy product collection data', () => {
-    const migration = readFileSync('supabase/migrations/20260425000000_add_product_collections.sql', 'utf8');
-
-    expect(migration).toContain('CREATE TABLE public.product_collections');
-    expect(migration).toContain('PRIMARY KEY (product_id, collection_id)');
-    expect(migration).toContain('CREATE INDEX product_collections_collection_sort_idx');
-    expect(migration).toContain('CREATE INDEX product_collections_product_id_idx');
-    expect(migration).toContain('SELECT id, collection_id, 0');
-    expect(migration).toContain('WHERE collection_id IS NOT NULL');
-    expect(migration).toContain('ON CONFLICT DO NOTHING');
-  });
-
   it('requires collectionIds on create and rejects legacy collectionId payloads', () => {
     expect(
       productBodySchema.safeParse({
@@ -452,7 +440,9 @@ describe('launch: admin product collection writes', () => {
     const collectionInsertChain = createChain([]);
     const inventoryInsertChain = createChain([]);
 
-    mocks.db.select.mockReturnValueOnce(createChain([])).mockReturnValueOnce(createChain([{ id: 'col_1' }, { id: 'col_2' }]));
+    mocks.db.select
+      .mockReturnValueOnce(createChain([]))
+      .mockReturnValueOnce(createChain([{ id: 'col_1' }, { id: 'col_2' }]));
     mockProductReadAfterWrite();
     mocks.db.insert
       .mockReturnValueOnce(productInsertChain)
