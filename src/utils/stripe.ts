@@ -16,7 +16,7 @@ export const buildStripeCheckoutSessionSnapshot = (session: Stripe.Checkout.Sess
   paymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
   customerEmail: session.customer_email ?? session.customer_details?.email ?? null,
   metadata: session.metadata ?? {},
-  created: typeof session.created === 'number' ? session.created : null,
+  created: session.created,
 });
 
 export const buildStripeRefundSnapshot = (refund: Stripe.Refund): Record<string, unknown> => ({
