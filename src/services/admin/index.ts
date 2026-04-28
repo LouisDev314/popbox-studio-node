@@ -27,7 +27,7 @@ import {
   replaceProductTags,
   throwStorageFailure,
 } from '../../utils/product';
-import { LAST_ONE_PRIZE_CODE, sanitizeKujiPrizeCodeForStorage } from '../../utils/kuji';
+import { LAST_ONE_PRIZE_TIER, sanitizeKujiPrizeCodeForStorage, sanitizeKujiPrizeTierForStorage } from '../../utils/kuji';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
 type AdminProductListSort = 'updated_desc' | 'updated_asc' | 'inventory_desc' | 'inventory_asc';
@@ -46,6 +46,22 @@ type AdminProductCursorPayload = {
   id: string;
   updatedAt?: string;
   inventorySortValue?: number;
+};
+
+const isUniqueConstraintViolation = (error: unknown, constraintName: string) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  error.code === '23505' &&
+  (('constraint_name' in error && error.constraint_name === constraintName) ||
+    ('constraint' in error && error.constraint === constraintName));
+
+const mapKujiPrizeWriteError = (error: unknown): never => {
+  if (isUniqueConstraintViolation(error, 'kuji_prizes_product_code_unique')) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji prize code already exists for this product');
+  }
+
+  throw error;
 };
 
 type AdminProductListItem = {
@@ -89,7 +105,7 @@ const buildAdminInventorySortValue = () => {
       SELECT sum(${kujiPrizes.remainingQuantity})::int
       FROM ${kujiPrizes}
       WHERE ${kujiPrizes.productId} = ${products.id}
-        AND UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}
+        AND UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}
     ),
     0
   )`;
@@ -209,7 +225,7 @@ const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string)
     .where(
       and(
         eq(kujiPrizes.productId, productId),
-        sql`UPPER(BTRIM(${kujiPrizes.prizeCode})) <> ${LAST_ONE_PRIZE_CODE}`,
+        sql`UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}`,
       ),
     );
 
@@ -795,6 +811,7 @@ export const createKujiPrize = async (
   productId: string,
   payload: {
     prizeCode: string;
+    prizeTier: string;
     name: string;
     description?: string | null;
     imageUrl?: string | null;
@@ -812,25 +829,29 @@ export const createKujiPrize = async (
   assertKujiPrizeQuantitiesAreValid(payload.initialQuantity, remainingQuantity);
 
   const nextPrizeCode = sanitizeKujiPrizeCodeForStorage(payload.prizeCode);
+  const nextPrizeTier = sanitizeKujiPrizeTierForStorage(payload.prizeTier);
 
-  const [prize] = await db.transaction(async (tx) => {
-    const [createdPrize] = await tx
-      .insert(kujiPrizes)
-      .values({
-        productId,
-        prizeCode: nextPrizeCode,
-        name: payload.name,
-        description: payload.description ?? null,
-        imageUrl: payload.imageUrl ?? null,
-        initialQuantity: payload.initialQuantity,
-        remainingQuantity,
-        sortOrder: payload.sortOrder ?? 0,
-      })
-      .returning();
+  const [prize] = await db
+    .transaction(async (tx) => {
+      const [createdPrize] = await tx
+        .insert(kujiPrizes)
+        .values({
+          productId,
+          prizeCode: nextPrizeCode,
+          prizeTier: nextPrizeTier,
+          name: payload.name,
+          description: payload.description ?? null,
+          imageUrl: payload.imageUrl ?? null,
+          initialQuantity: payload.initialQuantity,
+          remainingQuantity,
+          sortOrder: payload.sortOrder ?? 0,
+        })
+        .returning();
 
-    await ensureKujiInventoryStateWithinTx(tx, productId);
-    return [createdPrize];
-  });
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+      return [createdPrize];
+    })
+    .catch(mapKujiPrizeWriteError);
 
   return prize;
 };
@@ -840,6 +861,7 @@ export const updateKujiPrize = async (
   prizeId: string,
   payload: Partial<{
     prizeCode: string;
+    prizeTier: string;
     name: string;
     description: string | null;
     imageUrl: string | null;
@@ -849,44 +871,60 @@ export const updateKujiPrize = async (
   }>,
 ) => {
   await assertProductExists(productId);
-  const [updated] = await db.transaction(async (tx) => {
-    const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
-      SELECT *
+  const [updated] = await db
+    .transaction(async (tx) => {
+      const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
+      SELECT
+        id,
+        product_id AS "productId",
+        prize_code AS "prizeCode",
+        prize_tier AS "prizeTier",
+        name,
+        description,
+        image_url AS "imageUrl",
+        initial_quantity AS "initialQuantity",
+        remaining_quantity AS "remainingQuantity",
+        sort_order AS "sortOrder",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
       FROM kuji_prizes
       WHERE id = ${prizeId}
         AND product_id = ${productId}
       FOR UPDATE
     `);
-    const existing = prizeResult[0];
+      const existing = prizeResult[0];
 
-    if (!existing) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
-    }
+      if (!existing) {
+        throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
+      }
 
-    const nextPrizeCode = payload.prizeCode
-      ? sanitizeKujiPrizeCodeForStorage(payload.prizeCode)
-      : existing.prizeCode;
-    const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
-    const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
-    assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
+      const nextPrizeCode =
+        payload.prizeCode !== undefined ? sanitizeKujiPrizeCodeForStorage(payload.prizeCode) : existing.prizeCode;
+      const nextPrizeTier =
+        payload.prizeTier !== undefined ? sanitizeKujiPrizeTierForStorage(payload.prizeTier) : existing.prizeTier;
+      const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
+      const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
+      assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
 
-    const [nextPrize] = await tx
-      .update(kujiPrizes)
-      .set({
-        prizeCode: nextPrizeCode,
-        name: payload.name ?? existing.name,
-        description: payload.description === undefined ? existing.description : payload.description,
-        imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
-        initialQuantity: nextInitialQuantity,
-        remainingQuantity: nextRemainingQuantity,
-        sortOrder: payload.sortOrder ?? existing.sortOrder,
-      })
-      .where(eq(kujiPrizes.id, prizeId))
-      .returning();
+      const [nextPrize] = await tx
+        .update(kujiPrizes)
+        .set({
+          prizeCode: nextPrizeCode,
+          prizeTier: nextPrizeTier,
+          name: payload.name ?? existing.name,
+          description: payload.description === undefined ? existing.description : payload.description,
+          imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
+          initialQuantity: nextInitialQuantity,
+          remainingQuantity: nextRemainingQuantity,
+          sortOrder: payload.sortOrder ?? existing.sortOrder,
+        })
+        .where(eq(kujiPrizes.id, prizeId))
+        .returning();
 
-    await ensureKujiInventoryStateWithinTx(tx, productId);
-    return [nextPrize];
-  });
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+      return [nextPrize];
+    })
+    .catch(mapKujiPrizeWriteError);
 
   return updated;
 };

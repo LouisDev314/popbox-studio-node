@@ -40,6 +40,7 @@ type OrderTicketJoinRow = {
     description: string | null;
     imageUrl: string | null;
     prizeCode: string;
+    prizeTier: string;
   };
   product: {
     id: string;
@@ -131,6 +132,7 @@ const mapTicketRow = (row: OrderTicketJoinRow, primaryTicketImages: Map<string, 
       description: row.prize.description,
       imageUrl: row.prize.imageUrl,
       prizeCode: row.prize.prizeCode,
+      prizeTier: row.prize.prizeTier,
     },
     kujiProduct: {
       id: row.product.id,
@@ -310,6 +312,7 @@ export const loadOrderTicketRows = async (orderId: string) => {
         description: kujiPrizes.description,
         imageUrl: kujiPrizes.imageUrl,
         prizeCode: kujiPrizes.prizeCode,
+        prizeTier: kujiPrizes.prizeTier,
       },
       product: {
         id: products.id,
@@ -406,6 +409,7 @@ export const getGuestTicketViewById = async (orderId: string, ticketId: string) 
         description: kujiPrizes.description,
         imageUrl: kujiPrizes.imageUrl,
         prizeCode: kujiPrizes.prizeCode,
+        prizeTier: kujiPrizes.prizeTier,
       },
       product: {
         id: products.id,

@@ -261,7 +261,7 @@ describe('launch: product recommendations', () => {
     expect(normalizedProductCardQuery).toContain('collection_rows.collections AS "collections"');
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.remaining_quantity, 0)), 0)::int');
     expect(normalizedProductCardQuery).toContain('COALESCE(sum(GREATEST(kp.initial_quantity, 0)), 0)::int');
-    expect(normalizedProductCardQuery).toContain('UPPER(BTRIM(kp.prize_code)) <>');
+    expect(normalizedProductCardQuery).toContain('UPPER(BTRIM(kp.prize_tier)) <>');
     expect(normalizedProductCardQuery).not.toContain('image.storage_key AS "imageStorageKey"');
 
     const primaryImageQuery = mocks.db.execute.mock.calls[2]?.[0];

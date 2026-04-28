@@ -95,6 +95,7 @@ describe('launch: performance and stability hardening', () => {
         description: null,
         imageUrl: null,
         prizeCode: 'A',
+        prizeTier: 'A',
       },
       kujiProduct: {
         id: 'product_1',

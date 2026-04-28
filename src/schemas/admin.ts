@@ -83,7 +83,8 @@ export const imageReorderBodySchema = z.object({
 });
 
 export const kujiPrizeBodySchema = z.object({
-  prizeCode: z.string().min(1),
+  prizeCode: z.string().trim().min(1).transform((value) => value.toUpperCase()),
+  prizeTier: z.string().trim().min(1).transform((value) => value.toUpperCase()),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   imageUrl: z.url().optional().nullable(),

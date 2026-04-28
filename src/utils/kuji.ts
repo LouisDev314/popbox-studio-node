@@ -1,11 +1,18 @@
-export const LAST_ONE_PRIZE_CODE = 'LO';
+export const LAST_ONE_PRIZE_TIER = 'LO';
 
-export const normalizeKujiPrizeCode = (prizeCode: string | null | undefined) => prizeCode?.trim().toUpperCase() ?? '';
+const normalizeKujiPrizeIdentifier = (value: string | null | undefined) => value?.trim().toUpperCase() ?? '';
 
-export const isLastOnePrizeCode = (prizeCode: string | null | undefined) =>
-  normalizeKujiPrizeCode(prizeCode) === LAST_ONE_PRIZE_CODE;
+export const normalizeKujiPrizeCode = normalizeKujiPrizeIdentifier;
+
+export const normalizeKujiPrizeTier = normalizeKujiPrizeIdentifier;
+
+export const isLastOnePrizeTier = (prizeTier: string | null | undefined) =>
+  normalizeKujiPrizeTier(prizeTier) === LAST_ONE_PRIZE_TIER;
 
 export const sanitizeKujiPrizeCodeForStorage = (prizeCode: string) => {
-  const trimmedPrizeCode = prizeCode.trim();
-  return isLastOnePrizeCode(trimmedPrizeCode) ? LAST_ONE_PRIZE_CODE : trimmedPrizeCode;
+  return normalizeKujiPrizeCode(prizeCode);
+};
+
+export const sanitizeKujiPrizeTierForStorage = (prizeTier: string) => {
+  return normalizeKujiPrizeTier(prizeTier);
 };

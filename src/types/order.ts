@@ -17,6 +17,7 @@ export type OrderTicketView = {
     description: string | null;
     imageUrl: string | null;
     prizeCode: string;
+    prizeTier: string;
   } | null;
   kujiProduct: {
     id: string;

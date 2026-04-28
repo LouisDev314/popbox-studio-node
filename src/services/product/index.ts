@@ -30,7 +30,7 @@ import {
 } from '../../types/product';
 import { clampLimit } from '../../utils/limit';
 import { buildImageUrl, loadPrimaryProductImageMap } from '../../utils/product';
-import { LAST_ONE_PRIZE_CODE } from '../../utils/kuji';
+import { LAST_ONE_PRIZE_TIER } from '../../utils/kuji';
 import { listTrendingProductIds } from './trending';
 
 const SORT_MAP: Record<ProductSort, readonly [SQL, SQL]> = {
@@ -252,6 +252,7 @@ export const loadProductRelations = async (productIds: string[]): Promise<Produc
         id: kujiPrizes.id,
         productId: kujiPrizes.productId,
         prizeCode: kujiPrizes.prizeCode,
+        prizeTier: kujiPrizes.prizeTier,
         name: kujiPrizes.name,
         description: kujiPrizes.description,
         imageUrl: kujiPrizes.imageUrl,
@@ -427,7 +428,7 @@ export const getProductCardsByIds = async (productIds: string[]): Promise<Produc
       FROM ${kujiPrizes} AS kp
       WHERE p.product_type = 'kuji'
         AND kp.product_id = p.id
-        AND UPPER(BTRIM(kp.prize_code)) <> ${LAST_ONE_PRIZE_CODE}
+        AND UPPER(BTRIM(kp.prize_tier)) <> ${LAST_ONE_PRIZE_TIER}
     ) AS ticket_summary
       ON true
     WHERE p.id IN (${requestedIds})
@@ -544,6 +545,7 @@ export const mapProduct = (product: ProductRow, relations: ProductRelationMaps) 
         ? kujiPrizeRows.map((prize) => ({
             id: prize.id,
             prizeCode: prize.prizeCode,
+            prizeTier: prize.prizeTier,
             name: prize.name,
             description: prize.description,
             imageUrl: prize.imageUrl,

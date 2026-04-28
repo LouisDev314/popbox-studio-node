@@ -2506,6 +2506,8 @@ components:
           format: uuid
         prizeCode:
           type: string
+        prizeTier:
+          type: string
         name:
           type: string
         description:
@@ -2521,7 +2523,7 @@ components:
           type: integer
         sortOrder:
           type: integer
-      required: [id, prizeCode, name, initialQuantity, remainingQuantity, sortOrder]
+      required: [id, prizeCode, prizeTier, name, initialQuantity, remainingQuantity, sortOrder]
     ProductCard:
       type: object
       properties:
@@ -3007,7 +3009,9 @@ components:
               nullable: true
             prizeCode:
               type: string
-          required: [id, name, prizeCode]
+            prizeTier:
+              type: string
+          required: [id, name, prizeCode, prizeTier]
         kujiProduct:
           type: object
           properties:
@@ -3516,6 +3520,8 @@ components:
       properties:
         prizeCode:
           type: string
+        prizeTier:
+          type: string
         name:
           type: string
         description:
@@ -3536,12 +3542,15 @@ components:
           minimum: 0
       required:
         - prizeCode
+        - prizeTier
         - name
         - initialQuantity
     KujiPrizeUpdate:
       type: object
       properties:
         prizeCode:
+          type: string
+        prizeTier:
           type: string
         name:
           type: string

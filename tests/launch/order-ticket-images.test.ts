@@ -67,6 +67,7 @@ const buildTicketJoinRow = (overrides?: {
   ticketId?: string;
   prizeId?: string;
   prizeCode?: string;
+  prizeTier?: string;
   prizeName?: string;
   revealedAt?: Date | null;
   productName?: string;
@@ -90,6 +91,7 @@ const buildTicketJoinRow = (overrides?: {
     id: overrides?.prizeId ?? 'prize_1',
     productId: overrides?.productId ?? 'prod_kuji',
     prizeCode: overrides?.prizeCode ?? 'A',
+    prizeTier: overrides?.prizeTier ?? 'A',
     name: overrides?.prizeName ?? 'Prize A',
     description: null,
     imageUrl: 'https://example.com/prize-a.png',
@@ -186,6 +188,7 @@ describe('launch: guest ticket kuji product images', () => {
             ticketId: 'ticket_unrevealed',
             prizeId: 'prize_hidden',
             prizeCode: 'B',
+            prizeTier: 'B',
             prizeName: 'Prize B',
             revealedAt: null,
           }),
@@ -193,6 +196,7 @@ describe('launch: guest ticket kuji product images', () => {
             ticketId: 'ticket_revealed',
             prizeId: 'prize_visible',
             prizeCode: 'A',
+            prizeTier: 'A',
             prizeName: 'Prize A',
             revealedAt: new Date('2026-04-13T00:02:00.000Z'),
           }),
@@ -217,6 +221,7 @@ describe('launch: guest ticket kuji product images', () => {
         prize: expect.objectContaining({
           id: 'prize_visible',
           prizeCode: 'A',
+          prizeTier: 'A',
         }),
       }),
     );
@@ -236,6 +241,7 @@ describe('launch: guest ticket kuji product images', () => {
           ticketId: 'ticket_unrevealed',
           prizeId: 'prize_hidden',
           prizeCode: 'B',
+          prizeTier: 'B',
           prizeName: 'Prize B',
           revealedAt: null,
         }),

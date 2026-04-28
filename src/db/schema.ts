@@ -346,6 +346,7 @@ export const kujiPrizes = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: 'cascade' }),
     prizeCode: varchar('prize_code', { length: 64 }).notNull(),
+    prizeTier: varchar('prize_tier', { length: 64 }).notNull(),
     name: varchar('name', { length: 200 }).notNull(),
     description: text('description'),
     imageUrl: varchar('image_url', { length: 500 }),
@@ -362,6 +363,7 @@ export const kujiPrizes = pgTable(
     check('kuji_prizes_initial_quantity_check', sql`${table.initialQuantity} >= 0`),
     check('kuji_prizes_remaining_quantity_check', sql`${table.remainingQuantity} >= 0`),
     check('kuji_prizes_sort_order_check', sql`${table.sortOrder} >= 0`),
+    check('kuji_prizes_prize_tier_not_blank_check', sql`BTRIM(${table.prizeTier}) <> ''`),
   ],
 );
 

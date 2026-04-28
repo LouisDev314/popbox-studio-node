@@ -113,6 +113,7 @@ describe('launch: order and payment safety invariants', () => {
         description: null,
         imageUrl: null,
         prizeCode: 'A',
+        prizeTier: 'A',
       },
       kujiProduct: {
         id: 'product_1',
@@ -447,13 +448,15 @@ describe('launch: order and payment safety invariants', () => {
     tx.execute.mockResolvedValueOnce([
       {
         id: 'prize_normal',
-        prizeCode: 'A',
+        prizeCode: 'A1',
+        prizeTier: 'A',
         remainingQuantity: 1,
         productId: 'prod_kuji',
       },
       {
         id: 'prize_lo',
-        prizeCode: 'LO',
+        prizeCode: 'LAST',
+        prizeTier: 'LO',
         remainingQuantity: 1,
         productId: 'prod_kuji',
       },
@@ -504,13 +507,15 @@ describe('launch: order and payment safety invariants', () => {
     tx.execute.mockResolvedValueOnce([
       {
         id: 'prize_normal',
-        prizeCode: 'A',
+        prizeCode: 'A1',
+        prizeTier: 'A',
         remainingQuantity: 2,
         productId: 'prod_kuji',
       },
       {
         id: 'prize_lo',
-        prizeCode: 'LO',
+        prizeCode: 'LAST',
+        prizeTier: 'LO',
         remainingQuantity: 1,
         productId: 'prod_kuji',
       },
@@ -714,6 +719,7 @@ describe('launch: order and payment safety invariants', () => {
         description: null,
         imageUrl: null,
         prizeCode: 'A',
+        prizeTier: 'A',
       },
       kujiProduct: {
         id: 'product_1',
@@ -761,6 +767,7 @@ describe('launch: order and payment safety invariants', () => {
         description: null,
         imageUrl: null,
         prizeCode: 'A',
+        prizeTier: 'A',
       },
       kujiProduct: {
         id: 'product_1',
@@ -829,6 +836,7 @@ describe('launch: order and payment safety invariants', () => {
         description: null,
         imageUrl: null,
         prizeCode: 'A',
+        prizeTier: 'A',
       },
       kujiProduct: {
         id: 'product_1',

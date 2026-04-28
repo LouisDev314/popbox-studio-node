@@ -21,7 +21,7 @@ import { getOrderDetailById } from '../orders/helpers';
 import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
-import { isLastOnePrizeCode } from '../../utils/kuji';
+import { isLastOnePrizeTier } from '../../utils/kuji';
 import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
 import { sendOrderConfirmationEmail, sendOrderNotificationEmail } from '../notifications';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
@@ -736,10 +736,16 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
       sql<{
         id: string;
         prizeCode: string;
+        prizeTier: string;
         remainingQuantity: number;
         productId: string;
       }>`
-        SELECT id, prize_code AS "prizeCode", remaining_quantity AS "remainingQuantity", product_id AS "productId"
+        SELECT
+          id,
+          prize_code AS "prizeCode",
+          prize_tier AS "prizeTier",
+          remaining_quantity AS "remainingQuantity",
+          product_id AS "productId"
         FROM kuji_prizes
         WHERE product_id = ${item.productId}
         ORDER BY sort_order ASC, id ASC
@@ -750,18 +756,19 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
     const prizePool = prizeResult.map((row) => ({
       id: String(row.id),
       prizeCode: String(row.prizeCode),
+      prizeTier: String(row.prizeTier),
       remainingQuantity: Number(row.remainingQuantity),
       productId: String(row.productId),
     }));
-    const lastOnePrize = prizePool.find((prize) => isLastOnePrizeCode(prize.prizeCode)) ?? null;
-    const normalPrizePool = prizePool.filter((prize) => !isLastOnePrizeCode(prize.prizeCode));
+    const lastOnePrize = prizePool.find((prize) => isLastOnePrizeTier(prize.prizeTier)) ?? null;
+    const normalPrizePool = prizePool.filter((prize) => !isLastOnePrizeTier(prize.prizeTier));
     const totalRemaining = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
 
     if (totalRemaining < item.quantity) {
       throw new NeedsAttentionError(`Insufficient kuji prize inventory for product ${item.productId}`);
     }
 
-    if (totalRemaining === item.quantity && prizePool.some((prize) => isLastOnePrizeCode(prize.prizeCode))) {
+    if (totalRemaining === item.quantity && prizePool.some((prize) => isLastOnePrizeTier(prize.prizeTier))) {
       includesLastOnePrize = true;
     }
 

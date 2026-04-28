@@ -181,6 +181,7 @@ CREATE TABLE public.kuji_prizes (
                                     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                                     product_id uuid NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
                                     prize_code varchar(64) NOT NULL,
+                                    prize_tier varchar(64) NOT NULL,
                                     name varchar(200) NOT NULL,
                                     description text,
                                     image_url varchar(500),
@@ -189,6 +190,7 @@ CREATE TABLE public.kuji_prizes (
                                     sort_order integer NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
                                     created_at timestamptz NOT NULL DEFAULT now(),
                                     updated_at timestamptz NOT NULL DEFAULT now(),
+                                    CONSTRAINT kuji_prizes_prize_tier_not_blank_check CHECK (BTRIM(prize_tier) <> ''),
                                     CONSTRAINT kuji_prizes_product_code_unique UNIQUE (product_id, prize_code)
 );
 
@@ -533,7 +535,7 @@ SELECT COALESCE(SUM(kp.remaining_quantity), 0)
 INTO v_on_hand
 FROM public.kuji_prizes kp
 WHERE kp.product_id = p_product_id
-  AND UPPER(BTRIM(kp.prize_code)) <> 'LO';
+  AND UPPER(BTRIM(kp.prize_tier)) <> 'LO';
 
 INSERT INTO public.product_inventory (
     product_id,
@@ -718,7 +720,7 @@ CREATE TRIGGER auth_users_sync_public_users_trg
 -- ============================================================================
 
 CREATE TRIGGER kuji_prizes_sync_inventory_on_hand
-    AFTER INSERT OR UPDATE OF product_id, prize_code, remaining_quantity OR DELETE
+    AFTER INSERT OR UPDATE OF product_id, prize_code, prize_tier, remaining_quantity OR DELETE
                     ON public.kuji_prizes
                         FOR EACH ROW
                         EXECUTE FUNCTION public.trg_sync_kuji_inventory_on_hand();
@@ -814,7 +816,7 @@ SELECT
     COALESCE(
             SUM(
                     CASE
-                        WHEN UPPER(BTRIM(kp.prize_code)) <> 'LO' THEN kp.remaining_quantity
+                        WHEN UPPER(BTRIM(kp.prize_tier)) <> 'LO' THEN kp.remaining_quantity
                         ELSE 0
                         END
             ),

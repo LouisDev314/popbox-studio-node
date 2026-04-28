@@ -37,7 +37,16 @@ export type ProductImageRow = Pick<
 export type TagRow = Pick<typeof tags.$inferSelect, 'id' | 'name' | 'slug' | 'tagType'>;
 export type KujiPrizeRow = Pick<
   typeof kujiPrizes.$inferSelect,
-  'id' | 'productId' | 'prizeCode' | 'name' | 'description' | 'imageUrl' | 'remainingQuantity' | 'initialQuantity' | 'sortOrder'
+  | 'id'
+  | 'productId'
+  | 'prizeCode'
+  | 'prizeTier'
+  | 'name'
+  | 'description'
+  | 'imageUrl'
+  | 'remainingQuantity'
+  | 'initialQuantity'
+  | 'sortOrder'
 >;
 
 export type ProductRelationMaps = {
