@@ -1,108 +1,142 @@
-import './types/express';
-import express from 'express';
-import cors from 'cors';
 import { Server } from 'http';
-import responseInterceptor from './middleware/response-interceptor';
 import getEnvConfig from './config/env';
-import helmet from 'helmet';
-import compression from 'compression';
-import rootRouter from './routes';
-import exceptionHandler from './middleware/exception-handler';
 import logger from './utils/logger';
-import notFoundHandler from './middleware/not-found-handler';
-import healthRouter from './routes/v1/health-router';
-import webhooksRouter from './routes/v1/webhooks-router';
-import { globalLimiter } from './middleware/rate-limit';
-import httpLogger from './utils/http-logger';
-import { pgStop, pgInit } from './db';
+import { pgInit, pgStop } from './db';
 import { startBackgroundJobs } from './jobs';
+import { createApp } from './app';
+import { initSentry } from './integrations/sentry';
 
 /* -------------------------Setup variables------------------------- */
-const { port, corsOrigin } = getEnvConfig();
-const app = express();
-let server: Server;
+const { port } = getEnvConfig();
+const HTTP_HOST = '0.0.0.0';
+const DB_WARMUP_TIMEOUT_MS = 10000;
+const HTTP_REQUEST_TIMEOUT_MS = 30000;
+const HTTP_HEADERS_TIMEOUT_MS = 35000;
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5000;
+initSentry();
+let server: Server | null = null;
 let stopBackgroundJobs: (() => void) | null = null;
+let isShuttingDown = false;
 
-/* -------------------------Setup Express middleware------------------------- */
-responseInterceptor();
-app.disable('x-powered-by');
-// Trust proxy if deploying behind load balancers (Render/Fly/Nginx)
-app.set('trust proxy', 1);
-app.use(httpLogger);
-// Stripe webhook signature verification must see the untouched raw body.
-app.use('/api/v1/webhooks', webhooksRouter);
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
-app.use(
-  cors({
-    origin: corsOrigin,
-    credentials: true,
-  }),
-);
-app.use(helmet()); // Enable security headers
-app.use(
-  compression({
-    level: 6, // balance speed vs compression
-    threshold: 1024, // only compress bodies >= 1KB
-  }),
-);
+const toError = (error: unknown) => {
+  if (error instanceof Error) {
+    return error;
+  }
 
-// Rate limiting
-app.use(globalLimiter);
-app.use('/api', rootRouter);
-app.use('/health', healthRouter);
-app.use(notFoundHandler);
-app.use(exceptionHandler);
+  return new Error(typeof error === 'string' ? error : 'Unknown error');
+};
 
 /* -------------------------Init------------------------- */
-const applicationBootstrap = async () => {
-  // Task/service to start
-  await Promise.all([pgInit()]);
+const listen = async () => {
+  logger.info({ host: HTTP_HOST, port }, 'Server boot begin');
+  const app = createApp();
+
+  server = await new Promise<Server>((resolve, reject) => {
+    const httpServer = app.listen(port, HTTP_HOST);
+    const handleListen = () => {
+      httpServer.off('error', handleError);
+      httpServer.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
+      httpServer.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+      httpServer.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
+      logger.info({ host: HTTP_HOST, port }, 'HTTP listen success');
+      resolve(httpServer);
+    };
+    const handleError = (error: Error) => {
+      httpServer.off('listening', handleListen);
+      reject(error);
+    };
+
+    httpServer.once('error', handleError);
+    httpServer.once('listening', handleListen);
+  });
+
+  server.on('error', (error) => {
+    logger.fatal({ err: error, host: HTTP_HOST, port }, 'HTTP server error');
+  });
+};
+
+const warmDatabaseAndStartJobs = async () => {
+  logger.info({ timeoutMs: DB_WARMUP_TIMEOUT_MS }, 'DB warmup start');
+
+  try {
+    await pgInit(DB_WARMUP_TIMEOUT_MS);
+    logger.info({ timeoutMs: DB_WARMUP_TIMEOUT_MS }, 'DB warmup success');
+  } catch (error) {
+    logger.error(
+      {
+        err: error,
+        error: error instanceof Error ? error.message : 'Unknown DB warmup error',
+        timeoutMs: DB_WARMUP_TIMEOUT_MS,
+      },
+      'DB warmup failed; background jobs not started',
+    );
+    return;
+  }
+
   stopBackgroundJobs = startBackgroundJobs();
+  logger.info('Job scheduler start');
 };
 
 const start = async () => {
-  try {
-    await applicationBootstrap();
-    server = app.listen(port, '0.0.0.0', () => {
-      logger.info(`Server started at port ${port}`);
-    });
-  } catch (err) {
-    logger.fatal(err, 'Fatal server start error');
-    process.exit(1);
-  }
+  await warmDatabaseAndStartJobs();
+  await listen();
 };
 
 /* -------------------------Graceful Shutdown------------------------- */
-const stop = async () => {
+const stop = async (reason: string, exitCode = 0) => {
+  if (isShuttingDown) {
+    logger.warn({ reason }, 'Shutdown already in progress');
+    return;
+  }
+
+  isShuttingDown = true;
+
   try {
+    stopBackgroundJobs?.();
+    stopBackgroundJobs = null;
+
     await Promise.race([
-      new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      }).then(() => {
-        // Task/service to stop
-        stopBackgroundJobs?.();
-        return Promise.all([pgStop()]);
-      }),
+      (async () => {
+        if (server) {
+          await new Promise<void>((resolve, reject) => {
+            server?.close((error) => (error ? reject(error) : resolve()));
+          });
+        }
+
+        await pgStop();
+      })(),
       new Promise((_, reject) => {
         setTimeout(() => {
           reject(new Error('Taking too long to close connection, forcefully shutting down...'));
         }, 10000);
       }),
     ]);
-    logger.info('Server down successfully');
-    process.exit(0);
-  } catch (err) {
-    logger.fatal(err, 'Fatal server stop error');
+    logger.info({ reason }, 'Server down successfully');
+    process.exit(exitCode);
+  } catch (error) {
+    logger.fatal({ err: error, reason }, 'Fatal server stop error');
     process.exit(1);
   }
 };
 
 /* ---------------------------- graceful shutdown --------------------------- */
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+process.on('SIGINT', () => {
+  void stop('SIGINT');
+});
+process.on('SIGTERM', () => {
+  void stop('SIGTERM');
+});
+process.on('uncaughtException', (error) => {
+  logger.fatal({ err: error }, 'Uncaught exception');
+  void stop('uncaughtException', 1);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ err: toError(reason), reason }, 'Unhandled promise rejection');
+  void stop('unhandledRejection', 1);
+});
 
 /* -------------------------------------------------------------------------- */
-start().catch(() => {
-  process.abort();
+start().catch((error) => {
+  logger.fatal({ err: error }, 'Fatal server start error');
+  process.exit(1);
 });

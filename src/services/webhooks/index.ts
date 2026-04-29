@@ -9,6 +9,8 @@ import { and, eq } from 'drizzle-orm';
 import { finalizeCheckoutSession, releaseReservationsForOrder } from '../checkout/helpers';
 import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 import logger from '../../utils/logger';
+import { buildStripeWebhookEventSnapshot } from '../../utils/stripe';
+import { Sentry } from '../../integrations/sentry';
 
 const getWebhookOrderContext = (event: Stripe.Event) => {
   const eventObject = event.data.object as {
@@ -61,14 +63,16 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
         stripeEventId: event.id,
         eventType: event.type,
         status: 'received',
-        payload: event as unknown as Record<string, unknown>,
+        payload: buildStripeWebhookEventSnapshot(event),
       })
       .onConflictDoNothing({
         target: stripeWebhookEvents.stripeEventId,
       });
 
     const existing = await db
-      .select()
+      .select({
+        status: stripeWebhookEvents.status,
+      })
       .from(stripeWebhookEvents)
       .where(eq(stripeWebhookEvents.stripeEventId, event.id))
       .limit(1);
@@ -124,6 +128,19 @@ export const handleStripeWebhook = async (signature: string | string[] | undefin
       duplicate: false,
     };
   } catch (error) {
+    Sentry.captureException(error, {
+      tags: {
+        flow: 'stripe_webhook',
+      },
+      extra: {
+        stripeEventId: event.id,
+        eventType: event.type,
+        stripeObjectId: webhookOrderContext.stripeObjectId,
+        orderId: webhookOrderContext.orderId,
+        orderPublicId: webhookOrderContext.orderPublicId,
+      },
+    });
+
     try {
       const updateResult = await db
         .update(stripeWebhookEvents)

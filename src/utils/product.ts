@@ -1,13 +1,35 @@
+import { randomUUID } from 'crypto';
 import slugify from './slugify';
 import getEnvConfig from '../config/env';
-import { eq, sql } from 'drizzle-orm';
-import { collections, kujiPrizes, productInventory, products, productTags, tags } from '../db/schema';
+import { eq, inArray, sql } from 'drizzle-orm';
+import { collections, productCollections, productImages, products, productTags, tags } from '../db/schema';
 import { db } from '../db';
 import Exception from './Exception';
 import HttpStatusCode from '../constants/http-status-code';
+import type { DbClient } from '../types/checkout';
 
-export const buildStoragePath = (productId: string, fileName: string) => {
-  return `products/${productId}/${Date.now()}-${slugify(fileName) || 'image'}`;
+export type PrimaryProductImage = Pick<
+  typeof productImages.$inferSelect,
+  'id' | 'productId' | 'storageKey' | 'altText' | 'sortOrder'
+>;
+
+export const buildStoragePath = (
+  productId: string,
+  fileName: string,
+  options?: {
+    subdirectory?: string;
+    unique?: boolean;
+  },
+) => {
+  const fileSlug = slugify(fileName) || 'image';
+  const pathSegments = ['products', productId];
+
+  if (options?.subdirectory) {
+    pathSegments.push(slugify(options.subdirectory) || options.subdirectory);
+  }
+
+  pathSegments.push(options?.unique ? `${randomUUID()}-${fileSlug}` : fileSlug);
+  return pathSegments.join('/');
 };
 
 // Supabase storage
@@ -59,37 +81,33 @@ export const ensureUniqueSlug = async (
   }
 };
 
-export const syncKujiInventory = async (productId: string) => {
-  const [sumRow] = await db
-    .select({
-      remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
-    })
-    .from(kujiPrizes)
-    .where(eq(kujiPrizes.productId, productId));
-
-  const totalRemaining = sumRow?.remaining ?? 0;
-  const [existingInventory] = await db
-    .select()
-    .from(productInventory)
-    .where(eq(productInventory.productId, productId))
-    .limit(1);
-
-  if (existingInventory) {
-    await db
-      .update(productInventory)
-      .set({
-        onHand: totalRemaining,
-      })
-      .where(eq(productInventory.productId, productId));
-    return;
+export const loadPrimaryProductImageMap = async (productIds: string[]) => {
+  if (!productIds.length) {
+    return new Map<string, PrimaryProductImage>();
   }
 
-  await db.insert(productInventory).values({
-    productId,
-    onHand: totalRemaining,
-    reserved: 0,
-    lowStockThreshold: 0,
-  });
+  const requestedIds = sql.join(
+    [...new Set(productIds)].map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await db.execute(sql<PrimaryProductImage>`
+    SELECT DISTINCT ON (pi.product_id)
+      pi.id AS "id",
+      pi.product_id AS "productId",
+      pi.storage_key AS "storageKey",
+      pi.alt_text AS "altText",
+      pi.sort_order AS "sortOrder"
+    FROM ${productImages} AS pi
+    WHERE pi.product_id IN (${requestedIds})
+    ORDER BY
+      pi.product_id ASC,
+      pi.sort_order ASC,
+      pi.created_at ASC,
+      pi.id ASC
+  `)) as PrimaryProductImage[];
+
+  return new Map(rows.map((row) => [row.productId, row]));
 };
 
 export const assertProductExists = async (productId: string) => {
@@ -102,12 +120,57 @@ export const assertProductExists = async (productId: string) => {
   return product;
 };
 
-export const replaceProductTags = async (productId: string, tagIds: string[]) => {
-  await db.delete(productTags).where(eq(productTags.productId, productId));
+export const normalizeProductCollectionIds = (collectionIds: string[]) => [...new Set(collectionIds)];
+
+export const assertCollectionsExist = async (client: DbClient, collectionIds: string[]) => {
+  const normalizedCollectionIds = normalizeProductCollectionIds(collectionIds);
+
+  if (!normalizedCollectionIds.length) {
+    return normalizedCollectionIds;
+  }
+
+  const rows = await client
+    .select({
+      id: collections.id,
+    })
+    .from(collections)
+    .where(inArray(collections.id, normalizedCollectionIds));
+  const existingIds = new Set(rows.map((row) => row.id));
+  const missingIds = normalizedCollectionIds.filter((collectionId) => !existingIds.has(collectionId));
+
+  if (missingIds.length) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'One or more collections do not exist', {
+      data: {
+        collectionIds: missingIds,
+      },
+    });
+  }
+
+  return normalizedCollectionIds;
+};
+
+export const replaceProductCollections = async (client: DbClient, productId: string, collectionIds: string[]) => {
+  const normalizedCollectionIds = await assertCollectionsExist(client, collectionIds);
+
+  await client.delete(productCollections).where(eq(productCollections.productId, productId));
+
+  if (!normalizedCollectionIds.length) return;
+
+  await client.insert(productCollections).values(
+    normalizedCollectionIds.map((collectionId, index) => ({
+      productId,
+      collectionId,
+      sortOrder: index,
+    })),
+  );
+};
+
+export const replaceProductTags = async (productId: string, tagIds: string[], client: DbClient = db) => {
+  await client.delete(productTags).where(eq(productTags.productId, productId));
 
   if (!tagIds.length) return;
 
-  await db.insert(productTags).values(
+  await client.insert(productTags).values(
     tagIds.map((tagId) => ({
       productId,
       tagId,

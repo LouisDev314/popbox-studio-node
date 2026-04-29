@@ -6,12 +6,30 @@ export const paginationQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(50).optional(),
 });
 
+const normalizeUuidListQueryParam = (value: unknown) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const rawValues = Array.isArray(value) ? value : [value];
+
+  return rawValues
+    .flatMap((item) => (typeof item === 'string' ? item.split(',') : [item]))
+    .map((item) => (typeof item === 'string' ? item.trim() : item))
+    .filter((item) => typeof item === 'string' && item.length > 0);
+};
+
 export const productListQuerySchema = paginationQuerySchema.extend({
   status: z.enum(['draft', 'active', 'archived']).optional(),
+  type: z.enum(['standard', 'kuji']).optional(),
+  collectionId: z.uuid().optional(),
+  tagIds: z.preprocess(normalizeUuidListQueryParam, z.array(z.uuid()).min(1)).optional(),
+  sort: z.enum(['updated_desc', 'updated_asc', 'inventory_desc', 'inventory_asc']).optional(),
 });
 
 export const productBodySchema = z.object({
-  collectionId: z.uuid().optional().nullable(),
+  collectionIds: z.array(z.uuid()),
+  collectionId: z.never().optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   productType: z.enum(['standard', 'kuji']),
@@ -65,7 +83,8 @@ export const imageReorderBodySchema = z.object({
 });
 
 export const kujiPrizeBodySchema = z.object({
-  prizeCode: z.string().min(1),
+  prizeCode: z.string().trim().min(1).transform((value) => value.toUpperCase()),
+  prizeTier: z.string().trim().min(1).transform((value) => value.toUpperCase()),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   imageUrl: z.url().optional().nullable(),
@@ -89,6 +108,10 @@ export const adminOrderParamsSchema = z.object({
   id: z.uuid(),
 });
 
+export const adminOrderResendParamsSchema = z.object({
+  orderId: z.uuid(),
+});
+
 export const orderStatusBodySchema = z.object({
   status: z.enum([ORDER_STATUS.PACKED, ORDER_STATUS.SHIPPED, ORDER_STATUS.CANCELLED]),
 });
@@ -108,4 +131,26 @@ export const shipmentBodySchema = z.object({
 export const refundBodySchema = z.object({
   amountCents: z.coerce.number().int().min(1).optional(),
   reason: z.string().optional().nullable(),
+});
+
+export const shippingSettingsBodySchema = z.object({
+  flatShippingCents: z.number().int().min(0),
+  freeShippingThresholdCents: z.number().int().min(0),
+  currency: z.literal('CAD'),
+});
+
+export const storeBannerSettingsBodySchema = z.object({
+  enabled: z.boolean(),
+  items: z
+    .array(
+      z.object({
+        id: z.string().optional().nullable(),
+        message: z.string().max(160),
+        linkLabel: z.string().max(40).optional().nullable(),
+        linkHref: z.string().max(300).optional().nullable(),
+        sortOrder: z.number().int().min(0),
+        isActive: z.boolean(),
+      }),
+    )
+    .max(5),
 });

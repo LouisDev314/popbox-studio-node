@@ -50,6 +50,12 @@ export const orderStatusEnum = pgEnum('order_status', [
 export const paymentProviderEnum = pgEnum('payment_provider', ['stripe']);
 export const paymentStatusEnum = pgEnum('payment_status', ['pending', 'paid', 'failed', 'refunded']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['received', 'processed', 'failed']);
+export const legalDocumentTypeEnum = pgEnum('legal_document_type', [
+  'faq',
+  'shipping_returns',
+  'terms',
+  'privacy',
+]);
 
 const authUsers = authSchema.table('users', {
   id: uuid('id').primaryKey(),
@@ -68,6 +74,12 @@ export const users = pgTable(
   },
   (table) => [uniqueIndex('users_email_unique').on(table.email)],
 );
+
+export const storeSettings = pgTable('store_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<Record<string, unknown>>().notNull(),
+  updatedAt: updatedAtColumn(),
+});
 
 export const customers = pgTable(
   'customers',
@@ -143,6 +155,8 @@ export const products = pgTable(
   'products',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Deprecated: products.collectionId is retained only for deploy/rollback safety.
+    // New application reads and writes must use productCollections.
     collectionId: uuid('collection_id').references(() => collections.id, { onDelete: 'set null' }),
     name: varchar('name', { length: 200 }).notNull(),
     slug: varchar('slug', { length: 220 }).notNull(),
@@ -164,6 +178,11 @@ export const products = pgTable(
     index('products_status_created_idx').on(table.status, table.createdAt, table.id),
     index('products_collection_status_created_idx').on(table.collectionId, table.status, table.createdAt, table.id),
     index('products_type_status_created_idx').on(table.productType, table.status, table.createdAt, table.id),
+    index('products_status_price_asc_idx').on(table.status, table.priceCents.asc(), table.id.desc()),
+    index('products_status_price_desc_idx').on(table.status, table.priceCents.desc(), table.id.desc()),
+    index('products_status_name_asc_idx').on(table.status, table.name.asc(), table.id.desc()),
+    index('products_status_name_desc_idx').on(table.status, table.name.desc(), table.id.desc()),
+    index('products_updated_idx').on(table.updatedAt.desc(), table.id.desc()),
     check('products_price_cents_check', sql`${table.priceCents} >= 0`),
   ],
 );
@@ -182,6 +201,29 @@ export const productTags = pgTable(
   (table) => [
     primaryKey({ columns: [table.productId, table.tagId], name: 'product_tags_pk' }),
     index('product_tags_tag_id_idx').on(table.tagId, table.productId),
+  ],
+);
+
+export const productCollections = pgTable(
+  'product_collections',
+  {
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    collectionId: uuid('collection_id')
+      .notNull()
+      .references(() => collections.id, { onDelete: 'cascade' }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: createdAtColumn(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.productId, table.collectionId],
+      name: 'product_collections_pk',
+    }),
+    index('product_collections_collection_sort_idx').on(table.collectionId, table.sortOrder, table.productId),
+    index('product_collections_product_id_idx').on(table.productId, table.collectionId),
+    check('product_collections_sort_order_check', sql`${table.sortOrder} >= 0`),
   ],
 );
 
@@ -245,6 +287,11 @@ export const orders = pgTable(
     shippingAddressJson: jsonb('shipping_address_json').$type<Record<string, unknown>>().notNull(),
     billingAddressJson: jsonb('billing_address_json').$type<Record<string, unknown> | null>(),
     guestAccessTokenHash: varchar('guest_access_token_hash', { length: 255 }),
+    confirmationEmailSentAt: timestamp('confirmation_email_sent_at', { withTimezone: true }),
+    confirmationEmailError: text('confirmation_email_error'),
+    orderNotificationSentAt: timestamp('order_notification_sent_at', { withTimezone: true }),
+    orderNotificationError: text('order_notification_error'),
+    includesLastOnePrize: boolean('includes_last_one_prize').notNull().default(false),
     placedAt: timestamp('placed_at', { withTimezone: true }),
     paidAt: timestamp('paid_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
@@ -258,6 +305,7 @@ export const orders = pgTable(
     uniqueIndex('orders_checkout_idempotency_key_unique').on(table.checkoutIdempotencyKey),
     index('orders_customer_created_idx').on(table.customerId, table.createdAt, table.id),
     index('orders_status_created_idx').on(table.status, table.createdAt, table.id),
+    index('orders_created_idx').on(table.createdAt.desc(), table.id.desc()),
     index('orders_placed_at_idx').on(table.placedAt, table.id),
     check('orders_subtotal_cents_check', sql`${table.subtotalCents} >= 0`),
     check('orders_tax_cents_check', sql`${table.taxCents} >= 0`),
@@ -298,6 +346,7 @@ export const kujiPrizes = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: 'cascade' }),
     prizeCode: varchar('prize_code', { length: 64 }).notNull(),
+    prizeTier: varchar('prize_tier', { length: 64 }).notNull(),
     name: varchar('name', { length: 200 }).notNull(),
     description: text('description'),
     imageUrl: varchar('image_url', { length: 500 }),
@@ -314,6 +363,7 @@ export const kujiPrizes = pgTable(
     check('kuji_prizes_initial_quantity_check', sql`${table.initialQuantity} >= 0`),
     check('kuji_prizes_remaining_quantity_check', sql`${table.remainingQuantity} >= 0`),
     check('kuji_prizes_sort_order_check', sql`${table.sortOrder} >= 0`),
+    check('kuji_prizes_prize_tier_not_blank_check', sql`BTRIM(${table.prizeTier}) <> ''`),
   ],
 );
 
@@ -370,6 +420,47 @@ export const payments = pgTable(
     check('payments_amount_cents_check', sql`${table.amountCents} >= 0`),
     check('payments_refunded_amount_cents_check', sql`${table.refundedAmountCents} >= 0`),
     check('payments_refunded_amount_not_exceed_amount_check', sql`${table.refundedAmountCents} <= ${table.amountCents}`),
+  ],
+);
+
+export const legalDocuments = pgTable(
+  'legal_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: legalDocumentTypeEnum('type').notNull(),
+    content: text('content').notNull(),
+    version: integer('version').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    uniqueIndex('legal_documents_type_version_unique').on(table.type, table.version),
+    uniqueIndex('legal_documents_one_active_per_type_unique')
+      .on(table.type)
+      .where(sql`${table.isActive} = true`),
+    index('legal_documents_type_active_idx').on(table.type, table.isActive),
+    index('legal_documents_type_created_at_idx').on(table.type, table.createdAt),
+    check('legal_documents_version_check', sql`${table.version} > 0`),
+  ],
+);
+
+export const faqItems = pgTable(
+  'faq_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    question: text('question').notNull(),
+    answer: text('answer').notNull(),
+    category: varchar('category', { length: 120 }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isPublished: boolean('is_published').notNull().default(false),
+    createdAt: createdAtColumn(),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    index('faq_items_published_sort_idx').on(table.isPublished, table.sortOrder, table.createdAt, table.id),
+    index('faq_items_category_sort_idx').on(table.category, table.sortOrder, table.createdAt, table.id),
+    check('faq_items_sort_order_check', sql`${table.sortOrder} >= 0`),
   ],
 );
 

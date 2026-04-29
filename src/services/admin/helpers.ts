@@ -13,10 +13,17 @@ import { buildImageUrl } from '../../utils/product';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 
+const PRODUCT_IMAGE_MAX_FILES_PER_REQUEST = 10;
+const PRODUCT_IMAGE_MAX_FIELDS_PER_REQUEST = 20;
+const PRODUCT_IMAGE_MAX_PARTS_PER_REQUEST = PRODUCT_IMAGE_MAX_FILES_PER_REQUEST + PRODUCT_IMAGE_MAX_FIELDS_PER_REQUEST;
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: PRODUCT_IMAGE_MAX_FILE_SIZE_BYTES,
+    files: PRODUCT_IMAGE_MAX_FILES_PER_REQUEST,
+    fields: PRODUCT_IMAGE_MAX_FIELDS_PER_REQUEST,
+    parts: PRODUCT_IMAGE_MAX_PARTS_PER_REQUEST,
   },
   fileFilter: (_req, file, callback) => {
     if (
@@ -40,6 +47,19 @@ export const parseProductImageUpload: RequestHandler = (req, res, next) => {
         return next(new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Image must be 5MB or smaller'));
       }
 
+      if (err.code === 'LIMIT_FILE_COUNT') {
+        return next(
+          new Exception(
+            HttpStatusCode.UNPROCESSABLE_ENTITY,
+            `No more than ${PRODUCT_IMAGE_MAX_FILES_PER_REQUEST} images may be uploaded per request`,
+          ),
+        );
+      }
+
+      if (err.code === 'LIMIT_PART_COUNT' || err.code === 'LIMIT_FIELD_COUNT') {
+        return next(new Exception(HttpStatusCode.BAD_REQUEST, 'Multipart upload contains too many form parts'));
+      }
+
       return next(new Exception(HttpStatusCode.BAD_REQUEST, 'Invalid multipart form-data upload', { data: err.code }));
     }
 
@@ -55,18 +75,53 @@ export const readMultipartStringValues = (value: unknown) => {
   return typeof value === 'string' ? [value] : [];
 };
 
-export const readProductImageFiles = (req: Request) => {
+export const readProductImageFiles = (
+  req: Request,
+  options?: {
+    allowedFieldNames?: ReadonlySet<string>;
+    expectedFieldName?: string;
+    usageLabel?: string;
+  },
+) => {
   const uploadedFiles = Array.isArray(req.files) ? req.files : [];
-  const unexpectedFile = uploadedFiles.find((file) => !PRODUCT_IMAGE_UPLOAD_FIELD_NAMES.has(file.fieldname));
+  const allowedFieldNames = options?.allowedFieldNames ?? PRODUCT_IMAGE_UPLOAD_FIELD_NAMES;
+  const unexpectedFile = uploadedFiles.find((file) => !allowedFieldNames.has(file.fieldname));
 
   if (unexpectedFile) {
     throw new Exception(
       HttpStatusCode.BAD_REQUEST,
-      `Unexpected file field "${unexpectedFile.fieldname}". Use "files" for product image uploads`,
+      `Unexpected file field "${unexpectedFile.fieldname}". Use "${options?.expectedFieldName ?? 'files'}" for ${options?.usageLabel ?? 'product image uploads'}`,
     );
   }
 
   return uploadedFiles;
+};
+
+export const readSingleProductImageFile = (
+  req: Request,
+  options?: {
+    allowedFieldNames?: ReadonlySet<string>;
+    expectedFieldName?: string;
+    usageLabel?: string;
+  },
+) => {
+  const files = readProductImageFiles(req, options);
+
+  if (!files.length) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'An image file is required');
+  }
+
+  if (files.length > 1) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'Only one image file is allowed');
+  }
+
+  const [file] = files;
+
+  if (!file) {
+    throw new Exception(HttpStatusCode.BAD_REQUEST, 'An image file is required');
+  }
+
+  return file;
 };
 
 export const readProductImageUploadMetadata = (req: Request, fileCount: number) => {

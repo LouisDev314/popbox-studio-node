@@ -5,6 +5,12 @@ import { orders } from '../db/schema';
 import logger from '../utils/logger';
 
 const CLEANUP_BATCH_SIZE = 100;
+const CLEANUP_MAX_BATCHES_PER_RUN = 3;
+
+export type BackgroundJobRunResult = {
+  claimedCount: number;
+  processedCount: number;
+};
 
 const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pending_payment' | 'expired') => {
   return await db.transaction(async (tx) => {
@@ -45,41 +51,55 @@ const claimOrderIdsWithExpiredReservations = async (limit: number, status: 'pend
   });
 };
 
-export const cleanupExpiredReservations = async (): Promise<{ processedOrders: number }> => {
-  let processedOrders = 0;
+export const cleanupExpiredReservations = async (): Promise<
+  BackgroundJobRunResult & {
+    processedOrders: number;
+  }
+> => {
+  let claimedCount = 0;
+  let processedCount = 0;
 
-  while (true) {
+  for (let batch = 0; batch < CLEANUP_MAX_BATCHES_PER_RUN; batch += 1) {
     const claimedOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'expired');
 
     if (claimedOrders.length === 0) {
       break;
     }
 
-    processedOrders += claimedOrders.length;
+    claimedCount += claimedOrders.length;
+    processedCount += claimedOrders.length;
   }
 
   return {
-    processedOrders,
+    claimedCount,
+    processedCount,
+    processedOrders: processedCount,
   };
 };
 
 export const cleanupExpiredPendingOrders = async (): Promise<{
+  claimedCount: number;
+  processedCount: number;
   expiredOrders: number;
   stripeSessionsExpired: number;
   stripeSessionExpireFailures: number;
 }> => {
+  let claimedCount = 0;
+  let processedCount = 0;
   let expiredOrders = 0;
   let stripeSessionsExpired = 0;
   let stripeSessionExpireFailures = 0;
 
-  while (true) {
+  for (let batch = 0; batch < CLEANUP_MAX_BATCHES_PER_RUN; batch += 1) {
     const batchExpiredOrders = await claimOrderIdsWithExpiredReservations(CLEANUP_BATCH_SIZE, 'pending_payment');
 
     if (batchExpiredOrders.length === 0) {
       break;
     }
 
+    claimedCount += batchExpiredOrders.length;
     expiredOrders += batchExpiredOrders.length;
+    processedCount += batchExpiredOrders.length;
 
     for (const expiredOrder of batchExpiredOrders) {
       if (!expiredOrder.stripeCheckoutSessionId) {
@@ -111,6 +131,8 @@ export const cleanupExpiredPendingOrders = async (): Promise<{
   }
 
   return {
+    claimedCount,
+    processedCount,
     expiredOrders,
     stripeSessionsExpired,
     stripeSessionExpireFailures,

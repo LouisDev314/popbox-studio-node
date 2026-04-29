@@ -15,18 +15,18 @@ type EnvConfig = Readonly<{
   supabaseStorageBucket: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
-  stripeShippingRateCents: number;
   stripeSuccessUrl: string;
   stripeCancelUrl: string;
   stripeCheckoutSessionReservationTtl: number;
   resendApiKey: string;
   resendFromEmail: string;
+  contactEmail: string;
+  orderNotificationEmail: string;
   orderTokenPepper: string;
 }>;
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_LOG_LEVEL = 'info';
-const DEFAULT_STRIPE_SHIPPING_RATE_CENTS = 1500;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 let cachedEnvConfig: EnvConfig | null = null;
@@ -140,22 +140,6 @@ const parseRequiredPositivePort = (rawValue: string | undefined, errors: string[
   return parsedPort;
 };
 
-const parseShippingRateCents = (rawValue: string | undefined, errors: string[]) => {
-  const parsedShippingRate = parseInteger(
-    rawValue || '',
-    DEFAULT_STRIPE_SHIPPING_RATE_CENTS,
-    'STRIPE_SHIPPING_RATE_CENTS',
-    errors,
-  );
-
-  if (parsedShippingRate < 0) {
-    errors.push('STRIPE_SHIPPING_RATE_CENTS must be 0 or greater');
-    return DEFAULT_STRIPE_SHIPPING_RATE_CENTS;
-  }
-
-  return parsedShippingRate;
-};
-
 const parseStripeCheckoutReservationTtl = (rawValue: string | undefined, errors: string[]) => {
   try {
     return parseStripeCheckoutReservationTtlMs(rawValue);
@@ -196,7 +180,6 @@ const createEnvConfig = (): EnvConfig => {
 
     stripeSecretKey: readRequiredString('STRIPE_SECRET_KEY', process.env.STRIPE_SECRET_KEY, errors),
     stripeWebhookSecret: readRequiredString('STRIPE_WEBHOOK_SECRET', process.env.STRIPE_WEBHOOK_SECRET, errors),
-    stripeShippingRateCents: parseShippingRateCents(process.env.STRIPE_SHIPPING_RATE_CENTS, errors),
     stripeSuccessUrl: parseRequiredHttpUrl('STRIPE_SUCCESS_URL', process.env.STRIPE_SUCCESS_URL, errors, {
       trimTrailingSlash: false,
     }),
@@ -210,6 +193,12 @@ const createEnvConfig = (): EnvConfig => {
 
     resendApiKey: readRequiredString('RESEND_API_KEY', process.env.RESEND_API_KEY, errors),
     resendFromEmail: parseRequiredEmail('RESEND_FROM_EMAIL', process.env.RESEND_FROM_EMAIL, errors),
+    orderNotificationEmail: parseRequiredEmail(
+      'ORDER_NOTIFICATION_EMAIL',
+      process.env.ORDER_NOTIFICATION_EMAIL,
+      errors,
+    ),
+    contactEmail: parseRequiredEmail('CONTACT_EMAIL', process.env.CONTACT_EMAIL, errors),
 
     orderTokenPepper: readRequiredString('ORDER_TOKEN_PEPPER', process.env.ORDER_TOKEN_PEPPER, errors),
   } satisfies EnvConfig;

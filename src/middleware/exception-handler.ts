@@ -11,6 +11,8 @@ const STATUS_TO_METHOD: Record<number, keyof Express.Response> = {
   [HttpStatusCode.CONFLICT]: 'send_conflict',
   [HttpStatusCode.UNPROCESSABLE_ENTITY]: 'send_unprocessableEntity',
   [HttpStatusCode.TOO_MANY_REQUESTS]: 'send_tooManyRequests',
+  [HttpStatusCode.BAD_GATEWAY]: 'send_badGateway',
+  [HttpStatusCode.SERVICE_UNAVAILABLE]: 'send_serviceUnavailable',
   [HttpStatusCode.INTERNAL_SERVER_ERROR]: 'send_internalServerError',
 };
 
@@ -42,6 +44,15 @@ const exceptionHandler: ErrorRequestHandler = (err, req, res, next) => {
         },
         'Operational exception (server)',
       );
+
+      if (code === HttpStatusCode.BAD_GATEWAY) {
+        return res.send_badGateway('Bad gateway');
+      }
+
+      if (code === HttpStatusCode.SERVICE_UNAVAILABLE) {
+        return res.send_serviceUnavailable('Service unavailable');
+      }
+
       return res.send_internalServerError('Internal server error');
     }
 

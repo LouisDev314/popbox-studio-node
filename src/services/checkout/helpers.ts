@@ -1,6 +1,7 @@
 import { CheckoutItemInput, CreateCheckoutSessionInput, DbClient, LockedProductRow } from '../../types/checkout';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
+import { isCheckoutFinalizedOrderStatus } from '../../constants/order-status';
 import { db } from '../../db';
 import stripe from '../../integrations/stripe';
 import {
@@ -13,14 +14,17 @@ import {
   productInventory,
   tickets,
 } from '../../db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import logger from '../../utils/logger';
 import { getOrderDetailById } from '../orders/helpers';
 import { randomInt, randomUUID } from 'crypto';
 import { createTicketNumber } from '../../utils/crypto';
 import { buildGuestOrderAccessUrl } from '../../utils/guest-order-access';
-import { sendOrderConfirmationEmail } from '../notifications';
+import { isLastOnePrizeTier } from '../../utils/kuji';
+import { buildStripeCheckoutSessionSnapshot } from '../../utils/stripe';
+import { sendOrderConfirmationEmail, sendOrderNotificationEmail } from '../notifications';
+import { releaseAdvisoryLock, tryAcquireAdvisoryLock } from '../../jobs/advisory-lock';
 
 class NeedsAttentionError extends Error {
   constructor(message: string) {
@@ -36,6 +40,35 @@ class LatePaymentNeedsAttentionError extends NeedsAttentionError {
   }
 }
 
+const ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX = 'orders:confirmation-email';
+const ORDER_NOTIFICATION_LOCK_PREFIX = 'orders:order-notification-email';
+export const ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
+  'paid',
+  'packed',
+  'shipped',
+  'refunded',
+]);
+const ORDER_NOTIFICATION_ELIGIBLE_STATUSES = new Set<(typeof orders.$inferSelect)['status']>([
+  'paid',
+  'paid_needs_attention',
+  'packed',
+  'shipped',
+  'refunded',
+]);
+
+type SendOrderConfirmationEmailForOrderOptions = {
+  force?: boolean;
+  failOnIneligible?: boolean;
+  failOnLockUnavailable?: boolean;
+  trigger?: 'checkout_finalize' | 'admin_resend';
+};
+
+type SendOrderNotificationForOrderOptions = {
+  failOnIneligible?: boolean;
+  failOnLockUnavailable?: boolean;
+  trigger?: 'checkout_finalize';
+};
+
 type FinalizedCheckoutAmounts = {
   currency: string;
   subtotalCents: number;
@@ -49,6 +82,13 @@ type FinalizedCheckoutSnapshots = {
   customerDetailsJson: Record<string, unknown>;
   shippingAddressJson: Record<string, unknown> | null;
   billingAddressJson: Record<string, unknown> | null;
+};
+
+type CheckoutCustomerIdentity = {
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
 };
 
 type ExpireStripeCheckoutSessionResult =
@@ -72,6 +112,8 @@ const getStripeErrorCode = (error: unknown) => {
     ? error.code
     : null;
 };
+
+const PLACEHOLDER_CUSTOMER_EMAIL_DOMAIN = '@placeholder.popbox.local';
 
 const splitFullName = (fullName: string | null) => {
   const normalized = fullName?.trim() || '';
@@ -235,6 +277,9 @@ const assertFinalizedCheckoutSessionMatchesOrder = (
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
+export const isPlaceholderCustomerEmail = (email: string | null | undefined) =>
+  typeof email === 'string' && normalizeEmail(email).endsWith(PLACEHOLDER_CUSTOMER_EMAIL_DOMAIN);
+
 const readSnapshotString = (snapshot: Record<string, unknown>, field: string) => {
   const value = snapshot[field];
 
@@ -248,6 +293,120 @@ const readSnapshotString = (snapshot: Record<string, unknown>, field: string) =>
 
 const createPlaceholderCustomerEmail = () => `checkout+${randomUUID()}@placeholder.popbox.local`;
 
+const getCheckoutCustomerIdentity = (finalizedSnapshots: FinalizedCheckoutSnapshots): CheckoutCustomerIdentity => {
+  const email = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'email');
+
+  if (!email) {
+    throw new NeedsAttentionError('Stripe customer email is missing');
+  }
+
+  return {
+    email: normalizeEmail(email),
+    firstName: readSnapshotString(finalizedSnapshots.customerDetailsJson, 'firstName'),
+    lastName: readSnapshotString(finalizedSnapshots.customerDetailsJson, 'lastName'),
+    phone: readSnapshotString(finalizedSnapshots.customerDetailsJson, 'phone'),
+  };
+};
+
+const buildCustomerPatch = (
+  currentCustomer: typeof customers.$inferSelect,
+  checkoutCustomer: CheckoutCustomerIdentity,
+  strategy: 'conservative' | 'placeholder',
+) => {
+  const patch: Partial<typeof customers.$inferInsert> = {};
+
+  if (strategy === 'placeholder' && currentCustomer.email !== checkoutCustomer.email) {
+    patch.email = checkoutCustomer.email;
+  }
+
+  if (
+    strategy === 'conservative' &&
+    normalizeEmail(currentCustomer.email) === checkoutCustomer.email &&
+    currentCustomer.email !== checkoutCustomer.email
+  ) {
+    patch.email = checkoutCustomer.email;
+  }
+
+  const nextFirstName =
+    strategy === 'placeholder'
+      ? checkoutCustomer.firstName ?? currentCustomer.firstName
+      : currentCustomer.firstName ?? checkoutCustomer.firstName;
+  const nextLastName =
+    strategy === 'placeholder'
+      ? checkoutCustomer.lastName ?? currentCustomer.lastName
+      : currentCustomer.lastName ?? checkoutCustomer.lastName;
+  const nextPhone =
+    strategy === 'placeholder' ? checkoutCustomer.phone ?? currentCustomer.phone : currentCustomer.phone ?? checkoutCustomer.phone;
+
+  if (nextFirstName !== currentCustomer.firstName) {
+    patch.firstName = nextFirstName;
+  }
+
+  if (nextLastName !== currentCustomer.lastName) {
+    patch.lastName = nextLastName;
+  }
+
+  if (nextPhone !== currentCustomer.phone) {
+    patch.phone = nextPhone;
+  }
+
+  return patch;
+};
+
+const hasCustomerPatchChanges = (patch: Partial<typeof customers.$inferInsert>) => Object.keys(patch).length > 0;
+
+const updateCustomerIfNeeded = async (
+  tx: DbClient,
+  customer: typeof customers.$inferSelect,
+  patch: Partial<typeof customers.$inferInsert>,
+) => {
+  if (!hasCustomerPatchChanges(patch)) {
+    return customer;
+  }
+
+  const [updatedCustomer] = await tx.update(customers).set(patch).where(eq(customers.id, customer.id)).returning();
+
+  if (!updatedCustomer) {
+    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+  }
+
+  return updatedCustomer;
+};
+
+const deletePlaceholderCustomerIfOrphaned = async (tx: DbClient, customerId: string) => {
+  const [referenceCountRow] = await tx
+    .select({ count: count(orders.id) })
+    .from(orders)
+    .where(eq(orders.customerId, customerId));
+
+  if (Number(referenceCountRow?.count ?? 0) > 0) {
+    return;
+  }
+
+  try {
+    await tx.delete(customers).where(eq(customers.id, customerId));
+  } catch (error) {
+    if (getStripeErrorCode(error) === '23503') {
+      return;
+    }
+
+    throw error;
+  }
+};
+
+const relinkOrderToCustomer = async (
+  tx: DbClient,
+  orderId: string,
+  currentCustomerId: string,
+  nextCustomer: typeof customers.$inferSelect,
+) => {
+  if (currentCustomerId !== nextCustomer.id) {
+    await tx.update(orders).set({ customerId: nextCustomer.id }).where(eq(orders.id, orderId));
+  }
+
+  return nextCustomer.id;
+};
+
 export const normalizeItems = (items: CheckoutItemInput[]) => {
   const map = new Map<string, number>();
 
@@ -260,11 +419,17 @@ export const normalizeItems = (items: CheckoutItemInput[]) => {
     .map(([productId, quantity]) => ({ productId, quantity }));
 };
 
-export const lockProductForCheckout = async (
-  tx: DbClient,
-  productId: string,
-): Promise<LockedProductRow | undefined> => {
-  const result = await tx.execute(sql<LockedProductRow>`
+export const lockProductsForCheckout = async (tx: DbClient, productIds: string[]): Promise<Map<string, LockedProductRow>> => {
+  if (productIds.length === 0) {
+    return new Map();
+  }
+
+  const requestedIds = sql.join(
+    [...new Set(productIds)].sort().map((productId) => sql`${productId}::uuid`),
+    sql`, `,
+  );
+
+  const rows = (await tx.execute(sql<LockedProductRow>`
     SELECT
       p.id AS "productId",
       p.name,
@@ -276,13 +441,39 @@ export const lockProductForCheckout = async (
       p.currency,
       pi.on_hand AS "onHand",
       pi.reserved
-      FROM products p
-      JOIN product_inventory pi ON pi.product_id = p.id
-      WHERE p.id = ${productId}
-    FOR UPDATE
-  `);
+    FROM products AS p
+    INNER JOIN product_inventory AS pi
+      ON pi.product_id = p.id
+    WHERE p.id IN (${requestedIds})
+    ORDER BY p.id
+    FOR UPDATE OF p, pi
+  `)) as LockedProductRow[];
 
-  return result[0] as LockedProductRow | undefined;
+  return new Map<string, LockedProductRow>(rows.map((row) => [row.productId, row] as const));
+};
+
+export const incrementReservedInventoryForCheckout = async (
+  tx: DbClient,
+  items: Array<{ productId: string; quantity: number }>,
+) => {
+  if (!items.length) {
+    return;
+  }
+
+  const deltas = sql.join(
+    items.map((item) => sql`(${item.productId}::uuid, ${item.quantity}::int)`),
+    sql`, `,
+  );
+
+  await tx.execute(sql`
+    WITH inventory_deltas(product_id, quantity) AS (
+      VALUES ${deltas}
+    )
+    UPDATE product_inventory AS pi
+    SET reserved = pi.reserved + inventory_deltas.quantity
+    FROM inventory_deltas
+    WHERE pi.product_id = inventory_deltas.product_id
+  `);
 };
 
 export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckoutSessionInput) => {
@@ -322,64 +513,75 @@ export const createOrUpdateCustomer = async (tx: DbClient, input: CreateCheckout
   return created;
 };
 
-export const reconcileCheckoutCustomer = async (
+export const reconcileOrderCustomerFromCheckout = async (
   tx: DbClient,
-  currentCustomerId: string,
+  orderId: string,
   finalizedSnapshots: FinalizedCheckoutSnapshots,
 ) => {
-  const email = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'email');
+  const checkoutCustomer = getCheckoutCustomerIdentity(finalizedSnapshots);
+  const [order] = await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1);
 
-  if (!email) {
-    throw new NeedsAttentionError('Stripe customer email is missing');
+  if (!order) {
+    throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for checkout reconciliation');
   }
 
-  const firstName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'firstName');
-  const lastName = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'lastName');
-  const phone = readSnapshotString(finalizedSnapshots.customerDetailsJson, 'phone');
-
-  const [currentCustomer] = await tx.select().from(customers).where(eq(customers.id, currentCustomerId)).limit(1);
+  const [currentCustomer] = await tx.select().from(customers).where(eq(customers.id, order.customerId)).limit(1);
 
   if (!currentCustomer) {
     throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Customer not found for checkout order');
   }
 
-  const normalizedEmail = normalizeEmail(email);
-  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, normalizedEmail)).limit(1);
+  if (!isPlaceholderCustomerEmail(currentCustomer.email)) {
+    const updatedCurrentCustomer = await updateCustomerIfNeeded(
+      tx,
+      currentCustomer,
+      buildCustomerPatch(currentCustomer, checkoutCustomer, 'conservative'),
+    );
+    return updatedCurrentCustomer.id;
+  }
+
+  const [existingCustomer] = await tx.select().from(customers).where(eq(customers.email, checkoutCustomer.email)).limit(1);
 
   if (existingCustomer && existingCustomer.id !== currentCustomer.id) {
-    const [updatedExistingCustomer] = await tx
-      .update(customers)
-      .set({
-        firstName: firstName ?? existingCustomer.firstName,
-        lastName: lastName ?? existingCustomer.lastName,
-        phone: phone ?? existingCustomer.phone,
-      })
-      .where(eq(customers.id, existingCustomer.id))
-      .returning();
+    const updatedExistingCustomer = await updateCustomerIfNeeded(
+      tx,
+      existingCustomer,
+      buildCustomerPatch(existingCustomer, checkoutCustomer, 'conservative'),
+    );
 
-    if (!updatedExistingCustomer) {
-      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
-    }
-
+    await relinkOrderToCustomer(tx, order.id, currentCustomer.id, updatedExistingCustomer);
+    await deletePlaceholderCustomerIfOrphaned(tx, currentCustomer.id);
     return updatedExistingCustomer.id;
   }
 
-  const [updatedCustomer] = await tx
-    .update(customers)
-    .set({
-      email: normalizedEmail,
-      firstName: firstName ?? currentCustomer.firstName,
-      lastName: lastName ?? currentCustomer.lastName,
-      phone: phone ?? currentCustomer.phone,
-    })
-    .where(eq(customers.id, currentCustomer.id))
-    .returning();
-
-  if (!updatedCustomer) {
-    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Unable to update customer');
+  try {
+    const updatedPlaceholderCustomer = await updateCustomerIfNeeded(
+      tx,
+      currentCustomer,
+      buildCustomerPatch(currentCustomer, checkoutCustomer, 'placeholder'),
+    );
+    return updatedPlaceholderCustomer.id;
+  } catch (error) {
+    if (getStripeErrorCode(error) !== '23505') {
+      throw error;
+    }
   }
 
-  return updatedCustomer.id;
+  const [conflictingCustomer] = await tx.select().from(customers).where(eq(customers.email, checkoutCustomer.email)).limit(1);
+
+  if (!conflictingCustomer || conflictingCustomer.id === currentCustomer.id) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Customer email reconciliation conflict could not be resolved');
+  }
+
+  const updatedConflictingCustomer = await updateCustomerIfNeeded(
+    tx,
+    conflictingCustomer,
+    buildCustomerPatch(conflictingCustomer, checkoutCustomer, 'conservative'),
+  );
+
+  await relinkOrderToCustomer(tx, order.id, currentCustomer.id, updatedConflictingCustomer);
+  await deletePlaceholderCustomerIfOrphaned(tx, currentCustomer.id);
+  return updatedConflictingCustomer.id;
 };
 
 export const releaseReservationsForOrder = async (
@@ -519,21 +721,33 @@ export const expireStripeCheckoutSessionIfOpen = async (
 
 export const allocateKujiTickets = async (tx: DbClient, orderId: string, customerId: string) => {
   const kujiItems = await tx
-    .select()
+    .select({
+      id: orderItems.id,
+      productId: orderItems.productId,
+      quantity: orderItems.quantity,
+    })
     .from(orderItems)
     .where(and(eq(orderItems.orderId, orderId), eq(orderItems.productType, 'kuji')));
+
+  let includesLastOnePrize = false;
 
   for (const item of kujiItems) {
     const prizeResult = await tx.execute(
       sql<{
         id: string;
+        prizeCode: string;
+        prizeTier: string;
         remainingQuantity: number;
         productId: string;
       }>`
-        SELECT id, remaining_quantity AS "remainingQuantity", product_id AS "productId"
+        SELECT
+          id,
+          prize_code AS "prizeCode",
+          prize_tier AS "prizeTier",
+          remaining_quantity AS "remainingQuantity",
+          product_id AS "productId"
         FROM kuji_prizes
         WHERE product_id = ${item.productId}
-          AND remaining_quantity > 0
         ORDER BY sort_order ASC, id ASC
         FOR UPDATE
       `,
@@ -541,24 +755,33 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
     const prizePool = prizeResult.map((row) => ({
       id: String(row.id),
+      prizeCode: String(row.prizeCode),
+      prizeTier: String(row.prizeTier),
       remainingQuantity: Number(row.remainingQuantity),
       productId: String(row.productId),
     }));
-    const totalRemaining = prizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
+    const lastOnePrize = prizePool.find((prize) => isLastOnePrizeTier(prize.prizeTier)) ?? null;
+    const normalPrizePool = prizePool.filter((prize) => !isLastOnePrizeTier(prize.prizeTier));
+    const totalRemaining = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
 
     if (totalRemaining < item.quantity) {
       throw new NeedsAttentionError(`Insufficient kuji prize inventory for product ${item.productId}`);
     }
 
+    if (totalRemaining === item.quantity && prizePool.some((prize) => isLastOnePrizeTier(prize.prizeTier))) {
+      includesLastOnePrize = true;
+    }
+
     const selectedPrizeCounts = new Map<string, number>();
+    const ticketPrizeIds: string[] = [];
 
     for (let drawIndex = 0; drawIndex < item.quantity; drawIndex += 1) {
-      const currentTotal = prizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
+      const currentTotal = normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0);
       const roll = randomInt(currentTotal) + 1;
       let cumulative = 0;
-      let selectedPrize = prizePool[0];
+      let selectedPrize = normalPrizePool[0];
 
-      for (const prize of prizePool) {
+      for (const prize of normalPrizePool) {
         cumulative += prize.remainingQuantity;
 
         if (roll <= cumulative) {
@@ -573,20 +796,37 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
 
       selectedPrize.remainingQuantity -= 1;
       selectedPrizeCounts.set(selectedPrize.id, (selectedPrizeCounts.get(selectedPrize.id) ?? 0) + 1);
+      ticketPrizeIds.push(selectedPrize.id);
+    }
 
-      await tx.insert(tickets).values({
-        orderId,
-        orderItemId: item.id,
-        customerId,
-        kujiProductId: item.productId,
-        kujiPrizeId: selectedPrize.id,
-        ticketNumber: createTicketNumber(),
-      });
+    const shouldZeroLastOnePrize = Boolean(
+      lastOnePrize &&
+        lastOnePrize.remainingQuantity > 0 &&
+        normalPrizePool.reduce((sum, prize) => sum + prize.remainingQuantity, 0) === 0,
+    );
+
+    if (shouldZeroLastOnePrize && lastOnePrize) {
+      lastOnePrize.remainingQuantity = 0;
+    }
+
+    if (ticketPrizeIds.length > 0) {
+      await tx.insert(tickets).values(
+        ticketPrizeIds.map((kujiPrizeId) => ({
+          orderId,
+          orderItemId: item.id,
+          customerId,
+          kujiProductId: item.productId,
+          kujiPrizeId,
+          ticketNumber: createTicketNumber(),
+        })),
+      );
     }
 
     for (const prize of prizePool) {
       const drawnCount = selectedPrizeCounts.get(prize.id);
-      if (!drawnCount) continue;
+      const shouldSyncLastOne = shouldZeroLastOnePrize && lastOnePrize?.id === prize.id;
+
+      if (!drawnCount && !shouldSyncLastOne) continue;
 
       await tx
         .update(kujiPrizes)
@@ -596,6 +836,10 @@ export const allocateKujiTickets = async (tx: DbClient, orderId: string, custome
         .where(eq(kujiPrizes.id, prize.id));
     }
   }
+
+  return {
+    includesLastOnePrize,
+  };
 };
 
 export const convertReservations = async (tx: DbClient, orderId: string) => {
@@ -624,12 +868,17 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
   });
 
   for (const reservation of reservationsInLockOrder) {
-    const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number }>`
-      SELECT on_hand AS "onHand", reserved
-      FROM product_inventory
-      WHERE product_id = ${reservation.productId}
+    const inventoryResult = await tx.execute(sql<{ onHand: number; reserved: number; productType: 'standard' | 'kuji' }>`
+      SELECT
+        pi.on_hand AS "onHand",
+        pi.reserved,
+        p.product_type AS "productType"
+      FROM product_inventory AS pi
+      INNER JOIN products AS p
+        ON p.id = pi.product_id
+      WHERE pi.product_id = ${reservation.productId}
       ORDER BY product_id
-      FOR UPDATE
+      FOR UPDATE OF pi
     `);
 
     const inventoryRow = inventoryResult[0];
@@ -637,17 +886,28 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
       ? {
           onHand: Number(inventoryRow.onHand),
           reserved: Number(inventoryRow.reserved),
+          productType: inventoryRow.productType,
         }
       : undefined;
-    if (!inventory || inventory.reserved < reservation.quantity || inventory.onHand < reservation.quantity) {
+    if (!inventory || inventory.reserved < reservation.quantity) {
+      throw new NeedsAttentionError(`Inventory could not be finalized for product ${reservation.productId}`);
+    }
+
+    if (inventory.productType !== 'kuji' && inventory.onHand < reservation.quantity) {
       throw new NeedsAttentionError(`Inventory could not be finalized for product ${reservation.productId}`);
     }
 
     await tx
       .update(productInventory)
       .set({
-        onHand: sql`${productInventory.onHand} - ${reservation.quantity}`,
-        reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+        ...(inventory.productType === 'kuji'
+          ? {
+              reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+            }
+          : {
+              onHand: sql`${productInventory.onHand} - ${reservation.quantity}`,
+              reserved: sql`${productInventory.reserved} - ${reservation.quantity}`,
+            }),
       })
       .where(eq(productInventory.productId, reservation.productId));
   }
@@ -663,13 +923,12 @@ export const convertReservations = async (tx: DbClient, orderId: string) => {
 export const markOrderPaidNeedsAttention = async (
   tx: DbClient,
   orderId: string,
-  currentCustomerId: string,
   session: Stripe.Checkout.Session,
   finalizedSnapshots: FinalizedCheckoutSnapshots,
   finalizedAmounts: FinalizedCheckoutAmounts,
   reservationStatus: 'released' | 'expired' = 'released',
 ) => {
-  const finalizedCustomerId = await reconcileCheckoutCustomer(tx, currentCustomerId, finalizedSnapshots);
+  const finalizedCustomerId = await reconcileOrderCustomerFromCheckout(tx, orderId, finalizedSnapshots);
 
   await releaseReservationsForOrder(tx, orderId, reservationStatus);
 
@@ -678,7 +937,8 @@ export const markOrderPaidNeedsAttention = async (
     .set({
       customerId: finalizedCustomerId,
       status: 'paid_needs_attention',
-      currency: finalizedAmounts.currency || 'CAD',
+      includesLastOnePrize: false,
+      currency: finalizedAmounts.currency,
       stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
       customerDetailsJson: finalizedSnapshots.customerDetailsJson,
@@ -699,27 +959,326 @@ export const markOrderPaidNeedsAttention = async (
       providerCheckoutSessionId: session.id,
       providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
       amountCents: finalizedAmounts.totalCents,
-      currency: finalizedAmounts.currency || 'CAD',
+      currency: finalizedAmounts.currency,
       status: 'paid',
-      rawResponse: session as unknown as Record<string, unknown>,
+      rawResponse: buildStripeCheckoutSessionSnapshot(session),
     })
     .where(eq(payments.orderId, orderId));
 };
 
+const buildEmailErrorMessage = (error: unknown) => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Unknown order email error';
+};
+
+const getOrderConfirmationRecipientEmail = (email: string) => {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail || isPlaceholderCustomerEmail(normalizedEmail)) {
+    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Order does not have a deliverable customer email');
+  }
+
+  return normalizedEmail;
+};
+
+export const sendOrderConfirmationEmailForOrder = async (
+  orderId: string,
+  options: SendOrderConfirmationEmailForOrderOptions = {},
+) => {
+  const lockHandle = await tryAcquireAdvisoryLock(`${ORDER_CONFIRMATION_EMAIL_LOCK_PREFIX}:${orderId}`);
+  const trigger = options.trigger ?? 'checkout_finalize';
+
+  if (!lockHandle) {
+    if (options.failOnLockUnavailable) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Order confirmation email is already being sent. Retry shortly.');
+    }
+
+    logger.info(
+      { orderId, trigger },
+      'Skipping order confirmation email because another worker is already sending it',
+    );
+    return;
+  }
+
+  try {
+    const [order] = await db
+      .select({
+        id: orders.id,
+        publicId: orders.publicId,
+        status: orders.status,
+        confirmationEmailSentAt: orders.confirmationEmailSentAt,
+      })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for confirmation email');
+    }
+
+    if (order.confirmationEmailSentAt && !options.force) {
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          confirmationEmailSentAt: order.confirmationEmailSentAt,
+          trigger,
+        },
+        'Skipping order confirmation email because it was already sent',
+      );
+      return;
+    }
+
+    if (!ORDER_CONFIRMATION_EMAIL_ELIGIBLE_STATUSES.has(order.status)) {
+      // Only orders that have completed real checkout semantics should emit or resend the secure access email.
+      if (options.failOnIneligible) {
+        throw new Exception(
+          HttpStatusCode.CONFLICT,
+          'Order confirmation email is only available for paid, fulfilled, or refunded orders',
+        );
+      }
+
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          status: order.status,
+          trigger,
+        },
+        'Skipping order confirmation email because the order is not in an emailable state',
+      );
+      return;
+    }
+
+    const detail = await getOrderDetailById(orderId);
+    const email = getOrderConfirmationRecipientEmail(detail.customer.email);
+
+    await sendOrderConfirmationEmail({
+      email,
+      firstName: detail.customer.firstName,
+      orderPublicId: detail.publicId,
+      orderUrl: buildGuestOrderAccessUrl(detail.publicId),
+    });
+
+    const confirmationEmailSentAt = new Date();
+
+    await db
+      .update(orders)
+      .set({
+        confirmationEmailSentAt,
+        confirmationEmailError: null,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.info(
+      {
+        orderId,
+        publicId: detail.publicId,
+        email,
+        confirmationEmailSentAt,
+        force: options.force ?? false,
+        trigger,
+      },
+      'Order confirmation email sent',
+    );
+
+    return {
+      id: detail.id,
+      publicId: detail.publicId,
+      status: detail.status,
+      email,
+      confirmationEmailSentAt,
+    };
+  } catch (error) {
+    const emailErrorMessage = buildEmailErrorMessage(error);
+
+    await db
+      .update(orders)
+      .set({
+        confirmationEmailError: emailErrorMessage,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.error({ error, orderId, emailErrorMessage, force: options.force ?? false, trigger }, 'Order confirmation email send failed');
+    throw error;
+  } finally {
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error({ error: unlockError, orderId }, 'Failed to release order confirmation email advisory lock');
+    }
+  }
+};
+
+export const sendOrderNotificationForOrder = async (
+  orderId: string,
+  options: SendOrderNotificationForOrderOptions = {},
+) => {
+  const lockHandle = await tryAcquireAdvisoryLock(`${ORDER_NOTIFICATION_LOCK_PREFIX}:${orderId}`);
+  const trigger = options.trigger ?? 'checkout_finalize';
+
+  if (!lockHandle) {
+    if (options.failOnLockUnavailable) {
+      throw new Exception(HttpStatusCode.CONFLICT, 'Order notification email is already being sent. Retry shortly.');
+    }
+
+    logger.info(
+      { orderId, trigger },
+      'Skipping order notification email because another worker is already sending it',
+    );
+    return;
+  }
+
+  try {
+    const [order] = await db
+      .select({
+        id: orders.id,
+        publicId: orders.publicId,
+        status: orders.status,
+        orderNotificationSentAt: orders.orderNotificationSentAt,
+      })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new Exception(HttpStatusCode.NOT_FOUND, 'Order not found for notification email');
+    }
+
+    if (order.orderNotificationSentAt) {
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          orderNotificationSentAt: order.orderNotificationSentAt,
+          trigger,
+        },
+        'Skipping order notification email because it was already sent',
+      );
+      return;
+    }
+
+    if (!ORDER_NOTIFICATION_ELIGIBLE_STATUSES.has(order.status)) {
+      if (options.failOnIneligible) {
+        throw new Exception(
+          HttpStatusCode.CONFLICT,
+          'Order notification email is only available for paid, needs-attention, fulfilled, or refunded orders',
+        );
+      }
+
+      logger.info(
+        {
+          orderId,
+          publicId: order.publicId,
+          status: order.status,
+          trigger,
+        },
+        'Skipping order notification email because the order is not in an emailable state',
+      );
+      return;
+    }
+
+    const detail = await getOrderDetailById(orderId);
+    await sendOrderNotificationEmail(detail);
+
+    const orderNotificationSentAt = new Date();
+
+    await db
+      .update(orders)
+      .set({
+        orderNotificationSentAt,
+        orderNotificationError: null,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.info(
+      {
+        orderId,
+        publicId: detail.publicId,
+        orderNotificationSentAt,
+        trigger,
+      },
+      'Order notification email sent',
+    );
+
+    return {
+      id: detail.id,
+      publicId: detail.publicId,
+      status: detail.status,
+      orderNotificationSentAt,
+    };
+  } catch (error) {
+    const emailErrorMessage = buildEmailErrorMessage(error);
+
+    await db
+      .update(orders)
+      .set({
+        orderNotificationError: emailErrorMessage,
+      })
+      .where(eq(orders.id, orderId));
+
+    logger.error({ error, orderId, emailErrorMessage, trigger }, 'Order notification email send failed');
+    throw error;
+  } finally {
+    try {
+      await releaseAdvisoryLock(lockHandle);
+    } catch (unlockError) {
+      logger.error({ error: unlockError, orderId }, 'Failed to release order notification email advisory lock');
+    }
+  }
+};
+
+const sendOrderConfirmationEmailBestEffort = async (
+  orderId: string,
+  options: SendOrderConfirmationEmailForOrderOptions = {},
+) => {
+  try {
+    await sendOrderConfirmationEmailForOrder(orderId, options);
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        orderId,
+        trigger: options.trigger ?? 'checkout_finalize',
+      },
+      'Order confirmation email failed after checkout finalization; manual resend may be required',
+    );
+  }
+};
+
+const sendOrderNotificationBestEffort = async (
+  orderId: string,
+  options: SendOrderNotificationForOrderOptions = {},
+) => {
+  try {
+    await sendOrderNotificationForOrder(orderId, options);
+  } catch (error) {
+    logger.error(
+      {
+        error,
+        orderId,
+        trigger: options.trigger ?? 'checkout_finalize',
+      },
+      'Order notification email failed after checkout finalization',
+    );
+  }
+};
+
 export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) => {
-  const { orderId } = ensurePaymentSessionMetadata(session);
-  const finalizedAmounts = buildFinalizedCheckoutAmounts(session);
-  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(session);
+  const hydratedSession = session.id ? await stripe.checkout.sessions.retrieve(session.id) : session;
+  const { orderId } = ensurePaymentSessionMetadata(hydratedSession);
+  const finalizedAmounts = buildFinalizedCheckoutAmounts(hydratedSession);
+  const finalizedSnapshots = buildFinalizedCheckoutSnapshots(hydratedSession);
   let orderPublicId = '';
-  let orderGuestAccessTokenHash = '';
-  let orderCustomerId = '';
 
   try {
     const finalizeResult = await db.transaction(async (tx) => {
       const lockedOrderResult = await tx.execute<{
         publicId: string;
         customerId: string;
-        guestAccessTokenHash: string | null;
         stripeCheckoutSessionId: string | null;
         status: (typeof orders.$inferSelect)['status'];
         currency: string;
@@ -730,7 +1289,6 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           id,
           public_id AS "publicId",
           customer_id AS "customerId",
-          guest_access_token_hash AS "guestAccessTokenHash",
           stripe_checkout_session_id AS "stripeCheckoutSessionId",
           status,
           currency,
@@ -747,10 +1305,8 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       }
 
       orderPublicId = lockedOrder.publicId;
-      orderGuestAccessTokenHash = lockedOrder.guestAccessTokenHash ?? '';
-      orderCustomerId = lockedOrder.customerId;
 
-      if (['paid', 'packed', 'shipped', 'refunded', 'paid_needs_attention'].includes(lockedOrder.status)) {
+      if (isCheckoutFinalizedOrderStatus(lockedOrder.status)) {
         return {
           alreadyFinalized: true,
           needsAttention: lockedOrder.status === 'paid_needs_attention',
@@ -773,24 +1329,26 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
           subtotalCents: Number(lockedOrder.subtotalCents),
           shippingCents: Number(lockedOrder.shippingCents),
         },
-        session,
+        hydratedSession,
         finalizedAmounts,
         finalizedSnapshots,
       );
 
-      const finalizedCustomerId = await reconcileCheckoutCustomer(tx, lockedOrder.customerId, finalizedSnapshots);
+      const finalizedCustomerId = await reconcileOrderCustomerFromCheckout(tx, orderId, finalizedSnapshots);
 
       await convertReservations(tx, orderId);
-      await allocateKujiTickets(tx, orderId, finalizedCustomerId);
+      const kujiAllocation = await allocateKujiTickets(tx, orderId, finalizedCustomerId);
 
       await tx
         .update(orders)
         .set({
           customerId: finalizedCustomerId,
           status: 'paid',
+          includesLastOnePrize: kujiAllocation.includesLastOnePrize,
           currency: finalizedAmounts.currency,
-          stripeCheckoutSessionId: session.id,
-          stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+          stripeCheckoutSessionId: hydratedSession.id,
+          stripePaymentIntentId:
+            typeof hydratedSession.payment_intent === 'string' ? hydratedSession.payment_intent : null,
           customerDetailsJson: finalizedSnapshots.customerDetailsJson,
           shippingAddressJson: finalizedSnapshots.shippingAddressJson ?? {},
           billingAddressJson: finalizedSnapshots.billingAddressJson,
@@ -806,12 +1364,13 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       await tx
         .update(payments)
         .set({
-          providerCheckoutSessionId: session.id,
-          providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+          providerCheckoutSessionId: hydratedSession.id,
+          providerPaymentIntentId:
+            typeof hydratedSession.payment_intent === 'string' ? hydratedSession.payment_intent : null,
           amountCents: finalizedAmounts.totalCents,
           currency: finalizedAmounts.currency,
           status: 'paid',
-          rawResponse: session as unknown as Record<string, unknown>,
+          rawResponse: buildStripeCheckoutSessionSnapshot(hydratedSession),
         })
         .where(eq(payments.orderId, orderId));
 
@@ -823,7 +1382,9 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     });
 
     if (finalizeResult.alreadyFinalized) {
-      const orderUrl = buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash);
+      await sendOrderConfirmationEmailBestEffort(orderId);
+      await sendOrderNotificationBestEffort(orderId);
+      const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
       return {
         orderId,
@@ -850,8 +1411,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
         await markOrderPaidNeedsAttention(
           tx,
           orderId,
-          orderCustomerId,
-          session,
+          hydratedSession,
           finalizedSnapshots,
           finalizedAmounts,
           isLatePayment ? 'expired' : 'released',
@@ -861,7 +1421,7 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
       return {
         orderId,
         publicId: orderPublicId,
-        orderUrl: buildGuestOrderAccessUrl(orderPublicId, orderGuestAccessTokenHash),
+        orderUrl: buildGuestOrderAccessUrl(orderPublicId),
         needsAttention: true,
         alreadyFinalized: false,
       };
@@ -870,19 +1430,10 @@ export const finalizeCheckoutSession = async (session: Stripe.Checkout.Session) 
     throw error;
   }
 
-  const detail = await getOrderDetailById(orderId);
-  const orderUrl = buildGuestOrderAccessUrl(detail.publicId, orderGuestAccessTokenHash);
+  await sendOrderConfirmationEmailBestEffort(orderId);
+  await sendOrderNotificationBestEffort(orderId);
 
-  try {
-    await sendOrderConfirmationEmail({
-      email: detail.customer.email,
-      firstName: detail.customer.firstName,
-      orderPublicId: detail.publicId,
-      orderUrl,
-    });
-  } catch (emailError) {
-    logger.error({ orderId, emailError }, 'Failed to send order confirmation email');
-  }
+  const orderUrl = buildGuestOrderAccessUrl(orderPublicId);
 
   return {
     orderId,

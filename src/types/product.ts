@@ -1,12 +1,14 @@
 import { collections, kujiPrizes, productImages, productInventory, products, tags } from '../db/schema';
 
-export type ProductSort = 'newest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc';
+export type ProductSort = 'newest' | 'price_asc' | 'price_desc' | 'name_asc' | 'name_desc' | 'trending';
 
 export type ProductCursor = {
   id: string;
-  createdAt: string;
-  priceCents: number;
-  name: string;
+  createdAt?: string;
+  priceCents?: number;
+  name?: string;
+  score?: number;
+  collectionSortOrder?: number;
 };
 
 export type ProductListFilters = {
@@ -19,18 +21,39 @@ export type ProductListFilters = {
   status?: 'active' | 'draft' | 'archived';
 };
 
-export type ProductRow = typeof products.$inferSelect;
-export type ProductInventoryRow = typeof productInventory.$inferSelect;
-export type CollectionRow = typeof collections.$inferSelect;
-export type ProductImageRow = typeof productImages.$inferSelect;
-export type TagRow = typeof tags.$inferSelect;
-export type KujiPrizeRow = typeof kujiPrizes.$inferSelect;
+export type ProductRow = Pick<
+  typeof products.$inferSelect,
+  'id' | 'name' | 'slug' | 'description' | 'productType' | 'status' | 'priceCents' | 'currency' | 'sku' | 'createdAt' | 'updatedAt'
+>;
+export type ProductInventoryRow = Pick<
+  typeof productInventory.$inferSelect,
+  'productId' | 'onHand' | 'reserved' | 'lowStockThreshold'
+>;
+export type CollectionRow = Pick<typeof collections.$inferSelect, 'id' | 'name' | 'slug'>;
+export type ProductImageRow = Pick<
+  typeof productImages.$inferSelect,
+  'id' | 'productId' | 'storageKey' | 'altText' | 'sortOrder'
+>;
+export type TagRow = Pick<typeof tags.$inferSelect, 'id' | 'name' | 'slug' | 'tagType'>;
+export type KujiPrizeRow = Pick<
+  typeof kujiPrizes.$inferSelect,
+  | 'id'
+  | 'productId'
+  | 'prizeCode'
+  | 'prizeTier'
+  | 'name'
+  | 'description'
+  | 'imageUrl'
+  | 'remainingQuantity'
+  | 'initialQuantity'
+  | 'sortOrder'
+>;
 
 export type ProductRelationMaps = {
   images: Map<string, ProductImageRow[]>;
   tags: Map<string, TagRow[]>;
   inventory: Map<string, ProductInventoryRow>;
-  collections: Map<string, CollectionRow>;
+  collections: Map<string, CollectionRow[]>;
   kujiPrizes: Map<string, KujiPrizeRow[]>;
 };
 
@@ -43,7 +66,7 @@ export type ProductCard = {
   status: ProductRow['status'];
   priceCents: number;
   currency: string;
-  collection: Pick<CollectionRow, 'id' | 'name' | 'slug'> | null;
+  collections: Array<Pick<CollectionRow, 'id' | 'name' | 'slug'>>;
   images: Array<{
     id: ProductImageRow['id'];
     storageKey: ProductImageRow['storageKey'];
@@ -57,6 +80,10 @@ export type ProductCard = {
     available: number;
     lowStockThreshold: ProductInventoryRow['lowStockThreshold'];
   } | null;
+  ticketSummary?: {
+    remainingTickets: number;
+    totalTickets: number;
+  };
 };
 
 export type ProductCardQueryRow = {
@@ -68,9 +95,7 @@ export type ProductCardQueryRow = {
   status: ProductRow['status'];
   priceCents: number;
   currency: string;
-  collectionId: string | null;
-  collectionName: string | null;
-  collectionSlug: string | null;
+  collections: CollectionRow[] | null;
   imageId: string | null;
   imageStorageKey: string | null;
   imageAltText: string | null;
@@ -78,6 +103,8 @@ export type ProductCardQueryRow = {
   inventoryOnHand: number | null;
   inventoryReserved: number | null;
   inventoryLowStockThreshold: number | null;
+  remainingTickets: number;
+  totalTickets: number;
 };
 
 export type ProductSuggestion = {
@@ -96,4 +123,18 @@ export type ProductSuggestionQueryRow = {
   priceCents: number;
   currency: string;
   imageStorageKey: string | null;
+};
+
+export type ProductRecommendationQueryRow = {
+  id: string;
+  score: number;
+  inStock: boolean;
+};
+
+export type ProductRecommendationsResult = {
+  items: ProductCard[];
+  meta: {
+    count: number;
+    limit: number;
+  };
 };

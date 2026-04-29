@@ -1,11 +1,11 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import logger from '../utils/logger';
-import { cleanupExpiredPendingOrders, cleanupExpiredReservations } from './helpers';
+import { cleanupExpiredPendingOrders, cleanupExpiredReservations, type BackgroundJobRunResult } from './helpers';
 import { type AdvisoryLockHandle, releaseAdvisoryLock, tryAcquireAdvisoryLock } from './advisory-lock';
 
-type JobFn<T = unknown> = () => Promise<T>;
+type JobFn<T extends BackgroundJobRunResult = BackgroundJobRunResult> = () => Promise<T>;
 
-type JobDefinition<T = unknown> = {
+type JobDefinition<T extends BackgroundJobRunResult = BackgroundJobRunResult> = {
   name: string;
   schedule: string;
   lockKey: string;
@@ -14,7 +14,7 @@ type JobDefinition<T = unknown> = {
 
 const runningJobs = new Set<string>();
 
-const runJob = async <T>(definition: JobDefinition<T>) => {
+const runJob = async <T extends BackgroundJobRunResult>(definition: JobDefinition<T>) => {
   const { name, lockKey, job } = definition;
 
   if (runningJobs.has(name)) {
@@ -30,19 +30,31 @@ const runJob = async <T>(definition: JobDefinition<T>) => {
     lockHandle = await tryAcquireAdvisoryLock(lockKey);
 
     if (!lockHandle) {
-      logger.info({ job: name, lockKey }, 'Skipping job because advisory lock was not acquired');
+      logger.info(
+        {
+          job: name,
+          lockKey,
+          claimedCount: 0,
+          processedCount: 0,
+          durationMs: Date.now() - startedAt,
+        },
+        'Skipping job because advisory lock was not acquired',
+      );
       return;
     }
 
     logger.info({ job: name }, 'Background job started');
 
     const result = await job();
+    const { claimedCount, processedCount, ...details } = result;
 
     logger.info(
       {
         job: name,
+        claimedCount,
+        processedCount,
         durationMs: Date.now() - startedAt,
-        result,
+        details,
       },
       'Background job completed',
     );
@@ -50,6 +62,7 @@ const runJob = async <T>(definition: JobDefinition<T>) => {
     logger.error(
       {
         err: error,
+        error: error instanceof Error ? error.message : 'Unknown background job error',
         job: name,
         durationMs: Date.now() - startedAt,
       },
@@ -62,7 +75,8 @@ const runJob = async <T>(definition: JobDefinition<T>) => {
       } catch (unlockError) {
         logger.error(
           {
-            error: unlockError,
+            err: unlockError,
+            error: unlockError instanceof Error ? unlockError.message : 'Unknown advisory unlock error',
             job: name,
             lockKey,
           },
@@ -85,7 +99,7 @@ export const startBackgroundJobs = () => {
     },
     {
       name: 'cleanupExpiredPendingOrders',
-      schedule: '*/10 * * * *',
+      schedule: '*/2 * * * *',
       lockKey: 'jobs:cleanupExpiredPendingOrders',
       job: cleanupExpiredPendingOrders,
     },

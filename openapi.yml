@@ -18,11 +18,15 @@ tags:
   - name: Search
   - name: Orders
   - name: Checkout
+  - name: Legal
+  - name: Settings
   - name: Admin Products
   - name: Admin Collections
   - name: Admin Tags
   - name: Admin Orders
   - name: Admin Customers
+  - name: Admin Legal
+  - name: Admin Settings
 paths:
   /health:
     get:
@@ -95,6 +99,74 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/HomepageData'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal:
+    get:
+      tags: [Legal]
+      summary: List active legal documents
+      description: Returns the active version of each non-FAQ legal document type.
+      responses:
+        '200':
+          description: Legal documents retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocumentList'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal/faq:
+    get:
+      tags: [Legal]
+      summary: List published FAQ items
+      description: Returns published FAQ items ordered by sort order, created time, and id.
+      responses:
+        '200':
+          description: FAQ items retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItemList'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/legal/{type}:
+    get:
+      tags: [Legal]
+      summary: Get active legal document by type
+      description: Returns the active version for a single non-FAQ legal document type.
+      parameters:
+        - name: type
+          in: path
+          required: true
+          description: Legal document type.
+          schema:
+            $ref: '#/components/schemas/LegalDocumentType'
+      responses:
+        '200':
+          description: Legal document retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/collections:
@@ -302,8 +374,9 @@ paths:
       tags: [Orders]
       summary: Exchange guest order access token
       description: |
-        Validates a guest order access token provided as a query parameter, header,
-        or existing session cookie, then redirects to the client order URL.
+        Bootstrap route for guest order access. Validates a guest order access token
+        provided as a query parameter or header, establishes the guest order session
+        cookie, and redirects to the clean client order URL.
       parameters:
         - name: publicId
           in: path
@@ -344,7 +417,8 @@ paths:
       summary: Get guest order
       description: |
         Returns a guest-safe view of an order. Requires a valid guest order
-        session cookie established via the access endpoint.
+        session cookie established via the access bootstrap endpoint. Guest
+        access tokens are not accepted on this route.
       parameters:
         - name: publicId
           in: path
@@ -532,7 +606,8 @@ paths:
       summary: Get checkout success details
       description: |
         Confirms a Stripe Checkout session has been paid and returns order
-        details and guest access links.
+        details and clean order URLs after establishing the guest order session
+        cookie.
       parameters:
         - name: session_id
           in: query
@@ -560,13 +635,156 @@ paths:
           $ref: '#/components/responses/BadGatewayError'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/settings/store-banner:
+    get:
+      tags: [Settings]
+      summary: Get storefront banner settings
+      description: |
+        Returns the public storefront utility banner settings only. This endpoint
+        does not expose shipping or other admin-managed settings.
+      responses:
+        '200':
+          description: Store banner settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/settings/shipping:
+    get:
+      tags: [Admin Settings]
+      summary: Get shipping settings
+      description: Returns the DB-backed checkout shipping settings used for new orders.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Shipping settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShippingSettings'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Admin Settings]
+      summary: Update shipping settings
+      description: Updates flat-rate CAD shipping settings for future checkout sessions.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShippingSettings'
+      responses:
+        '200':
+          description: Shipping settings updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShippingSettings'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/settings/store-banner:
+    get:
+      tags: [Admin Settings]
+      summary: Get store banner settings
+      description: |
+        Returns the DB-backed storefront utility banner settings stored in
+        `public.store_settings` under the `store_banner` key.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: Store banner settings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Admin Settings]
+      summary: Update store banner settings
+      description: |
+        Updates the storefront utility banner settings. Strings are trimmed,
+        missing item IDs are generated, empty optional link fields are saved as
+        null, each item requires a non-empty message, and link hrefs must be
+        either internal paths beginning with `/` or valid `https://` URLs.
+        `enabled: true` with an empty `items` array is allowed.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreBannerSettingsUpdate'
+      responses:
+        '200':
+          description: Store banner settings updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreBannerSettings'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products:
     get:
       tags: [Admin Products]
       summary: List products (admin)
       description: |
-        Returns a paginated admin view of products. When a status filter is
-        provided, this uses the same cursor semantics as the public product list.
+        Returns a paginated admin view of products with optional status, type,
+        collection, tag, and sort filters. Pagination is applied after the
+        requested filters and sort order.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -577,6 +795,41 @@ paths:
           schema:
             type: string
             enum: [draft, active, archived]
+        - name: type
+          in: query
+          required: false
+          description: Product type to filter by.
+          schema:
+            type: string
+            enum: [standard, kuji]
+        - name: collectionId
+          in: query
+          required: false
+          description: Collection id to filter by.
+          schema:
+            type: string
+            format: uuid
+        - name: tagIds
+          in: query
+          required: false
+          description: |
+            Tag ids to filter by. Matches products that have any selected tag.
+            Accepts repeated query params (`tagIds=id1&tagIds=id2`) and
+            comma-separated values (`tagIds=id1,id2`).
+          schema:
+            type: array
+            items:
+              type: string
+              format: uuid
+          style: form
+          explode: true
+        - name: sort
+          in: query
+          required: false
+          description: Admin list sort order.
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc, inventory_desc, inventory_asc]
         - name: cursor
           in: query
           required: false
@@ -602,7 +855,7 @@ paths:
                   - type: object
                     properties:
                       data:
-                        $ref: '#/components/schemas/ProductListPage'
+                        $ref: '#/components/schemas/AdminProductListPage'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -645,7 +898,333 @@ paths:
           $ref: '#/components/responses/UnprocessableEntityError'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal:
+    get:
+      tags: [Admin Legal]
+      summary: List legal document versions
+      description: Returns all non-FAQ legal document versions sorted by type and descending version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: Optional legal document type filter.
+          schema:
+            $ref: '#/components/schemas/LegalDocumentType'
+      responses:
+        '200':
+          description: Legal documents retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocumentList'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Legal]
+      summary: Create legal document version
+      description: Creates the first or next active version for a non-FAQ legal document type.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLegalCreate'
+      responses:
+        '201':
+          description: Legal document created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/faq:
+    get:
+      tags: [Admin Legal]
+      summary: List FAQ items
+      description: Returns all FAQ items ordered by sort order, created time, and id.
+      security:
+        - AdminBearerAuth: []
+      responses:
+        '200':
+          description: FAQ items retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItemList'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Admin Legal]
+      summary: Create FAQ item
+      description: Creates a new FAQ item for admin management.
+      security:
+        - AdminBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminFaqCreate'
+      responses:
+        '201':
+          description: FAQ item created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItem'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/faq/{id}:
+    patch:
+      tags: [Admin Legal]
+      summary: Update FAQ item
+      description: Updates an existing FAQ item.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: FAQ item UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminFaqUpdate'
+      responses:
+        '200':
+          description: FAQ item updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FaqItem'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Admin Legal]
+      summary: Delete FAQ item
+      description: Deletes an existing FAQ item.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: FAQ item UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: FAQ item deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                            format: uuid
+                          deleted:
+                            type: boolean
+                        required: [id, deleted]
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/legal/{id}:
+    get:
+      tags: [Admin Legal]
+      summary: Get legal document version by id
+      description: Returns an exact stored non-FAQ legal document version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Legal document UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Legal document retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags: [Admin Legal]
+      summary: Publish new legal document version
+      description: Creates a new active non-FAQ legal document version from an existing version.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Source legal document UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLegalUpdate'
+      responses:
+        '200':
+          description: Legal document published
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LegalDocument'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products/{id}:
+    get:
+      tags: [Admin Products]
+      summary: Get product detail (admin)
+      description: |
+        Returns the full editable product detail for the admin product edit page,
+        including description, tags, images, inventory, and collection data.
+        Unlike the public product detail route, this does not restrict results
+        to active products.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Product UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Admin product retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     patch:
       tags: [Admin Products]
       summary: Update product
@@ -979,6 +1558,67 @@ paths:
           $ref: '#/components/responses/ConflictError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/products/{id}/kuji-prizes/upload-image:
+    post:
+      tags: [Admin Products]
+      summary: Upload kuji prize image
+      description: |
+        Uploads a single kuji prize image to storage and returns a public URL
+        that can be used in kuji prize create or update requests.
+      security:
+        - AdminBearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Kuji product UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Kuji prize image uploaded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          imageUrl:
+                            type: string
+                            format: uri
+                        required: [imageUrl]
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '502':
+          $ref: '#/components/responses/BadGatewayError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/products/{id}/kuji-prizes/{prizeId}:
@@ -1377,6 +2017,9 @@ paths:
       summary: Update order status
       description: |
         Updates an order's status, enforcing allowed transitions and inventory rules.
+        This endpoint does not send shipment emails. Use
+        `/api/v1/admin/orders/{id}/shipment` as the canonical shipping action
+        when fulfillment details should advance the order to `shipped`.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -1427,7 +2070,8 @@ paths:
       summary: Update shipment
       description: |
         Creates or updates shipment details and, if necessary, advances the
-        order status to `shipped` and sends a shipment email.
+        order status to `shipped`. A shipment email is sent only when that
+        request performs the actual transition to `shipped`.
       security:
         - AdminBearerAuth: []
       parameters:
@@ -1677,6 +2321,74 @@ components:
         duplicate:
           type: boolean
       required: [received, duplicate]
+    LegalDocumentType:
+      type: string
+      enum: [shipping_returns, terms, privacy]
+    LegalDocument:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/LegalDocumentType'
+        title:
+          type: string
+          description: Derived from the legal document type.
+        content:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, type, title, content, version, isActive, createdAt, updatedAt]
+    LegalDocumentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegalDocument'
+      required: [items]
+    FaqItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isPublished:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, question, answer, sortOrder, isPublished, createdAt, updatedAt]
+    FaqItemList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FaqItem'
+      required: [items]
     CollectionSummary:
       type: object
       properties:
@@ -1761,6 +2473,31 @@ components:
         tagType:
           type: string
       required: [id, name, slug, tagType]
+    AdminProductPrimaryImage:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          nullable: true
+        storageKey:
+          type: string
+          nullable: true
+        altText:
+          type: string
+          nullable: true
+      required: [url, storageKey, altText]
+    AdminProductTag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+      required: [id, name, slug]
     KujiPrize:
       type: object
       properties:
@@ -1768,6 +2505,8 @@ components:
           type: string
           format: uuid
         prizeCode:
+          type: string
+        prizeTier:
           type: string
         name:
           type: string
@@ -1784,7 +2523,7 @@ components:
           type: integer
         sortOrder:
           type: integer
-      required: [id, prizeCode, name, initialQuantity, remainingQuantity, sortOrder]
+      required: [id, prizeCode, prizeTier, name, initialQuantity, remainingQuantity, sortOrder]
     ProductCard:
       type: object
       properties:
@@ -1808,10 +2547,10 @@ components:
           type: integer
         currency:
           type: string
-        collection:
-          allOf:
-            - $ref: '#/components/schemas/ProductCollection'
-          nullable: true
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
         images:
           type: array
           items:
@@ -1820,6 +2559,14 @@ components:
           allOf:
             - $ref: '#/components/schemas/ProductInventory'
           nullable: true
+        ticketSummary:
+          type: object
+          properties:
+            remainingTickets:
+              type: integer
+            totalTickets:
+              type: integer
+          required: [remainingTickets, totalTickets]
       required:
         - id
         - name
@@ -1828,7 +2575,64 @@ components:
         - status
         - priceCents
         - currency
+        - collections
         - images
+    AdminProductListItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        sku:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [draft, active, archived]
+        productType:
+          type: string
+          enum: [standard, kuji]
+        priceCents:
+          type: integer
+        currency:
+          type: string
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
+        inventory:
+          allOf:
+            - $ref: '#/components/schemas/ProductInventory'
+          nullable: true
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminProductTag'
+        primaryImage:
+          allOf:
+            - $ref: '#/components/schemas/AdminProductPrimaryImage'
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - slug
+        - sku
+        - status
+        - productType
+        - priceCents
+        - currency
+        - collections
+        - inventory
+        - tags
+        - primaryImage
+        - updatedAt
     Product:
       type: object
       properties:
@@ -1855,10 +2659,10 @@ components:
         sku:
           type: string
           nullable: true
-        collection:
-          allOf:
-            - $ref: '#/components/schemas/ProductCollection'
-          nullable: true
+        collections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCollection'
         images:
           type: array
           items:
@@ -1889,6 +2693,7 @@ components:
         - status
         - priceCents
         - currency
+        - collections
         - images
         - tags
         - kujiPrizes
@@ -1901,6 +2706,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ProductCard'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items, nextCursor]
+    AdminProductListPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminProductListItem'
         nextCursor:
           type: string
           nullable: true
@@ -2034,6 +2850,117 @@ components:
         orderId:
           type: string
       required: [checkoutUrl, sessionId, publicId, orderId]
+    ShippingSettings:
+      type: object
+      properties:
+        flatShippingCents:
+          type: integer
+          minimum: 0
+        freeShippingThresholdCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          const: CAD
+      required:
+        - flatShippingCents
+        - freeShippingThresholdCents
+        - currency
+    StoreBannerSettings:
+      type: object
+      description: |
+        Storefront utility banner settings stored as `store_banner` in
+        `public.store_settings`. Public clients should render no banner items
+        when `items` is empty, even if `enabled` is true.
+      properties:
+        enabled:
+          type: boolean
+        items:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/StoreBannerItem'
+      required:
+        - enabled
+        - items
+    StoreBannerSettingsUpdate:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        items:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/StoreBannerItemUpdate'
+      required:
+        - enabled
+        - items
+    StoreBannerItem:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Generated by the backend when omitted on update.
+        message:
+          type: string
+          maxLength: 160
+          description: Required to be non-empty after trimming.
+        linkLabel:
+          type:
+            - string
+            - 'null'
+          maxLength: 40
+          description: Optional; empty strings are saved as null and a value requires linkHref.
+        linkHref:
+          type:
+            - string
+            - 'null'
+          maxLength: 300
+          description: Optional internal path beginning with `/` or valid `https://` URL.
+        sortOrder:
+          type: integer
+          minimum: 0
+        isActive:
+          type: boolean
+      required:
+        - id
+        - message
+        - linkLabel
+        - linkHref
+        - sortOrder
+        - isActive
+    StoreBannerItemUpdate:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Optional; generated by the backend when omitted.
+        message:
+          type: string
+          maxLength: 160
+          description: Required to be non-empty after trimming.
+        linkLabel:
+          type:
+            - string
+            - 'null'
+          maxLength: 40
+          description: Optional; empty strings are saved as null and a value requires linkHref.
+        linkHref:
+          type:
+            - string
+            - 'null'
+          maxLength: 300
+          description: Optional internal path beginning with `/` or valid `https://` URL.
+        sortOrder:
+          type: integer
+          minimum: 0
+        isActive:
+          type: boolean
+      required:
+        - message
+        - sortOrder
+        - isActive
     OrderStatus:
       type: string
       enum:
@@ -2082,7 +3009,9 @@ components:
               nullable: true
             prizeCode:
               type: string
-          required: [id, name, prizeCode]
+            prizeTier:
+              type: string
+          required: [id, name, prizeCode, prizeTier]
         kujiProduct:
           type: object
           properties:
@@ -2093,7 +3022,14 @@ components:
               type: string
             slug:
               type: string
-          required: [id, name, slug]
+            imageUrl:
+              type: string
+              format: uri
+              nullable: true
+            imageAltText:
+              type: string
+              nullable: true
+          required: [id, name, slug, imageUrl, imageAltText]
         createdAt:
           type: string
           format: date-time
@@ -2125,6 +3061,13 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+        imageUrl:
+          type: string
+          format: uri
+          nullable: true
+        imageAltText:
+          type: string
+          nullable: true
       required:
         - id
         - productId
@@ -2133,6 +3076,8 @@ components:
         - unitPriceCents
         - quantity
         - lineTotalCents
+        - imageUrl
+        - imageAltText
     Shipment:
       type: object
       properties:
@@ -2283,8 +3228,10 @@ components:
           type: string
         orderUrl:
           type: string
+          description: Clean client order URL for compatibility.
         clientOrderUrl:
           type: string
+          description: Clean client order URL.
         needsAttention:
           type: boolean
         order:
@@ -2421,13 +3368,63 @@ components:
           type: string
         tagType:
           type: string
+    AdminLegalCreate:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/LegalDocumentType'
+        content:
+          type: string
+      required: [type, content]
+      additionalProperties: false
+    AdminLegalUpdate:
+      type: object
+      properties:
+        content:
+          type: string
+      required: [content]
+      additionalProperties: false
+    AdminFaqCreate:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+        isPublished:
+          type: boolean
+      required: [question, answer]
+      additionalProperties: false
+    AdminFaqUpdate:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        category:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+        isPublished:
+          type: boolean
+      additionalProperties: false
     AdminProductCreate:
       type: object
       properties:
-        collectionId:
-          type: string
-          format: uuid
-          nullable: true
+        collectionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         description:
@@ -2460,6 +3457,7 @@ components:
           type: integer
           minimum: 0
       required:
+        - collectionIds
         - name
         - productType
         - status
@@ -2467,10 +3465,11 @@ components:
     AdminProductUpdate:
       type: object
       properties:
-        collectionId:
-          type: string
-          format: uuid
-          nullable: true
+        collectionIds:
+          type: array
+          items:
+            type: string
+            format: uuid
         name:
           type: string
         description:
@@ -2521,6 +3520,8 @@ components:
       properties:
         prizeCode:
           type: string
+        prizeTier:
+          type: string
         name:
           type: string
         description:
@@ -2541,12 +3542,15 @@ components:
           minimum: 0
       required:
         - prizeCode
+        - prizeTier
         - name
         - initialQuantity
     KujiPrizeUpdate:
       type: object
       properties:
         prizeCode:
+          type: string
+        prizeTier:
           type: string
         name:
           type: string
@@ -2707,4 +3711,3 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-

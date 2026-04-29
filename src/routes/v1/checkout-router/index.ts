@@ -4,6 +4,7 @@ import validateBody from '../../../middleware/request-body-validation';
 import validateQuery from '../../../middleware/request-query-validation';
 import { checkoutLimiter } from '../../../middleware/rate-limit';
 import { createCheckoutSession, getCheckoutSuccess } from '../../../services/checkout';
+import { setGuestOrderSessionCookie } from '../../../utils/guest-order-access';
 import { readValidatedBody, readValidatedQuery } from '../../../utils/validated-request';
 import { checkoutBodySchema, successQuerySchema } from '../../../schemas/checkout';
 
@@ -33,6 +34,12 @@ checkoutRouter.post(
 checkoutRouter.get('/success', validateQuery(successQuerySchema, 'checkout success query'), async (req, res) => {
   const query = readValidatedQuery<z.infer<typeof successQuerySchema>>(req);
   const result = await getCheckoutSuccess(query.session_id);
+
+  if (result.pending) {
+    return res.send_accepted('Order payment is still awaiting webhook finalization', result);
+  }
+
+  setGuestOrderSessionCookie(res, result.publicId);
   return res.send_ok('Checkout session verified', result);
 });
 

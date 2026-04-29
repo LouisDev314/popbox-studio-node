@@ -19,7 +19,6 @@ type GuestOrderSignedTokenPayload = {
   v: typeof GUEST_ORDER_TOKEN_VERSION;
   kind: GuestOrderTokenKind;
   publicId: string;
-  guestAccessTokenHash: string;
   iat: number;
   exp: number;
 };
@@ -50,13 +49,7 @@ const parseSignedToken = (token: string): GuestOrderSignedTokenPayload | null =>
       Buffer.from(payloadSegment, 'base64url').toString('utf8'),
     ) as GuestOrderSignedTokenPayload;
 
-    if (
-      payload.v !== GUEST_ORDER_TOKEN_VERSION ||
-      typeof payload.publicId !== 'string' ||
-      typeof payload.guestAccessTokenHash !== 'string' ||
-      typeof payload.iat !== 'number' ||
-      typeof payload.exp !== 'number'
-    ) {
+    if (payload.v !== GUEST_ORDER_TOKEN_VERSION) {
       return null;
     }
 
@@ -70,70 +63,41 @@ const parseSignedToken = (token: string): GuestOrderSignedTokenPayload | null =>
   }
 };
 
-const buildGuestOrderToken = (
-  kind: GuestOrderTokenKind,
-  publicId: string,
-  guestAccessTokenHash: string,
-  ttlMs: number,
-) => {
-  if (!guestAccessTokenHash.trim()) {
-    throw new Error('Guest order access token hash is required');
-  }
-
+const buildGuestOrderToken = (kind: GuestOrderTokenKind, publicId: string, ttlMs: number) => {
   const now = Date.now();
   return createSignedToken({
     v: GUEST_ORDER_TOKEN_VERSION,
     kind,
     publicId,
-    guestAccessTokenHash,
     iat: now,
     exp: now + ttlMs,
   });
 };
 
-export const createGuestOrderAccessToken = (publicId: string, guestAccessTokenHash: string) => {
-  return buildGuestOrderToken(
-    GUEST_ORDER_ACCESS_TOKEN_KIND,
-    publicId,
-    guestAccessTokenHash,
-    GUEST_ORDER_ACCESS_TOKEN_MAX_AGE_MS,
-  );
+export const createGuestOrderAccessToken = (publicId: string) => {
+  return buildGuestOrderToken(GUEST_ORDER_ACCESS_TOKEN_KIND, publicId, GUEST_ORDER_ACCESS_TOKEN_MAX_AGE_MS);
 };
 
-export const createGuestOrderSessionToken = (publicId: string, guestAccessTokenHash: string) => {
-  return buildGuestOrderToken(
-    GUEST_ORDER_SESSION_TOKEN_KIND,
-    publicId,
-    guestAccessTokenHash,
-    GUEST_ORDER_SESSION_MAX_AGE_MS,
-  );
+export const createGuestOrderSessionToken = (publicId: string) => {
+  return buildGuestOrderToken(GUEST_ORDER_SESSION_TOKEN_KIND, publicId, GUEST_ORDER_SESSION_MAX_AGE_MS);
 };
 
-const verifyGuestOrderToken = (
-  token: string,
-  expectedKind: GuestOrderTokenKind,
-  publicId: string,
-  guestAccessTokenHash: string,
-) => {
+const verifyGuestOrderToken = (token: string, expectedKind: GuestOrderTokenKind, publicId: string) => {
   const payload = parseSignedToken(token);
 
   if (!payload) {
     return false;
   }
 
-  return (
-    payload.kind === expectedKind &&
-    payload.publicId === publicId &&
-    payload.guestAccessTokenHash === guestAccessTokenHash
-  );
+  return payload.kind === expectedKind && payload.publicId === publicId;
 };
 
-export const verifyGuestOrderAccessToken = (token: string, publicId: string, guestAccessTokenHash: string) => {
-  return verifyGuestOrderToken(token, GUEST_ORDER_ACCESS_TOKEN_KIND, publicId, guestAccessTokenHash);
+export const verifyGuestOrderAccessToken = (token: string, publicId: string) => {
+  return verifyGuestOrderToken(token, GUEST_ORDER_ACCESS_TOKEN_KIND, publicId);
 };
 
-export const verifyGuestOrderSessionToken = (token: string, publicId: string, guestAccessTokenHash: string) => {
-  return verifyGuestOrderToken(token, GUEST_ORDER_SESSION_TOKEN_KIND, publicId, guestAccessTokenHash);
+export const verifyGuestOrderSessionToken = (token: string, publicId: string) => {
+  return verifyGuestOrderToken(token, GUEST_ORDER_SESSION_TOKEN_KIND, publicId);
 };
 
 export const verifyLegacyGuestOrderAccessToken = (token: string, guestAccessTokenHash: string) => {
@@ -144,33 +108,34 @@ export const buildClientOrderUrl = (publicId: string) => {
   return `${getEnvConfig().clientBaseUrl}/orders/${publicId}`;
 };
 
-export const buildGuestOrderAccessUrl = (publicId: string, guestAccessTokenHash: string) => {
-  const token = createGuestOrderAccessToken(publicId, guestAccessTokenHash);
-  return `${getEnvConfig().clientBaseUrl}/api/v1/orders/${publicId}/access?token=${encodeURIComponent(token)}`;
+export const buildGuestOrderAccessUrl = (publicId: string) => {
+  const token = createGuestOrderAccessToken(publicId);
+  return `${getEnvConfig().clientBaseUrl}/orders/${publicId}?token=${encodeURIComponent(token)}`;
 };
 
-export const getGuestOrderSessionCookieOptions = (publicId: string): CookieOptions => {
+export const getGuestOrderSessionCookieOptions = (): CookieOptions => {
   const isProd = getEnvConfig().nodeEnv === 'production';
 
   return {
     httpOnly: true,
-    sameSite: isProd ? 'none' : 'lax',
+    // using rewrites on Next.js frontend -> same site
+    sameSite: 'lax',
     secure: isProd,
     maxAge: GUEST_ORDER_SESSION_MAX_AGE_MS,
-    path: `/api/v1/orders/${publicId}`,
+    path: '/',
   };
 };
 
-export const setGuestOrderSessionCookie = (res: Response, publicId: string, guestAccessTokenHash: string) => {
+export const setGuestOrderSessionCookie = (res: Response, publicId: string) => {
   res.cookie(
     GUEST_ORDER_SESSION_COOKIE_NAME,
-    createGuestOrderSessionToken(publicId, guestAccessTokenHash),
-    getGuestOrderSessionCookieOptions(publicId),
+    createGuestOrderSessionToken(publicId),
+    getGuestOrderSessionCookieOptions(),
   );
 };
 
-export const clearGuestOrderSessionCookie = (res: Response, publicId: string) => {
-  res.clearCookie(GUEST_ORDER_SESSION_COOKIE_NAME, getGuestOrderSessionCookieOptions(publicId));
+export const clearGuestOrderSessionCookie = (res: Response) => {
+  res.clearCookie(GUEST_ORDER_SESSION_COOKIE_NAME, getGuestOrderSessionCookieOptions());
 };
 
 export const readCookieValue = (cookieHeader: string | undefined, cookieName: string) => {

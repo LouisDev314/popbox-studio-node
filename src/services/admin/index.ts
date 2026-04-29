@@ -1,27 +1,251 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
 import { supabaseAdmin } from '../../integrations/supabase';
 import getEnvConfig from '../../config/env';
 import { db } from '../../db';
-import { DbClient } from '../../types/checkout';
-import { collections, kujiPrizes, productImages, productInventory, products, tags } from '../../db/schema';
+import type { DbClient } from '../../types/checkout';
+import {
+  collections,
+  kujiPrizes,
+  productCollections,
+  productImages,
+  productInventory,
+  productTags,
+  products,
+  tags,
+} from '../../db/schema';
 import Exception from '../../utils/Exception';
 import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
-import { listProducts } from '../product';
+import { getProductById, getProductCardsByIds, loadProductTagMap } from '../product';
 import { clampLimit } from '../../utils/limit';
+import logger from '../../utils/logger';
 import {
   assertProductExists,
   buildStoragePath,
+  buildImageUrl,
   ensureUniqueSlug,
+  replaceProductCollections,
   replaceProductTags,
-  syncKujiInventory,
   throwStorageFailure,
 } from '../../utils/product';
+import {
+  LAST_ONE_PRIZE_TIER,
+  sanitizeKujiPrizeCodeForStorage,
+  sanitizeKujiPrizeTierForStorage,
+} from '../../utils/kuji';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
-type CursorPayload = {
-  createdAt: string;
+type AdminProductListSort = 'updated_desc' | 'updated_asc' | 'inventory_desc' | 'inventory_asc';
+
+type AdminProductListFilters = {
+  status?: 'draft' | 'active' | 'archived';
+  type?: 'standard' | 'kuji';
+  collectionId?: string;
+  tagIds?: string[];
+  sort?: AdminProductListSort;
+  cursor?: string;
+  limit?: number;
+};
+
+type AdminProductCursorPayload = {
   id: string;
+  updatedAt?: string;
+  inventorySortValue?: number;
+};
+
+const isUniqueConstraintViolation = (error: unknown, constraintName: string) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  error.code === '23505' &&
+  (('constraint_name' in error && error.constraint_name === constraintName) ||
+    ('constraint' in error && error.constraint === constraintName));
+
+const mapKujiPrizeWriteError = (error: unknown): never => {
+  if (isUniqueConstraintViolation(error, 'kuji_prizes_product_code_unique')) {
+    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji prize code already exists for this product');
+  }
+
+  throw error;
+};
+
+const getManagedKujiPrizeImageStorageKey = (productId: string, imageUrl: string | null) => {
+  if (!imageUrl) return null;
+
+  try {
+    const config = getEnvConfig();
+    const parsedImageUrl = new URL(imageUrl);
+    const imageUrlWithoutQuery = `${parsedImageUrl.origin}${parsedImageUrl.pathname}`;
+    const storagePrefix = `${config.supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/${config.supabaseStorageBucket}/`;
+
+    if (!imageUrlWithoutQuery.startsWith(storagePrefix)) {
+      return null;
+    }
+
+    const storageKey = decodeURIComponent(imageUrlWithoutQuery.slice(storagePrefix.length));
+    const kujiPrizeStoragePrefix = `products/${productId}/kuji-prizes/`;
+
+    return storageKey.startsWith(kujiPrizeStoragePrefix) ? storageKey : null;
+  } catch {
+    return null;
+  }
+};
+
+const cleanupReplacedKujiPrizeImage = async (productId: string, prizeId: string, storageKey: string | null) => {
+  if (!storageKey) return;
+
+  try {
+    const { error } = await supabaseAdmin.storage.from(getEnvConfig().supabaseStorageBucket).remove([storageKey]);
+
+    if (error) throw error;
+  } catch (error) {
+    logger.error(
+      {
+        productId,
+        prizeId,
+        storageKey,
+        error,
+      },
+      'Kuji prize image cleanup failed',
+    );
+  }
+};
+
+type AdminProductListItem = {
+  id: string;
+  name: string;
+  slug: string;
+  sku: string | null;
+  status: 'draft' | 'active' | 'archived';
+  productType: 'standard' | 'kuji';
+  priceCents: number;
+  currency: string;
+  collections: Array<{
+    id: string;
+    name: string;
+    slug: string;
+  }>;
+  inventory: {
+    onHand: number;
+    reserved: number;
+    available: number;
+    lowStockThreshold: number;
+  } | null;
+  tags: Array<{
+    id: string;
+    name: string;
+    slug: string;
+  }>;
+  primaryImage: {
+    url: string | null;
+    storageKey: string | null;
+    altText: string | null;
+  } | null;
+  updatedAt: Date;
+};
+
+const DEFAULT_ADMIN_PRODUCT_SORT: AdminProductListSort = 'updated_desc';
+
+const buildAdminInventorySortValue = () => {
+  const kujiRemainingQuantity = sql<number>`COALESCE(
+    (
+      SELECT sum(${kujiPrizes.remainingQuantity})::int
+      FROM ${kujiPrizes}
+      WHERE ${kujiPrizes.productId} = ${products.id}
+        AND UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}
+    ),
+    0
+  )`;
+
+  return sql<number>`CASE
+    WHEN ${products.productType} = 'kuji' THEN ${kujiRemainingQuantity}
+    ELSE GREATEST(COALESCE(${productInventory.onHand}, 0) - COALESCE(${productInventory.reserved}, 0), 0)
+  END`;
+};
+
+const buildAdminProductSortOrder = (sort: AdminProductListSort, inventorySortValue: SQL) => {
+  switch (sort) {
+    case 'updated_asc':
+      return [asc(products.updatedAt), asc(products.id)] as const;
+    case 'inventory_desc':
+      return [desc(inventorySortValue), desc(products.id)] as const;
+    case 'inventory_asc':
+      return [asc(inventorySortValue), asc(products.id)] as const;
+    case 'updated_desc':
+    default:
+      return [desc(products.updatedAt), desc(products.id)] as const;
+  }
+};
+
+const buildAdminProductCursorCondition = (
+  sort: AdminProductListSort,
+  cursor: AdminProductCursorPayload | null,
+  inventorySortValue: SQL,
+) => {
+  if (!cursor || typeof cursor.id !== 'string') {
+    return undefined;
+  }
+
+  switch (sort) {
+    case 'updated_asc': {
+      if (typeof cursor.updatedAt !== 'string') {
+        return undefined;
+      }
+
+      const cursorDate = new Date(cursor.updatedAt);
+
+      if (Number.isNaN(cursorDate.getTime())) {
+        return undefined;
+      }
+
+      return or(
+        gt(products.updatedAt, cursorDate),
+        and(eq(products.updatedAt, cursorDate), gt(products.id, cursor.id)),
+      );
+    }
+
+    case 'updated_desc': {
+      if (typeof cursor.updatedAt !== 'string') {
+        return undefined;
+      }
+
+      const cursorDate = new Date(cursor.updatedAt);
+
+      if (Number.isNaN(cursorDate.getTime())) {
+        return undefined;
+      }
+
+      return or(
+        lt(products.updatedAt, cursorDate),
+        and(eq(products.updatedAt, cursorDate), lt(products.id, cursor.id)),
+      );
+    }
+
+    case 'inventory_asc': {
+      if (typeof cursor.inventorySortValue !== 'number' || Number.isNaN(cursor.inventorySortValue)) {
+        return undefined;
+      }
+
+      return sql`(
+        ${inventorySortValue} > ${cursor.inventorySortValue}
+        OR (${inventorySortValue} = ${cursor.inventorySortValue} AND ${products.id} > ${cursor.id})
+      )`;
+    }
+
+    case 'inventory_desc': {
+      if (typeof cursor.inventorySortValue !== 'number' || Number.isNaN(cursor.inventorySortValue)) {
+        return undefined;
+      }
+
+      return sql`(
+        ${inventorySortValue} < ${cursor.inventorySortValue}
+        OR (${inventorySortValue} = ${cursor.inventorySortValue} AND ${products.id} < ${cursor.id})
+      )`;
+    }
+
+    default:
+      return undefined;
+  }
 };
 
 const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
@@ -32,20 +256,19 @@ const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
 
 const assertKujiPrizeQuantitiesAreValid = (initialQuantity: number, remainingQuantity: number) => {
   if (remainingQuantity > initialQuantity) {
-    throw new Exception(
-      HttpStatusCode.CONFLICT,
-      'Kuji prize remainingQuantity cannot be greater than initialQuantity',
-    );
+    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji prize remainingQuantity cannot be greater than initialQuantity');
   }
 };
 
-const syncKujiInventoryWithinTx = async (tx: DbClient, productId: string) => {
+const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string) => {
   const [sumRow] = await tx
     .select({
       remaining: sql<number>`COALESCE(sum(${kujiPrizes.remainingQuantity}), 0)::int`,
     })
     .from(kujiPrizes)
-    .where(eq(kujiPrizes.productId, productId));
+    .where(
+      and(eq(kujiPrizes.productId, productId), sql`UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}`),
+    );
 
   const totalRemaining = sumRow?.remaining ?? 0;
   const inventoryResult = await tx.execute<{ onHand: number; reserved: number }>(sql`
@@ -58,106 +281,136 @@ const syncKujiInventoryWithinTx = async (tx: DbClient, productId: string) => {
 
   if (existingInventory) {
     assertInventoryNotBelowReserved(totalRemaining, Number(existingInventory.reserved));
-
-    await tx
-      .update(productInventory)
-      .set({
-        onHand: totalRemaining,
-      })
-      .where(eq(productInventory.productId, productId));
-
     return;
   }
 
   await tx.insert(productInventory).values({
     productId,
-    onHand: totalRemaining,
+    onHand: 0,
     reserved: 0,
     lowStockThreshold: 0,
   });
 };
 
-export const listAdminProducts = async (filters: {
-  status?: 'draft' | 'active' | 'archived';
-  cursor?: string;
-  limit?: number;
-}) => {
+export const listAdminProducts = async (filters: AdminProductListFilters) => {
+  const limit = clampLimit(filters.limit);
+  const sort = filters.sort ?? DEFAULT_ADMIN_PRODUCT_SORT;
+  const cursor = decodeCursor<AdminProductCursorPayload>(filters.cursor);
+  const inventorySortValue = buildAdminInventorySortValue();
+  const conditions: SQL[] = [];
+  const normalizedTagIds = filters.tagIds?.length ? [...new Set(filters.tagIds)] : undefined;
+
   if (filters.status) {
-    const productFilters: Parameters<typeof listProducts>[0] = {
-      status: filters.status,
-    };
-
-    if (filters.cursor) productFilters.cursor = filters.cursor;
-    if (filters.limit !== undefined) productFilters.limit = filters.limit;
-
-    return listProducts(productFilters);
+    conditions.push(eq(products.status, filters.status));
   }
 
-  const limit = clampLimit(filters.limit);
-  const cursor = decodeCursor<CursorPayload>(filters.cursor);
-  const conditions = [];
+  if (filters.type) {
+    conditions.push(eq(products.productType, filters.type));
+  }
 
-  if (cursor) {
-    conditions.push(
-      sql`(${products.createdAt} < ${new Date(cursor.createdAt)} OR (${products.createdAt} = ${new Date(cursor.createdAt)} AND ${products.id} < ${cursor.id}))`,
-    );
+  if (filters.collectionId) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${productCollections}
+      WHERE ${productCollections.productId} = ${products.id}
+        AND ${productCollections.collectionId} = ${filters.collectionId}
+    )`);
+  }
+
+  if (normalizedTagIds?.length) {
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${productTags}
+      WHERE ${productTags.productId} = ${products.id}
+        AND ${inArray(productTags.tagId, normalizedTagIds)}
+    )`);
+  }
+
+  const cursorCondition = buildAdminProductCursorCondition(sort, cursor, inventorySortValue);
+
+  if (cursorCondition) {
+    conditions.push(cursorCondition);
   }
 
   const rows = await db
     .select({
-      product: products,
-      collection: collections,
-      inventory: productInventory,
+      product: {
+        id: products.id,
+        name: products.name,
+        slug: products.slug,
+        sku: products.sku,
+        status: products.status,
+        productType: products.productType,
+        priceCents: products.priceCents,
+        currency: products.currency,
+        updatedAt: products.updatedAt,
+      },
+      inventorySortValue,
     })
     .from(products)
-    .leftJoin(collections, eq(collections.id, products.collectionId))
     .leftJoin(productInventory, eq(productInventory.productId, products.id))
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(products.createdAt), desc(products.id))
+    .orderBy(...buildAdminProductSortOrder(sort, inventorySortValue))
     .limit(limit + 1);
 
   const pageRows = rows.slice(0, limit);
   const lastRow = pageRows.at(-1);
+  const productIds = pageRows.map((row) => row.product.id);
+  const [productCards, tagMap] = await Promise.all([getProductCardsByIds(productIds), loadProductTagMap(productIds)]);
+  const productCardMap = new Map(productCards.map((productCard) => [productCard.id, productCard]));
 
-  return {
-    items: pageRows.map((row) => ({
+  const items: AdminProductListItem[] = pageRows.map((row) => {
+    const productCard = productCardMap.get(row.product.id);
+    const primaryImage = productCard?.images[0] ?? null;
+
+    return {
       id: row.product.id,
       name: row.product.name,
       slug: row.product.slug,
+      sku: row.product.sku,
       productType: row.product.productType,
       status: row.product.status,
       priceCents: row.product.priceCents,
       currency: row.product.currency,
-      sku: row.product.sku,
-      collection: row.collection
+      collections: productCard?.collections ?? [],
+      inventory: productCard?.inventory ?? null,
+      tags: (tagMap.get(row.product.id) ?? []).map((tag) => ({
+        id: tag.id,
+        name: tag.name,
+        slug: tag.slug,
+      })),
+      primaryImage: primaryImage
         ? {
-            id: row.collection.id,
-            name: row.collection.name,
-            slug: row.collection.slug,
+            url: primaryImage.url,
+            storageKey: primaryImage.storageKey,
+            altText: primaryImage.altText,
           }
         : null,
-      inventory: row.inventory
-        ? {
-            onHand: row.inventory.onHand,
-            reserved: row.inventory.reserved,
-            lowStockThreshold: row.inventory.lowStockThreshold,
-          }
-        : null,
-      createdAt: row.product.createdAt,
       updatedAt: row.product.updatedAt,
-    })),
+    };
+  });
+
+  return {
+    items,
     nextCursor:
       rows.length > limit && lastRow
-        ? encodeCursor({
-            id: lastRow.product.id,
-            createdAt: lastRow.product.createdAt.toISOString(),
-          })
+        ? encodeCursor(
+            sort === 'inventory_asc' || sort === 'inventory_desc'
+              ? {
+                  id: lastRow.product.id,
+                  inventorySortValue: lastRow.inventorySortValue,
+                }
+              : {
+                  id: lastRow.product.id,
+                  updatedAt: lastRow.product.updatedAt.toISOString(),
+                },
+          )
         : null,
   };
 };
 
 export const createProduct = async (payload: {
-  collectionId?: string | null;
+  collectionIds: string[];
   name: string;
   description?: string | null;
   productType: 'standard' | 'kuji';
@@ -171,40 +424,48 @@ export const createProduct = async (payload: {
 }) => {
   const slug = await ensureUniqueSlug(products, payload.name);
 
-  const [product] = await db
-    .insert(products)
-    .values({
-      collectionId: payload.collectionId ?? null,
-      name: payload.name,
-      slug,
-      description: payload.description ?? null,
-      productType: payload.productType,
-      status: payload.status,
-      priceCents: payload.priceCents,
-      currency: payload.currency ?? 'CAD',
-      sku: payload.sku ?? null,
-    })
-    .returning();
+  const product = await db.transaction(async (tx) => {
+    const [product] = await tx
+      .insert(products)
+      .values({
+        name: payload.name,
+        slug,
+        description: payload.description ?? null,
+        productType: payload.productType,
+        status: payload.status,
+        priceCents: payload.priceCents,
+        currency: payload.currency ?? 'CAD',
+        sku: payload.sku ?? null,
+      })
+      .returning();
 
-  if (!product) {
-    throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Product creation failed');
-  }
+    if (!product) {
+      throw new Exception(HttpStatusCode.INTERNAL_SERVER_ERROR, 'Product creation failed');
+    }
 
-  await replaceProductTags(product.id, payload.tagIds ?? []);
-  await db.insert(productInventory).values({
-    productId: product.id,
-    onHand: payload.productType === 'kuji' ? 0 : Math.max(payload.onHand ?? 0, 0),
-    reserved: 0,
-    lowStockThreshold: Math.max(payload.lowStockThreshold ?? 0, 0),
+    await replaceProductCollections(tx, product.id, payload.collectionIds);
+    await replaceProductTags(product.id, payload.tagIds ?? [], tx);
+    await tx.insert(productInventory).values({
+      productId: product.id,
+      onHand: payload.productType === 'kuji' ? 0 : Math.max(payload.onHand ?? 0, 0),
+      reserved: 0,
+      lowStockThreshold: Math.max(payload.lowStockThreshold ?? 0, 0),
+    });
+
+    return product;
   });
 
-  return product;
+  return getProductById(product.id);
+};
+
+export const getAdminProduct = async (productId: string) => {
+  return getProductById(productId);
 };
 
 export const updateProduct = async (
   productId: string,
   payload: Partial<{
-    collectionId: string | null;
+    collectionIds: string[];
     name: string;
     description: string | null;
     productType: 'standard' | 'kuji';
@@ -219,40 +480,47 @@ export const updateProduct = async (
   const existingProduct = await assertProductExists(productId);
   const nextSlug = payload.name ? await ensureUniqueSlug(products, payload.name, productId) : existingProduct.slug;
 
-  const [updated] = await db
-    .update(products)
-    .set({
-      collectionId: payload.collectionId === undefined ? existingProduct.collectionId : payload.collectionId,
-      name: payload.name ?? existingProduct.name,
-      slug: nextSlug,
-      description: payload.description === undefined ? existingProduct.description : payload.description,
-      productType: payload.productType ?? existingProduct.productType,
-      status: payload.status ?? existingProduct.status,
-      priceCents: payload.priceCents ?? existingProduct.priceCents,
-      currency: payload.currency ?? existingProduct.currency,
-      sku: payload.sku === undefined ? existingProduct.sku : payload.sku,
-    })
-    .where(eq(products.id, productId))
-    .returning();
-
-  if (payload.tagIds) {
-    await replaceProductTags(productId, payload.tagIds);
-  }
-
-  if (payload.lowStockThreshold !== undefined) {
-    await db
-      .update(productInventory)
+  await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(products)
       .set({
-        lowStockThreshold: Math.max(payload.lowStockThreshold, 0),
+        name: payload.name ?? existingProduct.name,
+        slug: nextSlug,
+        description: payload.description === undefined ? existingProduct.description : payload.description,
+        productType: payload.productType ?? existingProduct.productType,
+        status: payload.status ?? existingProduct.status,
+        priceCents: payload.priceCents ?? existingProduct.priceCents,
+        currency: payload.currency ?? existingProduct.currency,
+        sku: payload.sku === undefined ? existingProduct.sku : payload.sku,
       })
-      .where(eq(productInventory.productId, productId));
-  }
+      .where(eq(products.id, productId))
+      .returning();
 
-  if ((payload.productType ?? existingProduct.productType) === 'kuji') {
-    await syncKujiInventory(productId);
-  }
+    if (payload.collectionIds !== undefined) {
+      await replaceProductCollections(tx, productId, payload.collectionIds);
+    }
 
-  return updated;
+    if (payload.tagIds) {
+      await replaceProductTags(productId, payload.tagIds, tx);
+    }
+
+    if (payload.lowStockThreshold !== undefined) {
+      await tx
+        .update(productInventory)
+        .set({
+          lowStockThreshold: Math.max(payload.lowStockThreshold, 0),
+        })
+        .where(eq(productInventory.productId, productId));
+    }
+
+    if ((payload.productType ?? existingProduct.productType) === 'kuji') {
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+    }
+
+    return updated;
+  });
+
+  return getProductById(productId);
 };
 
 export const uploadProductImages = async (
@@ -330,6 +598,33 @@ export const uploadProductImages = async (
   }
 };
 
+export const uploadKujiPrizeImage = async (productId: string, file: Express.Multer.File) => {
+  const product = await assertProductExists(productId);
+
+  if (product.productType !== 'kuji') {
+    throw new Exception(HttpStatusCode.UNPROCESSABLE_ENTITY, 'Only kuji products can upload kuji prize images');
+  }
+
+  validateProductImageFiles([file]);
+
+  const storageKey = buildStoragePath(productId, file.originalname, {
+    subdirectory: 'kuji-prizes',
+    unique: true,
+  });
+  const { error } = await supabaseAdmin.storage
+    .from(getEnvConfig().supabaseStorageBucket)
+    .upload(storageKey, file.buffer, {
+      contentType: file.mimetype,
+      upsert: false,
+    });
+
+  throwStorageFailure('Unable to upload kuji prize image', error);
+
+  return {
+    imageUrl: buildImageUrl(storageKey),
+  };
+};
+
 export const reorderProductImages = async (productId: string, imageIds: string[]) => {
   const rows = await db
     .select()
@@ -340,22 +635,29 @@ export const reorderProductImages = async (productId: string, imageIds: string[]
     throw new Exception(HttpStatusCode.NOT_FOUND, 'One or more product images were not found');
   }
 
-  await Promise.all(
-    imageIds.map((imageId, index) =>
-      db
-        .update(productImages)
-        .set({
-          sortOrder: index + 1,
-        })
-        .where(and(eq(productImages.id, imageId), eq(productImages.productId, productId))),
-    ),
+  const reorderValues = sql.join(
+    imageIds.map((imageId, index) => sql`(${imageId}::uuid, ${(index + 1).toString()}::int)`),
+    sql`, `,
   );
 
-  return db
+  await db.execute(sql`
+    WITH reordered_images(id, sort_order) AS (
+      VALUES ${reorderValues}
+    )
+    UPDATE ${productImages} AS image
+    SET sort_order = reordered_images.sort_order
+    FROM reordered_images
+    WHERE image.id = reordered_images.id
+      AND image.product_id = ${productId}
+  `);
+
+  const reorderedImages = await db
     .select()
     .from(productImages)
     .where(eq(productImages.productId, productId))
     .orderBy(asc(productImages.sortOrder), asc(productImages.id));
+
+  return reorderedImages.map(mapProductImage);
 };
 
 export const deleteProductImage = async (productId: string, imageId: string) => {
@@ -552,6 +854,7 @@ export const createKujiPrize = async (
   productId: string,
   payload: {
     prizeCode: string;
+    prizeTier: string;
     name: string;
     description?: string | null;
     imageUrl?: string | null;
@@ -568,24 +871,30 @@ export const createKujiPrize = async (
   const remainingQuantity = payload.remainingQuantity ?? payload.initialQuantity;
   assertKujiPrizeQuantitiesAreValid(payload.initialQuantity, remainingQuantity);
 
-  const [prize] = await db.transaction(async (tx) => {
-    const [createdPrize] = await tx
-      .insert(kujiPrizes)
-      .values({
-        productId,
-        prizeCode: payload.prizeCode,
-        name: payload.name,
-        description: payload.description ?? null,
-        imageUrl: payload.imageUrl ?? null,
-        initialQuantity: payload.initialQuantity,
-        remainingQuantity,
-        sortOrder: payload.sortOrder ?? 0,
-      })
-      .returning();
+  const nextPrizeCode = sanitizeKujiPrizeCodeForStorage(payload.prizeCode);
+  const nextPrizeTier = sanitizeKujiPrizeTierForStorage(payload.prizeTier);
 
-    await syncKujiInventoryWithinTx(tx, productId);
-    return [createdPrize];
-  });
+  const [prize] = await db
+    .transaction(async (tx) => {
+      const [createdPrize] = await tx
+        .insert(kujiPrizes)
+        .values({
+          productId,
+          prizeCode: nextPrizeCode,
+          prizeTier: nextPrizeTier,
+          name: payload.name,
+          description: payload.description ?? null,
+          imageUrl: payload.imageUrl ?? null,
+          initialQuantity: payload.initialQuantity,
+          remainingQuantity,
+          sortOrder: payload.sortOrder ?? 0,
+        })
+        .returning();
+
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+      return [createdPrize];
+    })
+    .catch(mapKujiPrizeWriteError);
 
   return prize;
 };
@@ -595,6 +904,7 @@ export const updateKujiPrize = async (
   prizeId: string,
   payload: Partial<{
     prizeCode: string;
+    prizeTier: string;
     name: string;
     description: string | null;
     imageUrl: string | null;
@@ -604,41 +914,70 @@ export const updateKujiPrize = async (
   }>,
 ) => {
   await assertProductExists(productId);
-  const [updated] = await db.transaction(async (tx) => {
-    const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
-      SELECT *
+  const { updated, oldImageStorageKey } = await db
+    .transaction(async (tx) => {
+      const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
+      SELECT
+        id,
+        product_id AS "productId",
+        prize_code AS "prizeCode",
+        prize_tier AS "prizeTier",
+        name,
+        description,
+        image_url AS "imageUrl",
+        initial_quantity AS "initialQuantity",
+        remaining_quantity AS "remainingQuantity",
+        sort_order AS "sortOrder",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
       FROM kuji_prizes
       WHERE id = ${prizeId}
         AND product_id = ${productId}
       FOR UPDATE
     `);
-    const existing = prizeResult[0];
+      const existing = prizeResult[0];
 
-    if (!existing) {
-      throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
-    }
+      if (!existing) {
+        throw new Exception(HttpStatusCode.NOT_FOUND, 'Kuji prize not found');
+      }
 
-    const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
-    const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
-    assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
+      const nextPrizeCode =
+        payload.prizeCode !== undefined ? sanitizeKujiPrizeCodeForStorage(payload.prizeCode) : existing.prizeCode;
+      const nextPrizeTier =
+        payload.prizeTier !== undefined ? sanitizeKujiPrizeTierForStorage(payload.prizeTier) : existing.prizeTier;
+      const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
+      const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
+      assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
+      const nextImageUrl = payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl;
+      const oldImageStorageKey =
+        payload.imageUrl !== undefined && payload.imageUrl !== existing.imageUrl
+          ? getManagedKujiPrizeImageStorageKey(productId, existing.imageUrl)
+          : null;
 
-    const [nextPrize] = await tx
-      .update(kujiPrizes)
-      .set({
-        prizeCode: payload.prizeCode ?? existing.prizeCode,
-        name: payload.name ?? existing.name,
-        description: payload.description === undefined ? existing.description : payload.description,
-        imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
-        initialQuantity: nextInitialQuantity,
-        remainingQuantity: nextRemainingQuantity,
-        sortOrder: payload.sortOrder ?? existing.sortOrder,
-      })
-      .where(eq(kujiPrizes.id, prizeId))
-      .returning();
+      const [nextPrize] = await tx
+        .update(kujiPrizes)
+        .set({
+          prizeCode: nextPrizeCode,
+          prizeTier: nextPrizeTier,
+          name: payload.name ?? existing.name,
+          description: payload.description === undefined ? existing.description : payload.description,
+          imageUrl: nextImageUrl,
+          initialQuantity: nextInitialQuantity,
+          remainingQuantity: nextRemainingQuantity,
+          sortOrder: payload.sortOrder ?? existing.sortOrder,
+        })
+        .where(eq(kujiPrizes.id, prizeId))
+        .returning();
 
-    await syncKujiInventoryWithinTx(tx, productId);
-    return [nextPrize];
-  });
+      await ensureKujiInventoryStateWithinTx(tx, productId);
+      return {
+        updated: nextPrize,
+        oldImageStorageKey,
+      };
+    })
+    .catch(mapKujiPrizeWriteError);
+
+  await cleanupReplacedKujiPrizeImage(productId, prizeId, oldImageStorageKey);
 
   return updated;
 };
@@ -646,7 +985,7 @@ export const updateKujiPrize = async (
 export const deleteKujiPrize = async (productId: string, prizeId: string) => {
   await db.transaction(async (tx) => {
     await tx.delete(kujiPrizes).where(and(eq(kujiPrizes.id, prizeId), eq(kujiPrizes.productId, productId)));
-    await syncKujiInventoryWithinTx(tx, productId);
+    await ensureKujiInventoryStateWithinTx(tx, productId);
   });
 
   return {

@@ -11,6 +11,7 @@ import {
   createTag,
   deleteKujiPrize,
   deleteProductImage,
+  getAdminProduct,
   listAdminCollections,
   listAdminProducts,
   listAdminTags,
@@ -21,21 +22,40 @@ import {
   updateProduct,
   updateStandardInventory,
   updateTag,
+  uploadKujiPrizeImage,
   uploadProductImages,
 } from '../../../services/admin';
 import {
   getAdminOrder,
   listAdminOrders,
   listCustomers,
+  resendAdminOrderConfirmation,
   reconcileOrderRefunds,
   refundOrder,
   updateAdminOrderStatus,
   updateShipment,
 } from '../../../services/orders';
+import {
+  createFaqItem,
+  createLegalDocument,
+  deleteFaqItem,
+  getAdminLegalDocumentById,
+  listAdminFaqItems,
+  listAdminLegalDocuments,
+  publishLegalDocumentVersionFromExisting,
+  updateFaqItem,
+} from '../../../services/legal';
+import {
+  getShippingSettings,
+  getStoreBannerSettings,
+  updateShippingSettings,
+  updateStoreBannerSettings,
+} from '../../../services/settings';
 import { readValidatedBody, readValidatedParams, readValidatedQuery } from '../../../utils/validated-request';
 import {
   adminOrderParamsSchema,
   adminOrderQuerySchema,
+  adminOrderResendParamsSchema,
   collectionBodySchema,
   collectionParamsSchema,
   collectionPatchBodySchema,
@@ -53,23 +73,67 @@ import {
   productPatchBodySchema,
   refundBodySchema,
   shipmentBodySchema,
+  shippingSettingsBodySchema,
+  storeBannerSettingsBodySchema,
   tagBodySchema,
   tagPatchBodySchema,
 } from '../../../schemas/admin';
 import {
+  adminLegalDocumentsQuerySchema,
+  createFaqItemBodySchema,
+  createLegalDocumentBodySchema,
+  faqItemIdParamsSchema,
+  legalDocumentIdParamsSchema,
+  updateFaqItemBodySchema,
+  updateLegalDocumentBodySchema,
+} from '../../../schemas/legal';
+import {
   parseProductImageUpload,
   readProductImageFiles,
   readProductImageUploadMetadata,
+  readSingleProductImageFile,
 } from '../../../services/admin/helpers';
 
 const adminRouter: Router = Router();
 
 adminRouter.use(requireAdminAuth);
 
+adminRouter.get('/settings/shipping', async (_req, res) => {
+  const result = await getShippingSettings();
+  return res.send_ok('Shipping settings retrieved', result);
+});
+
+adminRouter.put('/settings/shipping', validateBody(shippingSettingsBodySchema, 'shipping settings update'), async (req, res) => {
+  const body = readValidatedBody<z.infer<typeof shippingSettingsBodySchema>>(req);
+  const result = await updateShippingSettings(body);
+  return res.send_ok('Shipping settings updated', result);
+});
+
+adminRouter.get('/settings/store-banner', async (_req, res) => {
+  const result = await getStoreBannerSettings();
+  return res.send_ok('Store banner settings retrieved', result);
+});
+
+adminRouter.put(
+  '/settings/store-banner',
+  validateBody(storeBannerSettingsBodySchema, 'store banner settings update'),
+  async (req, res) => {
+    const body = readValidatedBody<z.infer<typeof storeBannerSettingsBodySchema>>(req);
+    const result = await updateStoreBannerSettings(body);
+    return res.send_ok('Store banner settings updated', result);
+  },
+);
+
 adminRouter.get('/products', validateQuery(productListQuerySchema, 'admin product filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listAdminProducts>[0]>(req);
   const result = await listAdminProducts(query);
   return res.send_ok('Admin products retrieved', result);
+});
+
+adminRouter.get('/products/:id', validateParams(productIdParamsSchema, 'product id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+  const result = await getAdminProduct(params.id);
+  return res.send_ok('Admin product retrieved', result);
 });
 
 adminRouter.post('/products', validateBody(productBodySchema, 'admin product creation'), async (req, res) => {
@@ -160,6 +224,22 @@ adminRouter.post(
   },
 );
 
+adminRouter.post(
+  '/products/:id/kuji-prizes/upload-image',
+  validateParams(productIdParamsSchema, 'product id'),
+  parseProductImageUpload,
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof productIdParamsSchema>>(req);
+    const file = readSingleProductImageFile(req, {
+      allowedFieldNames: new Set(['file']),
+      expectedFieldName: 'file',
+      usageLabel: 'kuji prize image uploads',
+    });
+    const result = await uploadKujiPrizeImage(params.id, file);
+    return res.send_created('Kuji prize image uploaded', result);
+  },
+);
+
 adminRouter.patch(
   '/products/:id/kuji-prizes/:prizeId',
   validateParams(kujiPrizeParamsSchema, 'kuji prize'),
@@ -228,6 +308,65 @@ adminRouter.patch(
   },
 );
 
+adminRouter.get('/legal', validateQuery(adminLegalDocumentsQuerySchema, 'admin legal filters'), async (req, res) => {
+  const query = readValidatedQuery<Parameters<typeof listAdminLegalDocuments>[0]>(req);
+  const result = await listAdminLegalDocuments(query);
+  return res.send_ok('Legal documents retrieved', result);
+});
+
+adminRouter.get('/legal/faq', async (_req, res) => {
+  const result = await listAdminFaqItems();
+  return res.send_ok('FAQ items retrieved', result);
+});
+
+adminRouter.post('/legal/faq', validateBody(createFaqItemBodySchema, 'faq item creation'), async (req, res) => {
+  const body = readValidatedBody<Parameters<typeof createFaqItem>[0]>(req);
+  const result = await createFaqItem(body);
+  return res.send_created('FAQ item created', result);
+});
+
+adminRouter.patch(
+  '/legal/faq/:id',
+  validateParams(faqItemIdParamsSchema, 'faq item id'),
+  validateBody(updateFaqItemBodySchema, 'faq item update'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof faqItemIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof updateFaqItem>[1]>(req);
+    const result = await updateFaqItem(params.id, body);
+    return res.send_ok('FAQ item updated', result);
+  },
+);
+
+adminRouter.delete('/legal/faq/:id', validateParams(faqItemIdParamsSchema, 'faq item id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof faqItemIdParamsSchema>>(req);
+  const result = await deleteFaqItem(params.id);
+  return res.send_ok('FAQ item deleted', result);
+});
+
+adminRouter.get('/legal/:id', validateParams(legalDocumentIdParamsSchema, 'legal document id'), async (req, res) => {
+  const params = readValidatedParams<z.infer<typeof legalDocumentIdParamsSchema>>(req);
+  const result = await getAdminLegalDocumentById(params.id);
+  return res.send_ok('Legal document retrieved', result);
+});
+
+adminRouter.post('/legal', validateBody(createLegalDocumentBodySchema, 'legal document creation'), async (req, res) => {
+  const body = readValidatedBody<Parameters<typeof createLegalDocument>[0]>(req);
+  const result = await createLegalDocument(body);
+  return res.send_created('Legal document created', result);
+});
+
+adminRouter.patch(
+  '/legal/:id',
+  validateParams(legalDocumentIdParamsSchema, 'legal document id'),
+  validateBody(updateLegalDocumentBodySchema, 'legal document update'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof legalDocumentIdParamsSchema>>(req);
+    const body = readValidatedBody<Parameters<typeof publishLegalDocumentVersionFromExisting>[1]>(req);
+    const result = await publishLegalDocumentVersionFromExisting(params.id, body);
+    return res.send_ok('Legal document published', result);
+  },
+);
+
 adminRouter.get('/orders', validateQuery(adminOrderQuerySchema, 'admin order filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listAdminOrders>[0]>(req);
   const result = await listAdminOrders(query);
@@ -239,6 +378,16 @@ adminRouter.get('/orders/:id', validateParams(adminOrderParamsSchema, 'order id'
   const result = await getAdminOrder(params.id);
   return res.send_ok('Order retrieved', result);
 });
+
+adminRouter.post(
+  '/orders/:orderId/resend-confirmation',
+  validateParams(adminOrderResendParamsSchema, 'order id'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof adminOrderResendParamsSchema>>(req);
+    const result = await resendAdminOrderConfirmation(params.orderId, req.authUser?.id);
+    return res.send_ok('Order confirmation email resent', result);
+  },
+);
 
 adminRouter.patch(
   '/orders/:id/status',
@@ -276,11 +425,15 @@ adminRouter.post(
   },
 );
 
-adminRouter.post('/orders/:id/refund/reconcile', validateParams(adminOrderParamsSchema, 'order id'), async (req, res) => {
-  const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
-  const result = await reconcileOrderRefunds(params.id);
-  return res.send_ok('Order refunds reconciled', result);
-});
+adminRouter.post(
+  '/orders/:id/refund/reconcile',
+  validateParams(adminOrderParamsSchema, 'order id'),
+  async (req, res) => {
+    const params = readValidatedParams<z.infer<typeof adminOrderParamsSchema>>(req);
+    const result = await reconcileOrderRefunds(params.id);
+    return res.send_ok('Order refunds reconciled', result);
+  },
+);
 
 adminRouter.get('/customers', validateQuery(paginationQuerySchema, 'customer filters'), async (req, res) => {
   const query = readValidatedQuery<Parameters<typeof listCustomers>[0]>(req);

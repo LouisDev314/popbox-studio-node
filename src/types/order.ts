@@ -17,11 +17,14 @@ export type OrderTicketView = {
     description: string | null;
     imageUrl: string | null;
     prizeCode: string;
+    prizeTier: string;
   } | null;
   kujiProduct: {
     id: string;
     name: string;
     slug: string;
+    imageUrl: string | null;
+    imageAltText: string | null;
   };
   createdAt: Date;
 };
@@ -30,6 +33,7 @@ export type OrderDetailView = {
   id: string;
   publicId: string;
   status: string;
+  includesLastOnePrize: boolean;
   currency: string;
   subtotalCents: number;
   taxCents: number;
@@ -64,6 +68,8 @@ export type OrderDetailView = {
     quantity: number;
     lineTotalCents: number;
     metadata: Record<string, unknown> | null;
+    imageUrl: string | null;
+    imageAltText: string | null;
   }>;
   tickets: OrderTicketView[];
 };
