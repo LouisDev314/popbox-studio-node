@@ -3,6 +3,10 @@ import { createChain, importFresh } from '../helpers/launch-test-kit';
 import { kujiPrizeBodySchema, kujiPrizePatchBodySchema } from '../../src/schemas/admin';
 
 const mocks = vi.hoisted(() => {
+  const storageRemove = vi.fn().mockResolvedValue({ error: null });
+  const storageFrom = vi.fn(() => ({
+    remove: storageRemove,
+  }));
   const db = {
     select: vi.fn(),
     insert: vi.fn(),
@@ -20,10 +24,26 @@ const mocks = vi.hoisted(() => {
       pgInit: vi.fn().mockResolvedValue(undefined),
       pgStop: vi.fn().mockResolvedValue(undefined),
     },
+    logger: {
+      error: vi.fn(),
+    },
+    storageFrom,
+    storageRemove,
+    supabaseModule: {
+      supabaseAdmin: {
+        storage: {
+          from: storageFrom,
+        },
+      },
+    },
   };
 });
 
 vi.mock('../../src/db', () => mocks.dbModule);
+vi.mock('../../src/integrations/supabase', () => mocks.supabaseModule);
+vi.mock('../../src/utils/logger', () => ({
+  default: mocks.logger,
+}));
 
 const buildKujiProduct = () => ({
   id: 'prod_kuji',
@@ -40,14 +60,16 @@ const buildKujiProduct = () => ({
   updatedAt: new Date('2026-04-12T00:00:00.000Z'),
 });
 
-const buildKujiPrize = (overrides: Partial<{ id: string; prizeCode: string; prizeTier: string }> = {}) => ({
+const buildKujiPrize = (
+  overrides: Partial<{ id: string; prizeCode: string; prizeTier: string; imageUrl: string | null }> = {},
+) => ({
   id: overrides.id ?? 'prize_1',
   productId: 'prod_kuji',
   prizeCode: overrides.prizeCode ?? 'A1',
   prizeTier: overrides.prizeTier ?? 'A',
   name: 'Prize A',
   description: null,
-  imageUrl: null,
+  imageUrl: 'imageUrl' in overrides ? (overrides.imageUrl ?? null) : null,
   initialQuantity: 1,
   remainingQuantity: 1,
   sortOrder: 0,
@@ -59,6 +81,9 @@ const mockInventorySync = () => {
   mocks.db.select.mockReturnValueOnce(createChain([{ remaining: 2 }]));
   mocks.db.execute.mockResolvedValueOnce([{ onHand: 2, reserved: 0 }]);
 };
+
+const buildManagedKujiPrizeImageUrl = (fileName: string) =>
+  `https://supabase.example.com/storage/v1/object/public/product-images/products/prod_kuji/kuji-prizes/${fileName}`;
 
 describe('launch: kuji prize tier validation', () => {
   it('requires prizeTier when creating a kuji prize', () => {
@@ -103,6 +128,7 @@ describe('launch: admin kuji prize tier writes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.db.transaction.mockImplementation(async (callback) => callback(mocks.db));
+    mocks.storageRemove.mockResolvedValue({ error: null });
   });
 
   it('creates A1 and A2 under the same product with display tier A', async () => {
@@ -174,6 +200,109 @@ describe('launch: admin kuji prize tier writes', () => {
 
     expect(result.prizeCode).toBe('B1');
     expect(updateChain.set).toHaveBeenCalledWith(expect.objectContaining({ prizeCode: 'B1', prizeTier: 'A' }));
+  });
+
+  it('clears an existing managed kuji prize image and removes the old storage object', async () => {
+    const oldImageUrl = buildManagedKujiPrizeImageUrl('old-prize.webp');
+    const updateChain = createChain([buildKujiPrize({ imageUrl: null })]);
+
+    mocks.db.select.mockReturnValueOnce(createChain([buildKujiProduct()]));
+    mocks.db.execute.mockResolvedValueOnce([buildKujiPrize({ imageUrl: oldImageUrl })]);
+    mocks.db.update.mockReturnValueOnce(updateChain);
+    mockInventorySync();
+
+    const { updateKujiPrize } = await importFresh(() => import('../../src/services/admin'));
+    const result = await updateKujiPrize('prod_kuji', 'prize_1', {
+      imageUrl: null,
+    });
+
+    expect(result.imageUrl).toBeNull();
+    expect(updateChain.set).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: null }));
+    expect(mocks.storageFrom).toHaveBeenCalledWith('product-images');
+    expect(mocks.storageRemove).toHaveBeenCalledWith(['products/prod_kuji/kuji-prizes/old-prize.webp']);
+    expect(mocks.logger.error).not.toHaveBeenCalled();
+  });
+
+  it('replaces an existing managed kuji prize image and removes only the old storage object', async () => {
+    const oldImageUrl = buildManagedKujiPrizeImageUrl('old-prize.webp');
+    const newImageUrl = buildManagedKujiPrizeImageUrl('new-prize.webp');
+    const updateChain = createChain([buildKujiPrize({ imageUrl: newImageUrl })]);
+
+    mocks.db.select.mockReturnValueOnce(createChain([buildKujiProduct()]));
+    mocks.db.execute.mockResolvedValueOnce([buildKujiPrize({ imageUrl: oldImageUrl })]);
+    mocks.db.update.mockReturnValueOnce(updateChain);
+    mockInventorySync();
+
+    const { updateKujiPrize } = await importFresh(() => import('../../src/services/admin'));
+    const result = await updateKujiPrize('prod_kuji', 'prize_1', {
+      imageUrl: newImageUrl,
+    });
+
+    expect(result.imageUrl).toBe(newImageUrl);
+    expect(updateChain.set).toHaveBeenCalledWith(expect.objectContaining({ imageUrl: newImageUrl }));
+    expect(mocks.storageRemove).toHaveBeenCalledTimes(1);
+    expect(mocks.storageRemove).toHaveBeenCalledWith(['products/prod_kuji/kuji-prizes/old-prize.webp']);
+  });
+
+  it('does not remove storage when the kuji prize image URL is unchanged', async () => {
+    const imageUrl = buildManagedKujiPrizeImageUrl('same-prize.webp');
+    const updateChain = createChain([buildKujiPrize({ imageUrl })]);
+
+    mocks.db.select.mockReturnValueOnce(createChain([buildKujiProduct()]));
+    mocks.db.execute.mockResolvedValueOnce([buildKujiPrize({ imageUrl })]);
+    mocks.db.update.mockReturnValueOnce(updateChain);
+    mockInventorySync();
+
+    const { updateKujiPrize } = await importFresh(() => import('../../src/services/admin'));
+    const result = await updateKujiPrize('prod_kuji', 'prize_1', {
+      imageUrl,
+    });
+
+    expect(result.imageUrl).toBe(imageUrl);
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('logs kuji prize image cleanup failures while still returning the updated prize', async () => {
+    const oldImageUrl = buildManagedKujiPrizeImageUrl('old-prize.webp');
+    const newImageUrl = buildManagedKujiPrizeImageUrl('new-prize.webp');
+    const cleanupError = { message: 'storage remove failed' };
+    const updateChain = createChain([buildKujiPrize({ imageUrl: newImageUrl })]);
+
+    mocks.storageRemove.mockResolvedValueOnce({ error: cleanupError });
+    mocks.db.select.mockReturnValueOnce(createChain([buildKujiProduct()]));
+    mocks.db.execute.mockResolvedValueOnce([buildKujiPrize({ imageUrl: oldImageUrl })]);
+    mocks.db.update.mockReturnValueOnce(updateChain);
+    mockInventorySync();
+
+    const { updateKujiPrize } = await importFresh(() => import('../../src/services/admin'));
+    const result = await updateKujiPrize('prod_kuji', 'prize_1', {
+      imageUrl: newImageUrl,
+    });
+
+    expect(result.imageUrl).toBe(newImageUrl);
+    expect(mocks.logger.error).toHaveBeenCalledWith(
+      {
+        productId: 'prod_kuji',
+        prizeId: 'prize_1',
+        storageKey: 'products/prod_kuji/kuji-prizes/old-prize.webp',
+        error: cleanupError,
+      },
+      'Kuji prize image cleanup failed',
+    );
+  });
+
+  it('does not remove storage when the kuji prize update fails', async () => {
+    mocks.db.select.mockReturnValueOnce(createChain([buildKujiProduct()]));
+    mocks.db.transaction.mockRejectedValueOnce(new Error('update failed'));
+
+    const { updateKujiPrize } = await importFresh(() => import('../../src/services/admin'));
+
+    await expect(
+      updateKujiPrize('prod_kuji', 'prize_1', {
+        imageUrl: buildManagedKujiPrizeImageUrl('new-prize.webp'),
+      }),
+    ).rejects.toThrow('update failed');
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
   });
 });
 

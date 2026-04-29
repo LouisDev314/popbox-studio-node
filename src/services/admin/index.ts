@@ -18,6 +18,7 @@ import HttpStatusCode from '../../constants/http-status-code';
 import { decodeCursor, encodeCursor } from '../../utils/cursor';
 import { getProductById, getProductCardsByIds, loadProductTagMap } from '../product';
 import { clampLimit } from '../../utils/limit';
+import logger from '../../utils/logger';
 import {
   assertProductExists,
   buildStoragePath,
@@ -62,6 +63,58 @@ const mapKujiPrizeWriteError = (error: unknown): never => {
   }
 
   throw error;
+};
+
+const getManagedKujiPrizeImageStorageKey = (productId: string, imageUrl: string | null) => {
+  if (!imageUrl) return null;
+
+  try {
+    const config = getEnvConfig();
+    const parsedImageUrl = new URL(imageUrl);
+    const imageUrlWithoutQuery = `${parsedImageUrl.origin}${parsedImageUrl.pathname}`;
+    const storagePrefix = `${config.supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/${config.supabaseStorageBucket}/`;
+
+    if (!imageUrlWithoutQuery.startsWith(storagePrefix)) {
+      return null;
+    }
+
+    const storageKey = decodeURIComponent(imageUrlWithoutQuery.slice(storagePrefix.length));
+    const kujiPrizeStoragePrefix = `products/${productId}/kuji-prizes/`;
+
+    return storageKey.startsWith(kujiPrizeStoragePrefix) ? storageKey : null;
+  } catch {
+    return null;
+  }
+};
+
+const cleanupReplacedKujiPrizeImage = async (productId: string, prizeId: string, storageKey: string | null) => {
+  if (!storageKey) return;
+
+  try {
+    const { error } = await supabaseAdmin.storage.from(getEnvConfig().supabaseStorageBucket).remove([storageKey]);
+
+    if (!error) return;
+
+    logger.error(
+      {
+        productId,
+        prizeId,
+        storageKey,
+        error,
+      },
+      'Kuji prize image cleanup failed',
+    );
+  } catch (error) {
+    logger.error(
+      {
+        productId,
+        prizeId,
+        storageKey,
+        error,
+      },
+      'Kuji prize image cleanup failed',
+    );
+  }
 };
 
 type AdminProductListItem = {
@@ -871,7 +924,7 @@ export const updateKujiPrize = async (
   }>,
 ) => {
   await assertProductExists(productId);
-  const [updated] = await db
+  const { updated, oldImageStorageKey } = await db
     .transaction(async (tx) => {
       const prizeResult = await tx.execute<typeof kujiPrizes.$inferSelect>(sql`
       SELECT
@@ -905,6 +958,11 @@ export const updateKujiPrize = async (
       const nextInitialQuantity = payload.initialQuantity ?? existing.initialQuantity;
       const nextRemainingQuantity = payload.remainingQuantity ?? existing.remainingQuantity;
       assertKujiPrizeQuantitiesAreValid(nextInitialQuantity, nextRemainingQuantity);
+      const nextImageUrl = payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl;
+      const oldImageStorageKey =
+        payload.imageUrl !== undefined && payload.imageUrl !== existing.imageUrl
+          ? getManagedKujiPrizeImageStorageKey(productId, existing.imageUrl)
+          : null;
 
       const [nextPrize] = await tx
         .update(kujiPrizes)
@@ -913,7 +971,7 @@ export const updateKujiPrize = async (
           prizeTier: nextPrizeTier,
           name: payload.name ?? existing.name,
           description: payload.description === undefined ? existing.description : payload.description,
-          imageUrl: payload.imageUrl === undefined ? existing.imageUrl : payload.imageUrl,
+          imageUrl: nextImageUrl,
           initialQuantity: nextInitialQuantity,
           remainingQuantity: nextRemainingQuantity,
           sortOrder: payload.sortOrder ?? existing.sortOrder,
@@ -922,9 +980,14 @@ export const updateKujiPrize = async (
         .returning();
 
       await ensureKujiInventoryStateWithinTx(tx, productId);
-      return [nextPrize];
+      return {
+        updated: nextPrize,
+        oldImageStorageKey,
+      };
     })
     .catch(mapKujiPrizeWriteError);
+
+  await cleanupReplacedKujiPrizeImage(productId, prizeId, oldImageStorageKey);
 
   return updated;
 };
