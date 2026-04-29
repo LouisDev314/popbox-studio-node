@@ -28,7 +28,11 @@ import {
   replaceProductTags,
   throwStorageFailure,
 } from '../../utils/product';
-import { LAST_ONE_PRIZE_TIER, sanitizeKujiPrizeCodeForStorage, sanitizeKujiPrizeTierForStorage } from '../../utils/kuji';
+import {
+  LAST_ONE_PRIZE_TIER,
+  sanitizeKujiPrizeCodeForStorage,
+  sanitizeKujiPrizeTierForStorage,
+} from '../../utils/kuji';
 import { mapProductImage, rollbackUploadedProductImages, validateProductImageFiles } from './helpers';
 
 type AdminProductListSort = 'updated_desc' | 'updated_asc' | 'inventory_desc' | 'inventory_asc';
@@ -93,17 +97,7 @@ const cleanupReplacedKujiPrizeImage = async (productId: string, prizeId: string,
   try {
     const { error } = await supabaseAdmin.storage.from(getEnvConfig().supabaseStorageBucket).remove([storageKey]);
 
-    if (!error) return;
-
-    logger.error(
-      {
-        productId,
-        prizeId,
-        storageKey,
-        error,
-      },
-      'Kuji prize image cleanup failed',
-    );
+    if (error) throw error;
   } catch (error) {
     logger.error(
       {
@@ -262,10 +256,7 @@ const assertInventoryNotBelowReserved = (onHand: number, reserved: number) => {
 
 const assertKujiPrizeQuantitiesAreValid = (initialQuantity: number, remainingQuantity: number) => {
   if (remainingQuantity > initialQuantity) {
-    throw new Exception(
-      HttpStatusCode.CONFLICT,
-      'Kuji prize remainingQuantity cannot be greater than initialQuantity',
-    );
+    throw new Exception(HttpStatusCode.CONFLICT, 'Kuji prize remainingQuantity cannot be greater than initialQuantity');
   }
 };
 
@@ -276,10 +267,7 @@ const ensureKujiInventoryStateWithinTx = async (tx: DbClient, productId: string)
     })
     .from(kujiPrizes)
     .where(
-      and(
-        eq(kujiPrizes.productId, productId),
-        sql`UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}`,
-      ),
+      and(eq(kujiPrizes.productId, productId), sql`UPPER(BTRIM(${kujiPrizes.prizeTier})) <> ${LAST_ONE_PRIZE_TIER}`),
     );
 
   const totalRemaining = sumRow?.remaining ?? 0;
@@ -623,10 +611,12 @@ export const uploadKujiPrizeImage = async (productId: string, file: Express.Mult
     subdirectory: 'kuji-prizes',
     unique: true,
   });
-  const { error } = await supabaseAdmin.storage.from(getEnvConfig().supabaseStorageBucket).upload(storageKey, file.buffer, {
-    contentType: file.mimetype,
-    upsert: false,
-  });
+  const { error } = await supabaseAdmin.storage
+    .from(getEnvConfig().supabaseStorageBucket)
+    .upload(storageKey, file.buffer, {
+      contentType: file.mimetype,
+      upsert: false,
+    });
 
   throwStorageFailure('Unable to upload kuji prize image', error);
 
