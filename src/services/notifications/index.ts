@@ -60,7 +60,7 @@ const formatAddressSummary = (address: Record<string, unknown> | null) => {
 const sendEmail = async (params: { emailType: string; subject: string; html: string; to: string }) => {
   if (!canSendEmail) {
     logger.warn(
-      { emailType: params.emailType, subject: params.subject, to: params.to },
+      { emailType: params.emailType, subject: params.subject },
       'Skipping email send because Resend is not configured',
     );
     return;
@@ -76,14 +76,14 @@ const sendEmail = async (params: { emailType: string; subject: string; html: str
 
     if (response.error) {
       logger.error(
-        { error: response.error, emailType: params.emailType, subject: params.subject, to: params.to },
+        { error: response.error, emailType: params.emailType, subject: params.subject },
         'Resend email send failed',
       );
       throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send transactional email');
     }
   } catch (error) {
     logger.error(
-      { error, emailType: params.emailType, subject: params.subject, to: params.to },
+      { error, emailType: params.emailType, subject: params.subject },
       'Unexpected email delivery failure',
     );
     throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send transactional email');
@@ -96,7 +96,9 @@ export const sendOrderConfirmationEmail = async (params: {
   orderPublicId: string;
   orderUrl: string;
 }) => {
-  const displayName = params.firstName?.trim() || 'there';
+  const displayName = escapeHtml(params.firstName?.trim() || 'there');
+  const orderPublicId = escapeHtml(params.orderPublicId);
+  const orderUrl = escapeHtml(params.orderUrl);
 
   await sendEmail({
     emailType: 'order_confirmation',
@@ -116,14 +118,14 @@ export const sendOrderConfirmationEmail = async (params: {
         </p>
     
         <p>
-          <a href="${params.orderUrl}" 
+          <a href="${orderUrl}"
              style="display: inline-block; background: #F8A5D1; color: #000000; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: 600;">
             View order & tickets
           </a>
         </p>
     
         <p>
-          <strong>Order Number:</strong> ${params.orderPublicId}
+          <strong>Order Number:</strong> ${orderPublicId}
         </p>
     
         <p>
@@ -152,11 +154,11 @@ const buildShipmentTrackingBlock = (params: {
 }) =>
   params.trackingNumber || params.trackingUrl
     ? `
-        <p><strong>Carrier:</strong> ${params.carrierName ?? 'Carrier update available'}</p>
+        <p><strong>Carrier:</strong> ${escapeHtml(params.carrierName ?? 'Carrier update available')}</p>
         <p><strong>Tracking:</strong> ${
           params.trackingUrl
-            ? `<a href="${params.trackingUrl}">${params.trackingNumber ?? params.trackingUrl}</a>`
-            : (params.trackingNumber ?? 'Tracking pending')
+            ? `<a href="${escapeHtml(params.trackingUrl)}">${escapeHtml(params.trackingNumber ?? params.trackingUrl)}</a>`
+            : escapeHtml(params.trackingNumber ?? 'Tracking pending')
         }</p>
       `
     : '';
@@ -170,7 +172,8 @@ export const sendShipmentEmail = async (params: {
   trackingNumber?: string | null;
   trackingUrl?: string | null;
 }) => {
-  const displayName = params.firstName?.trim() || 'there';
+  const displayName = escapeHtml(params.firstName?.trim() || 'there');
+  const orderUrl = escapeHtml(params.orderUrl);
   const trackingBlock = buildShipmentTrackingBlock(params);
 
   await sendEmail({
@@ -182,7 +185,7 @@ export const sendShipmentEmail = async (params: {
         <p>Hi ${displayName},</p>
         <p>Your order is on the way.</p>
         ${trackingBlock}
-        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+        <p><a href="${orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>
     `,
     to: params.email,
@@ -198,7 +201,8 @@ export const sendShipmentUpdateEmail = async (params: {
   trackingNumber?: string | null;
   trackingUrl?: string | null;
 }) => {
-  const displayName = params.firstName?.trim() || 'there';
+  const displayName = escapeHtml(params.firstName?.trim() || 'there');
+  const orderUrl = escapeHtml(params.orderUrl);
   const trackingBlock = buildShipmentTrackingBlock(params);
 
   await sendEmail({
@@ -210,7 +214,7 @@ export const sendShipmentUpdateEmail = async (params: {
         <p>Hi ${displayName},</p>
         <p>We updated the shipping details for your order.</p>
         ${trackingBlock}
-        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+        <p><a href="${orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>
     `,
     to: params.email,
@@ -226,9 +230,12 @@ export const sendRefundEmail = async (params: {
   currency: string;
   isFullyRefunded: boolean;
 }) => {
-  const displayName = params.firstName?.trim() || 'there';
+  const displayName = escapeHtml(params.firstName?.trim() || 'there');
   const refundAmount = formatMoney(params.amountCents, params.currency);
   const refundLabel = params.isFullyRefunded ? 'full refund' : 'refund';
+  const orderPublicId = escapeHtml(params.orderPublicId);
+  const orderUrl = escapeHtml(params.orderUrl);
+  const escapedRefundAmount = escapeHtml(refundAmount);
 
   await sendEmail({
     emailType: 'order_refund',
@@ -238,9 +245,9 @@ export const sendRefundEmail = async (params: {
         <h1 style="font-size: 22px;">Your ${refundLabel} has been processed</h1>
         <p>Hi ${displayName},</p>
         <p>We’ve processed a refund for your order.</p>
-        <p><strong>Order Number:</strong> ${params.orderPublicId}</p>
-        <p><strong>Refund Amount:</strong> ${refundAmount}</p>
-        <p><a href="${params.orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
+        <p><strong>Order Number:</strong> ${orderPublicId}</p>
+        <p><strong>Refund Amount:</strong> ${escapedRefundAmount}</p>
+        <p><a href="${orderUrl}" style="display: inline-block; background: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px;">View your order</a></p>
       </div>
     `,
     to: params.email,

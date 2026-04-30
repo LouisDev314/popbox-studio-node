@@ -131,6 +131,17 @@ describe('launch: performance and stability hardening', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects decimal pagination limits before they reach SQL LIMIT clauses', async () => {
+    const { listProductsQuerySchema } = await importFresh(() => import('../../src/schemas/product'));
+    const { searchQuerySchema, autocompleteQuerySchema } = await importFresh(() => import('../../src/schemas/search'));
+    const { paginationQuerySchema } = await importFresh(() => import('../../src/schemas/admin'));
+
+    expect(listProductsQuerySchema.safeParse({ limit: '1.5' }).success).toBe(false);
+    expect(searchQuerySchema.safeParse({ q: 'figure', limit: '2.5' }).success).toBe(false);
+    expect(autocompleteQuerySchema.safeParse({ q: 'fig', limit: '3.5' }).success).toBe(false);
+    expect(paginationQuerySchema.safeParse({ limit: '4.5' }).success).toBe(false);
+  });
+
   it('persists slim Stripe webhook snapshots instead of raw event payloads', async () => {
     const { payload, signature } = buildWebhookRequest();
     const insertChain = createChain(undefined);

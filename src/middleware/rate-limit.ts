@@ -26,13 +26,6 @@ export const globalLimiter = createLimiter({
   limit: 300, // 300 req / 5 min / IP
 });
 
-// Auth: strict (brute force protection)
-export const authLimiter = createLimiter({
-  windowMs: 10 * 60 * 1000, // 10 min
-  limit: 20, // 20 attempts / 10 min / IP
-  message: 'Too many attempts, please try again later.',
-});
-
 // Checkout/payment-router initiation: moderate
 export const checkoutLimiter = createLimiter({
   windowMs: 10 * 60 * 1000,

@@ -1,6 +1,8 @@
 import { ContactBody } from '../../schemas/contact';
 import resend from '../../integrations/resend';
 import getEnvConfig from '../../config/env';
+import Exception from '../../utils/Exception';
+import HttpStatusCode from '../../constants/http-status-code';
 
 const inquiryTypeLabelMap: Record<ContactBody['inquiryType'], string> = {
   'product-request': 'Product / Series Request',
@@ -91,16 +93,22 @@ export const sendContactEmail = async (payload: ContactBody): Promise<void> => {
     </div>
   `;
 
-  const result = await resend.emails.send({
-    from: `PopBox Studio <${getEnvConfig().resendFromEmail}>`,
-    to: getEnvConfig().contactEmail,
-    replyTo: payload.email,
-    subject,
-    text,
-    html,
-  });
+  try {
+    const result = await resend.emails.send({
+      from: `PopBox Studio <${getEnvConfig().resendFromEmail}>`,
+      to: getEnvConfig().contactEmail,
+      replyTo: payload.email,
+      subject,
+      text,
+      html,
+    });
 
-  if (result.error) {
-    throw new Error(`Failed to send contact email: ${result.error.message}`);
+    if (!result.error) {
+      return;
+    }
+  } catch {
+    throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send contact email');
   }
+
+  throw new Exception(HttpStatusCode.BAD_GATEWAY, 'Unable to send contact email');
 };

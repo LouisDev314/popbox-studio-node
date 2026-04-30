@@ -3,7 +3,7 @@ import { PRODUCT_RECOMMENDATIONS_MAX_LIMIT } from '../constants/product';
 
 export const listProductsQuerySchema = z
   .object({
-    limit: z.coerce.number().min(1).max(50).optional(),
+    limit: z.coerce.number().int().min(1).max(50).optional(),
     cursor: z.string().optional(),
     collection: z.string().optional(),
     tag: z.string().optional(),

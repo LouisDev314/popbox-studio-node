@@ -6,12 +6,12 @@ const baseSearchQuerySchema = z.object({
 
 export const searchQuerySchema = baseSearchQuerySchema
   .extend({
-    limit: z.coerce.number().min(1).max(50).optional(),
+    limit: z.coerce.number().int().min(1).max(50).optional(),
   })
   .strict();
 
 export const autocompleteQuerySchema = baseSearchQuerySchema
   .extend({
-    limit: z.coerce.number().min(1).max(10).optional(),
+    limit: z.coerce.number().int().min(1).max(10).optional(),
   })
   .strict();

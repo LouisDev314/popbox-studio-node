@@ -1077,7 +1077,6 @@ export const sendOrderConfirmationEmailForOrder = async (
       {
         orderId,
         publicId: detail.publicId,
-        email,
         confirmationEmailSentAt,
         force: options.force ?? false,
         trigger,
@@ -1102,7 +1101,10 @@ export const sendOrderConfirmationEmailForOrder = async (
       })
       .where(eq(orders.id, orderId));
 
-    logger.error({ error, orderId, emailErrorMessage, force: options.force ?? false, trigger }, 'Order confirmation email send failed');
+    logger.error(
+      { error, orderId, emailErrorMessage, force: options.force ?? false, trigger },
+      'Order confirmation email send failed',
+    );
     throw error;
   } finally {
     try {
